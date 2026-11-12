@@ -1,0 +1,16 @@
+[package]
+name = "pandite-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "pandite"
+path = "src/main.rs"
+
+[dependencies]
+pandite-core = { path = "../pandite-core" }
+
+[lints]
+workspace = true
