@@ -101,7 +101,7 @@ jobs:
             libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb-xkb-dev \
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev wayland-protocols \
             libegl-dev libgl-dev libgles-dev \
-            libvulkan-dev libvulkan1 \
+            libvulkan-dev libvulkan1 mesa-vulkan-drivers libegl-mesa0 libgl1-mesa-dri \
             libdbus-1-dev libfontconfig1-dev \
             xvfb xauth
 
@@ -137,6 +137,16 @@ jobs:
           else
             cargo test --workspace --locked
           fi
+
+      - name: Renderer tests on the software rasterizer
+        if: runner.os == 'Linux'
+        env:
+          PANDITE_REQUIRE_GPU: "1"
+          PANDITE_FORCE_FALLBACK_ADAPTER: "1"
+          WGPU_BACKEND: vulkan
+        run: |
+          cargo test -p pandite-render --locked
+          WGPU_BACKEND=gl cargo test -p pandite-render --locked
 
       - name: Packaging oracle (extensions, manifest, logos)
         if: runner.os == 'Windows'

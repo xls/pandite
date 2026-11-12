@@ -200,9 +200,12 @@ The GPU tests need a GPU adapter. When the computer has no adapter, these
 tests print a notice and pass. To make a missing adapter fail the tests,
 set `PANDITE_REQUIRE_GPU=1`.
 
-The GitHub runners have no GPU, only software rasterizers. The CI sets
-`WGPU_BACKEND` to a backend that the build does not contain, so the GPU
-tests skip there. Run the GPU tests on a computer with a real GPU.
+The GitHub runners have no GPU, only software rasterizers. On Linux, the
+CI runs the renderer tests on the Mesa software rasterizer with
+`PANDITE_REQUIRE_GPU=1` and `PANDITE_FORCE_FALLBACK_ADAPTER=1`. In the
+workspace test step, the CI sets `WGPU_BACKEND` to a backend that the
+build does not contain, so the GPU tests skip there. Run the full GPU tests
+on a computer with a real GPU.
 
 ## Packaging files
 
