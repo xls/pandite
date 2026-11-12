@@ -1,0 +1,259 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MSIX manifest for pandite, a Win32 full-trust desktop app.
+
+  packaging/windows/build-msix.mjs fills in Identity Version,
+  Identity ProcessorArchitecture and the three Partner Center values.
+  The checked-in values are defaults so this file stays valid on its own.
+
+  PLACEHOLDER: the three values marked REPLACE-ME come from Partner Center
+  (Product management > Product identity). Do not edit them here. Pass them
+  to the build script (see docs/store-submission.md):
+    Identity Name         -> PANDITE_MSIX_IDENTITY_NAME or identity-name
+    Identity Publisher    -> PANDITE_MSIX_PUBLISHER or publisher
+    PublisherDisplayName  -> PANDITE_MSIX_PUBLISHER_DISPLAY_NAME or
+                             publisher-display-name
+
+  The file associations below must list every extension in
+  packaging/extensions.txt. node packaging/check.mjs verifies this.
+  The app never uses the network, so the only capability is runFullTrust.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap3 desktop rescap">
+
+  <Identity
+    Name="REPLACE-ME.pandite"
+    Publisher="CN=REPLACE-ME-PUBLISHER-ID"
+    Version="0.1.0.0"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>pandite</DisplayName>
+    <PublisherDisplayName>REPLACE-ME publisher display name</PublisherDisplayName>
+    <Logo>assets\StoreLogo.png</Logo>
+    <Description>Fast offline image viewer.</Description>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application Id="pandite" Executable="pandite.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="pandite"
+        Description="Fast offline image viewer."
+        BackgroundColor="transparent"
+        Square150x150Logo="assets\Square150x150Logo.png"
+        Square44x44Logo="assets\Square44x44Logo.png">
+        <uap:DefaultTile
+          ShortName="pandite"
+          Wide310x150Logo="assets\Wide310x150Logo.png"
+          Square71x71Logo="assets\SmallTile.png"
+          Square310x310Logo="assets\LargeTile.png">
+          <uap:ShowNameOnTiles>
+            <uap:ShowOn Tile="square150x150Logo" />
+            <uap:ShowOn Tile="wide310x150Logo" />
+            <uap:ShowOn Tile="square310x310Logo" />
+          </uap:ShowNameOnTiles>
+        </uap:DefaultTile>
+      </uap:VisualElements>
+
+      <Extensions>
+        <!-- "pandite" on the command line starts the packaged app. -->
+        <uap3:Extension Category="windows.appExecutionAlias" Executable="pandite.exe" EntryPoint="Windows.FullTrustApplication">
+          <uap3:AppExecutionAlias>
+            <desktop:ExecutionAlias Alias="pandite.exe" />
+          </uap3:AppExecutionAlias>
+        </uap3:Extension>
+
+        <!--
+          File associations. Parameters is the command line of the default
+          "open" verb: the app receives the file path as its first argument.
+        -->
+        <uap3:Extension Category="windows.fileTypeAssociation">
+          <uap3:FileTypeAssociation Name="jpeg" Parameters="&quot;%1&quot;">
+            <uap:DisplayName>JPEG image</uap:DisplayName>
+            <uap:SupportedFileTypes>
+              <uap:FileType>.jpg</uap:FileType>
+              <uap:FileType>.jpeg</uap:FileType>
+              <uap:FileType>.jpe</uap:FileType>
+              <uap:FileType>.jfif</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap3:FileTypeAssociation>
+        </uap3:Extension>
+        <uap3:Extension Category="windows.fileTypeAssociation">
+          <uap3:FileTypeAssociation Name="png" Parameters="&quot;%1&quot;">
+            <uap:DisplayName>PNG image</uap:DisplayName>
+            <uap:SupportedFileTypes>
+              <uap:FileType>.png</uap:FileType>
+              <uap:FileType>.apng</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap3:FileTypeAssociation>
+        </uap3:Extension>
+        <uap3:Extension Category="windows.fileTypeAssociation">
+          <uap3:FileTypeAssociation Name="gif" Parameters="&quot;%1&quot;">
+            <uap:DisplayName>GIF image</uap:DisplayName>
+            <uap:SupportedFileTypes>
+              <uap:FileType>.gif</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap3:FileTypeAssociation>
+        </uap3:Extension>
+        <uap3:Extension Category="windows.fileTypeAssociation">
+          <uap3:FileTypeAssociation Name="webp" Parameters="&quot;%1&quot;">
+            <uap:DisplayName>WebP image</uap:DisplayName>
+            <uap:SupportedFileTypes>
+              <uap:FileType>.webp</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap3:FileTypeAssociation>
+        </uap3:Extension>
+        <uap3:Extension Category="windows.fileTypeAssociation">
+          <uap3:FileTypeAssociation Name="bmp" Parameters="&quot;%1&quot;">
+            <uap:DisplayName>Bitmap image</uap:DisplayName>
+            <uap:SupportedFileTypes>
+              <uap:FileType>.bmp</uap:FileType>
+              <uap:FileType>.dib</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap3:FileTypeAssociation>
+        </uap3:Extension>
+        <uap3:Extension Category="windows.fileTypeAssociation">
+          <uap3:FileTypeAssociation Name="tiff" Parameters="&quot;%1&quot;">
+            <uap:DisplayName>TIFF image</uap:DisplayName>
+            <uap:SupportedFileTypes>
+              <uap:FileType>.tif</uap:FileType>
+              <uap:FileType>.tiff</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap3:FileTypeAssociation>
+        </uap3:Extension>
+        <uap3:Extension Category="windows.fileTypeAssociation">
+          <uap3:FileTypeAssociation Name="tga" Parameters="&quot;%1&quot;">
+            <uap:DisplayName>Targa image</uap:DisplayName>
+            <uap:SupportedFileTypes>
+              <uap:FileType>.tga</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap3:FileTypeAssociation>
+        </uap3:Extension>
+        <uap3:Extension Category="windows.fileTypeAssociation">
+          <uap3:FileTypeAssociation Name="icon" Parameters="&quot;%1&quot;">
+            <uap:DisplayName>Icon or cursor</uap:DisplayName>
+            <uap:SupportedFileTypes>
+              <uap:FileType>.ico</uap:FileType>
+              <uap:FileType>.cur</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap3:FileTypeAssociation>
+        </uap3:Extension>
+        <uap3:Extension Category="windows.fileTypeAssociation">
+          <uap3:FileTypeAssociation Name="qoi" Parameters="&quot;%1&quot;">
+            <uap:DisplayName>QOI image</uap:DisplayName>
+            <uap:SupportedFileTypes>
+              <uap:FileType>.qoi</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap3:FileTypeAssociation>
+        </uap3:Extension>
+        <uap3:Extension Category="windows.fileTypeAssociation">
+          <uap3:FileTypeAssociation Name="avif" Parameters="&quot;%1&quot;">
+            <uap:DisplayName>AVIF image</uap:DisplayName>
+            <uap:SupportedFileTypes>
+              <uap:FileType>.avif</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap3:FileTypeAssociation>
+        </uap3:Extension>
+        <uap3:Extension Category="windows.fileTypeAssociation">
+          <uap3:FileTypeAssociation Name="heif" Parameters="&quot;%1&quot;">
+            <uap:DisplayName>HEIF image</uap:DisplayName>
+            <uap:SupportedFileTypes>
+              <uap:FileType>.heic</uap:FileType>
+              <uap:FileType>.heif</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap3:FileTypeAssociation>
+        </uap3:Extension>
+        <uap3:Extension Category="windows.fileTypeAssociation">
+          <uap3:FileTypeAssociation Name="jxl" Parameters="&quot;%1&quot;">
+            <uap:DisplayName>JPEG XL image</uap:DisplayName>
+            <uap:SupportedFileTypes>
+              <uap:FileType>.jxl</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap3:FileTypeAssociation>
+        </uap3:Extension>
+        <uap3:Extension Category="windows.fileTypeAssociation">
+          <uap3:FileTypeAssociation Name="dds" Parameters="&quot;%1&quot;">
+            <uap:DisplayName>DirectDraw Surface texture</uap:DisplayName>
+            <uap:SupportedFileTypes>
+              <uap:FileType>.dds</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap3:FileTypeAssociation>
+        </uap3:Extension>
+        <uap3:Extension Category="windows.fileTypeAssociation">
+          <uap3:FileTypeAssociation Name="ktx2" Parameters="&quot;%1&quot;">
+            <uap:DisplayName>KTX2 texture</uap:DisplayName>
+            <uap:SupportedFileTypes>
+              <uap:FileType>.ktx2</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap3:FileTypeAssociation>
+        </uap3:Extension>
+        <uap3:Extension Category="windows.fileTypeAssociation">
+          <uap3:FileTypeAssociation Name="exr" Parameters="&quot;%1&quot;">
+            <uap:DisplayName>OpenEXR image</uap:DisplayName>
+            <uap:SupportedFileTypes>
+              <uap:FileType>.exr</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap3:FileTypeAssociation>
+        </uap3:Extension>
+        <uap3:Extension Category="windows.fileTypeAssociation">
+          <uap3:FileTypeAssociation Name="hdr" Parameters="&quot;%1&quot;">
+            <uap:DisplayName>Radiance HDR image</uap:DisplayName>
+            <uap:SupportedFileTypes>
+              <uap:FileType>.hdr</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap3:FileTypeAssociation>
+        </uap3:Extension>
+        <uap3:Extension Category="windows.fileTypeAssociation">
+          <uap3:FileTypeAssociation Name="svg" Parameters="&quot;%1&quot;">
+            <uap:DisplayName>SVG image</uap:DisplayName>
+            <uap:SupportedFileTypes>
+              <uap:FileType>.svg</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap3:FileTypeAssociation>
+        </uap3:Extension>
+        <uap3:Extension Category="windows.fileTypeAssociation">
+          <uap3:FileTypeAssociation Name="psd" Parameters="&quot;%1&quot;">
+            <uap:DisplayName>Photoshop document</uap:DisplayName>
+            <uap:SupportedFileTypes>
+              <uap:FileType>.psd</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap3:FileTypeAssociation>
+        </uap3:Extension>
+        <uap3:Extension Category="windows.fileTypeAssociation">
+          <uap3:FileTypeAssociation Name="camera-raw" Parameters="&quot;%1&quot;">
+            <uap:DisplayName>Camera RAW image</uap:DisplayName>
+            <uap:SupportedFileTypes>
+              <uap:FileType>.dng</uap:FileType>
+              <uap:FileType>.cr2</uap:FileType>
+              <uap:FileType>.cr3</uap:FileType>
+              <uap:FileType>.nef</uap:FileType>
+              <uap:FileType>.arw</uap:FileType>
+              <uap:FileType>.raf</uap:FileType>
+              <uap:FileType>.orf</uap:FileType>
+              <uap:FileType>.rw2</uap:FileType>
+              <uap:FileType>.pef</uap:FileType>
+              <uap:FileType>.srw</uap:FileType>
+            </uap:SupportedFileTypes>
+          </uap3:FileTypeAssociation>
+        </uap3:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>

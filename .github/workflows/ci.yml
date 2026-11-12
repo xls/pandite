@@ -1,0 +1,180 @@
+# Continuous integration for pandite.
+#
+# On every push and pull request to main:
+#   - format check, packaging consistency check, and a check that no
+#     networking crate is linked into the program on any release target
+#   - clippy (warnings denied) and the full test suite on Windows x64,
+#     macOS on Apple Silicon and Linux x64
+#   - a build of the two release targets the runners cannot execute:
+#     Windows ARM64 and macOS Intel
+#   - on Windows: the packaging oracle and an MSIX built with makeappx
+#
+# No secrets. Hosted runners have no GPU, so the GPU tests skip themselves
+# (see the Test step). The local gates run them on a real GPU.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "10"
+  RUST_BACKTRACE: short
+  # Same floor as LSMinimumSystemVersion in packaging/macos/Info.plist.
+  MACOSX_DEPLOYMENT_TARGET: "11.0"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  fmt:
+    name: Format, packaging and dependency checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt
+          rustup default stable
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Check packaging definitions
+        run: node packaging/check.mjs
+
+      - name: No networking crate on any release target
+        run: |
+          node scripts/gates/no-network.mjs --control
+          node scripts/gates/no-network.mjs
+
+      - name: Check third-party notices
+        # A warning only: the release workflow regenerates the notices it ships.
+        run: |
+          node packaging/third-party-notices.mjs --check \
+            || echo "::warning file=docs/THIRD-PARTY-NOTICES.md::out of date, run node packaging/third-party-notices.mjs"
+
+  test:
+    name: Test (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # no_gpu_backend: a wgpu backend that this build does not contain
+          # (see the Test step).
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+            no_gpu_backend: vulkan
+          - os: macos-15
+            target: aarch64-apple-darwin
+            no_gpu_backend: vulkan
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            no_gpu_backend: metal
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y --no-install-recommends -o Acquire::Retries=3 \
+            pkg-config \
+            libx11-dev libx11-xcb-dev libxcursor-dev libxrandr-dev libxi-dev libxinerama-dev \
+            libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb-xkb-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev wayland-protocols \
+            libegl-dev libgl-dev libgles-dev \
+            libvulkan-dev libvulkan1 \
+            libdbus-1-dev libfontconfig1-dev \
+            xvfb xauth
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustup default stable
+
+      - name: Check the runner builds ${{ matrix.target }} natively
+        run: |
+          rustc -vV | grep -x "host: ${{ matrix.target }}"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Test
+        env:
+          # Hosted runners have no GPU, only software rasterizers (WARP,
+          # lavapipe, llvmpipe) whose output differs from GPUs: three pixel
+          # tests fail on lavapipe. A backend this build lacks gives wgpu no
+          # adapter, so the GPU tests skip on every runner, the same way each
+          # time. The local gates run them on a real GPU.
+          WGPU_BACKEND: ${{ matrix.no_gpu_backend }}
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            # Xvfb gives the tests an X11 display.
+            xvfb-run -a cargo test --workspace --locked
+          else
+            cargo test --workspace --locked
+          fi
+
+      - name: Packaging oracle (extensions, manifest, logos)
+        if: runner.os == 'Windows'
+        env:
+          PANDITE_TARGET_DIR: target
+        run: node scripts/gates/packaging.mjs
+
+      - name: MSIX from the debug build (makeappx validates the manifest)
+        if: runner.os == 'Windows'
+        run: |
+          cargo build --locked -p pandite-app
+          node packaging/windows/build-msix.mjs --exe target/debug/pandite.exe --out dist
+
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            target: aarch64-pc-windows-msvc
+          - os: macos-15
+            target: x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build
+        run: cargo build --workspace --all-targets --locked --target ${{ matrix.target }}

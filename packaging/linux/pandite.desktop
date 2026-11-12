@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.4
+Name=pandite
+GenericName=Image Viewer
+Comment=Fast offline image viewer
+Exec=pandite %f
+TryExec=pandite
+Icon=pandite
+Terminal=false
+StartupNotify=true
+StartupWMClass=pandite
+Categories=Graphics;Viewer;RasterGraphics;2DGraphics;Photography;
+Keywords=image;photo;picture;viewer;raw;
+MimeType=image/jpeg;image/pjpeg;image/png;image/apng;image/vnd.mozilla.apng;image/gif;image/webp;image/bmp;image/x-bmp;image/x-ms-bmp;image/tiff;image/x-tga;image/x-targa;image/vnd.microsoft.icon;image/x-icon;image/x-win-bitmap;image/qoi;image/x-qoi;image/avif;image/jxl;image/x-dds;image/ktx2;image/x-exr;image/vnd.radiance;image/x-hdr;image/svg+xml;image/vnd.adobe.photoshop;image/x-psd;image/x-adobe-dng;image/x-canon-cr2;image/x-canon-cr3;image/x-nikon-nef;image/x-sony-arw;image/x-fuji-raf;image/x-olympus-orf;image/x-panasonic-rw2;image/x-pentax-pef;image/x-samsung-srw;

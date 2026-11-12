@@ -1,9 +1,15 @@
 [package]
 name = "pandite-app"
+description = "The pandite image viewer application: window, event loop and the glue between the engine crates."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+build = "build.rs"
+
+[lib]
+name = "pandite_app"
+path = "src/lib.rs"
 
 [[bin]]
 name = "pandite"
@@ -11,6 +17,23 @@ path = "src/main.rs"
 
 [dependencies]
 pandite-core = { path = "../pandite-core" }
+pandite-codecs = { path = "../pandite-codecs" }
+pandite-ops = { path = "../pandite-ops" }
+pandite-library = { path = "../pandite-library" }
+pandite-render = { path = "../pandite-render" }
+pandite-ui = { path = "../pandite-ui" }
+winit = { version = "0.30.13", default-features = false, features = ["rwh_06"] }
+rfd = { version = "0.17", default-features = false }
+arboard = { version = "3.7", default-features = false }
+
+# Linux needs window system backends for winit, a dialog backend for rfd
+# and the Wayland clipboard protocol for arboard (X11 is its fallback). The
+# rfd portal backend talks D-Bus over a Unix socket with its own small
+# client and pulls in no async runtime; it falls back to zenity.
+[target.'cfg(all(unix, not(target_vendor = "apple")))'.dependencies]
+winit = { version = "0.30.13", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen", "wayland-csd-adwaita"] }
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
+arboard = { version = "3.7", default-features = false, features = ["wayland-data-control"] }
 
 [lints]
 workspace = true

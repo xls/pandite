@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Info.plist of pandite.app. packaging/macos/build-app.sh sets the two
+  version keys from the release version and can override the bundle id.
+
+  PLACEHOLDER: net.rizos.pandite is a placeholder bundle identifier. Replace
+  it with a reverse-DNS identifier you own before you sign or notarize with
+  an Apple Developer ID (or set PANDITE_BUNDLE_ID for build-app.sh).
+
+  The document types list every extension in packaging/extensions.txt.
+  node packaging/check.mjs verifies this.
+-->
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleDisplayName</key>
+  <string>pandite</string>
+  <key>CFBundleExecutable</key>
+  <string>pandite</string>
+  <key>CFBundleIconFile</key>
+  <string>pandite</string>
+  <key>CFBundleIdentifier</key>
+  <string>net.rizos.pandite</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>pandite</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>0.1.0</string>
+  <key>CFBundleVersion</key>
+  <string>0.1.0</string>
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.photography</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>11.0</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSSupportsAutomaticGraphicsSwitching</key>
+  <true/>
+  <key>NSHumanReadableCopyright</key>
+  <string>Copyright (c) 2026 Thomas Rizos. MIT License.</string>
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>Image</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>public.jpeg</string>
+        <string>public.png</string>
+        <string>com.compuserve.gif</string>
+        <string>org.webmproject.webp</string>
+        <string>com.microsoft.bmp</string>
+        <string>public.tiff</string>
+        <string>com.truevision.tga-image</string>
+        <string>com.microsoft.ico</string>
+        <string>com.microsoft.cur</string>
+        <string>public.avif</string>
+        <string>public.heic</string>
+        <string>public.heif</string>
+        <string>public.jpeg-xl</string>
+        <string>com.microsoft.dds</string>
+        <string>org.khronos.ktx2</string>
+        <string>com.ilm.openexr-image</string>
+        <string>public.radiance</string>
+        <string>public.svg-image</string>
+        <string>com.adobe.photoshop-image</string>
+        <string>com.adobe.raw-image</string>
+        <string>com.canon.cr2-raw-image</string>
+        <string>com.canon.cr3-raw-image</string>
+        <string>com.nikon.raw-image</string>
+        <string>com.sony.arw-raw-image</string>
+        <string>com.fuji.raw-image</string>
+        <string>com.olympus.or-raw-image</string>
+        <string>com.panasonic.rw2-raw-image</string>
+        <string>com.pentax.raw-image</string>
+        <string>com.samsung.raw-image</string>
+      </array>
+    </dict>
+    <dict>
+      <!-- By extension, for files whose type the system does not declare. -->
+      <key>CFBundleTypeName</key>
+      <string>Image file</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>CFBundleTypeExtensions</key>
+      <array>
+        <string>jpg</string>
+        <string>jpeg</string>
+        <string>jpe</string>
+        <string>jfif</string>
+        <string>png</string>
+        <string>apng</string>
+        <string>gif</string>
+        <string>webp</string>
+        <string>bmp</string>
+        <string>dib</string>
+        <string>tif</string>
+        <string>tiff</string>
+        <string>tga</string>
+        <string>ico</string>
+        <string>cur</string>
+        <string>qoi</string>
+        <string>avif</string>
+        <string>heic</string>
+        <string>heif</string>
+        <string>jxl</string>
+        <string>dds</string>
+        <string>ktx2</string>
+        <string>exr</string>
+        <string>hdr</string>
+        <string>svg</string>
+        <string>psd</string>
+        <string>dng</string>
+        <string>cr2</string>
+        <string>cr3</string>
+        <string>nef</string>
+        <string>arw</string>
+        <string>raf</string>
+        <string>orf</string>
+        <string>rw2</string>
+        <string>pef</string>
+        <string>srw</string>
+      </array>
+    </dict>
+  </array>
+</dict>
+</plist>

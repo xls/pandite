@@ -1,0 +1,309 @@
+# Release: build, package and publish pandite for every release target.
+#
+# A tag v<version> (equal to the Cargo.toml workspace version) builds:
+#   Windows x64 and ARM64   portable .zip, Store-ready unsigned .msix, and
+#                           one .msixbundle with both architectures
+#   macOS                   universal .app (arm64 + x86_64), ad hoc signed,
+#                           in a .dmg and a .zip
+#   Linux x64               .tar.gz with desktop entry, icons, install script
+# then writes SHA256SUMS.txt and publishes a GitHub release with all files.
+#
+# A manual run on a branch is a dry run: it builds every package and keeps
+# them as workflow artifacts. A manual run on a tag publishes like a push.
+#
+# Optional repository variables (Settings > Secrets and variables > Actions >
+# Variables), copied from Partner Center, put the Store identity in the MSIX:
+#   PANDITE_MSIX_IDENTITY_NAME, PANDITE_MSIX_PUBLISHER,
+#   PANDITE_MSIX_PUBLISHER_DISPLAY_NAME
+# Optional secrets add sideload-signed copies of the MSIX packages:
+#   PANDITE_SIGNING_CERT_BASE64 (a .pfx file, base64), PANDITE_SIGNING_CERT_PASSWORD
+# See docs/store-submission.md.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "10"
+  RUST_BACKTRACE: short
+  MACOSX_DEPLOYMENT_TARGET: "11.0"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      msix_version: ${{ steps.v.outputs.msix_version }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+      tag: ${{ steps.v.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Read the version and check it against the tag
+        id: v
+        run: node packaging/version.mjs
+
+  windows:
+    name: Windows (${{ matrix.target }})
+    needs: version
+    runs-on: windows-2025
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            arch: x64
+          - target: aarch64-pc-windows-msvc
+            arch: arm64
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      TARGET: ${{ matrix.target }}
+      # Static C runtime: the program runs without the Visual C++ Redistributable.
+      RUSTFLAGS: "-C target-feature=+crt-static"
+      PANDITE_MSIX_IDENTITY_NAME: ${{ vars.PANDITE_MSIX_IDENTITY_NAME }}
+      PANDITE_MSIX_PUBLISHER: ${{ vars.PANDITE_MSIX_PUBLISHER }}
+      PANDITE_MSIX_PUBLISHER_DISPLAY_NAME: ${{ vars.PANDITE_MSIX_PUBLISHER_DISPLAY_NAME }}
+      HAS_SIGNING_CERT: ${{ secrets.PANDITE_SIGNING_CERT_BASE64 != '' }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add "$TARGET"
+
+      - name: Build
+        run: cargo build --release --locked -p pandite-app --target "$TARGET"
+
+      - name: Third-party notices
+        run: node packaging/third-party-notices.mjs
+
+      - name: Portable zip
+        shell: pwsh
+        run: >-
+          ./packaging/windows/build-zip.ps1
+          -Exe "target/$env:TARGET/release/pandite.exe"
+          -Version $env:VERSION -Target $env:TARGET -OutDir dist
+
+      - name: MSIX (unsigned, for the Microsoft Store)
+        run: |
+          node packaging/windows/build-msix.mjs \
+            --exe "target/$TARGET/release/pandite.exe" \
+            --arch "${{ matrix.arch }}" --version "$VERSION" --out dist --require-static-crt
+
+      - name: Sideload-signed MSIX (only when the signing secrets exist)
+        if: env.HAS_SIGNING_CERT == 'true'
+        env:
+          CERT_BASE64: ${{ secrets.PANDITE_SIGNING_CERT_BASE64 }}
+          PANDITE_SIGN_PASSWORD: ${{ secrets.PANDITE_SIGNING_CERT_PASSWORD }}
+        run: |
+          cert="$RUNNER_TEMP/pandite-signing.pfx"
+          trap 'rm -f "$cert"' EXIT
+          printf '%s' "$CERT_BASE64" | base64 --decode --ignore-garbage > "$cert"
+          cp "dist/pandite-$VERSION-$TARGET.msix" "dist/pandite-$VERSION-$TARGET-sideload.msix"
+          node packaging/windows/sign-msix.mjs --pfx "$cert" \
+            --timestamp http://timestamp.digicert.com "dist/pandite-$VERSION-$TARGET-sideload.msix"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  windows-bundle:
+    name: Windows MSIX bundle
+    needs: [version, windows]
+    runs-on: windows-2025
+    timeout-minutes: 20
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: windows-*
+          path: packages
+          merge-multiple: true
+
+      - name: Bundle x64 and ARM64
+        run: |
+          node packaging/windows/build-msix.mjs --version "$VERSION" --out dist --bundle \
+            "packages/pandite-$VERSION-x86_64-pc-windows-msvc.msix" \
+            "packages/pandite-$VERSION-aarch64-pc-windows-msvc.msix"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-bundle
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  macos:
+    name: macOS (aarch64-apple-darwin + x86_64-apple-darwin)
+    needs: version
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Build both architectures
+        run: |
+          cargo build --release --locked -p pandite-app \
+            --target aarch64-apple-darwin --target x86_64-apple-darwin
+
+      - name: Third-party notices
+        run: node packaging/third-party-notices.mjs
+
+      - name: Universal app, disk image and zip
+        run: bash packaging/macos/build-app.sh "$VERSION" dist target
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  linux:
+    name: Linux (x86_64-unknown-linux-gnu)
+    needs: version
+    # The oldest supported image gives the oldest glibc floor (2.35).
+    # Move to ubuntu-24.04 when GitHub retires ubuntu-22.04.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install system libraries
+        run: |
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y --no-install-recommends -o Acquire::Retries=3 \
+            pkg-config \
+            libx11-dev libx11-xcb-dev libxcursor-dev libxrandr-dev libxi-dev libxinerama-dev \
+            libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb-xkb-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev wayland-protocols \
+            libegl-dev libgl-dev libgles-dev libvulkan-dev \
+            libdbus-1-dev libfontconfig1-dev \
+            desktop-file-utils
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add x86_64-unknown-linux-gnu
+
+      - name: Build
+        run: cargo build --release --locked -p pandite-app --target x86_64-unknown-linux-gnu
+
+      - name: Third-party notices
+        run: node packaging/third-party-notices.mjs
+
+      - name: Tarball
+        run: |
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) \
+            bash packaging/linux/build-tarball.sh "$VERSION" dist \
+            target/x86_64-unknown-linux-gnu/release/pandite
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  checksums:
+    name: Checksums
+    needs: [version, windows, windows-bundle, macos, linux]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "{windows-*,macos,linux}"
+          path: dist
+          merge-multiple: true
+
+      - name: SHA-256 of every file
+        working-directory: dist
+        run: |
+          sha256sum -- * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Publish GitHub release
+    needs: [version, checksums]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.version.outputs.tag }}
+      VERSION: ${{ needs.version.outputs.version }}
+      PRERELEASE: ${{ needs.version.outputs.prerelease }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: dist
+
+      - name: Create or update the release
+        run: |
+          cat > notes.md <<EOF
+          Downloads:
+
+          - Windows: \`pandite-$VERSION-x86_64-pc-windows-msvc.zip\` (x64) or \`pandite-$VERSION-aarch64-pc-windows-msvc.zip\` (ARM64), portable.
+          - Windows MSIX: \`pandite-$VERSION-windows.msixbundle\` holds both architectures for Microsoft Store submission. The MSIX files are unsigned and do not install by double-click.
+          - macOS 11 or later: \`pandite-$VERSION-universal-apple-darwin.dmg\` (Apple Silicon and Intel).
+          - Linux x64: \`pandite-$VERSION-x86_64-unknown-linux-gnu.tar.gz\`.
+
+          Check downloads against \`SHA256SUMS.txt\`.
+          EOF
+          flags=()
+          if [ "$PRERELEASE" = "true" ]; then flags+=(--prerelease); fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --verify-tag --title "pandite $VERSION" \
+              --notes-file notes.md --generate-notes "${flags[@]}"
+          fi
