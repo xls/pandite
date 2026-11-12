@@ -1,5 +1,6 @@
 [package]
 name = "pandite-ops"
+description = "Image operations for the pandite viewer: resize, rotate, flip, crop, pixel format conversion and bulk jobs. Standard library only."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
