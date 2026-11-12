@@ -44,10 +44,9 @@ pub(crate) struct Pipelines {
     pub frame_layout: wgpu::BindGroupLayout,
     /// Group 1 of the image and interface passes: texture and draw uniforms.
     pub texture_layout: wgpu::BindGroupLayout,
-    /// Trilinear, 16x anisotropic, clamped. Used for content and resampling.
-    pub image_sampler: wgpu::Sampler,
-    /// Trilinear without anisotropy, for the interface pass.
-    pub ui_sampler: wgpu::Sampler,
+    /// Trilinear, clamped to the edge, without anisotropic filtering. Used
+    /// for content, resampling and the interface pass.
+    pub sampler: wgpu::Sampler,
     image_module: wgpu::ShaderModule,
     ui_module: wgpu::ShaderModule,
     image_layout: wgpu::PipelineLayout,
@@ -249,12 +248,19 @@ impl Pipelines {
             "fs_convert_float",
             wide_format,
         );
+        // Only formats the device renders to: a pipeline that targets
+        // `WIDE_FORMAT` on a device that cannot render to it is invalid.
+        let storage_formats: &[wgpu::TextureFormat] = if wide_format == WIDE_FORMAT {
+            &[COLOR_FORMAT, WIDE_FORMAT, MASK_FORMAT]
+        } else {
+            &[COLOR_FORMAT, MASK_FORMAT]
+        };
         let mut mips = HashMap::new();
-        for format in [COLOR_FORMAT, WIDE_FORMAT, MASK_FORMAT] {
+        for &format in storage_formats {
             mips.insert(format, fullscreen("mip", &mip_pl, "fs_mip", format));
         }
         let mut resample = HashMap::new();
-        for format in [COLOR_FORMAT, WIDE_FORMAT, MASK_FORMAT] {
+        for &format in storage_formats {
             resample.insert(
                 format,
                 pipeline(
@@ -275,19 +281,16 @@ impl Pipelines {
             );
         }
 
-        let image_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("image"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::MipmapFilterMode::Linear,
-            anisotropy_clamp: 16,
-            ..wgpu::SamplerDescriptor::default()
-        });
-        let ui_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("ui"),
+        // No anisotropic filtering (`anisotropy_clamp` stays 1). Content is
+        // drawn with one uniform scale, so the sampling footprint is square
+        // and anisotropic filtering cannot improve on trilinear. Its result
+        // is implementation-defined: Mesa lavapipe and llvmpipe pick an
+        // axis per 2x2 quad from rounding noise and blur 1:1 content by 8 %
+        // of each neighbor along it, and NVIDIA changes the mip blend by up
+        // to 31 codes. Without it these drivers, AMD and WARP agree within
+        // 3 codes.
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("trilinear"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
@@ -309,8 +312,7 @@ impl Pipelines {
             resample,
             frame_layout,
             texture_layout,
-            image_sampler,
-            ui_sampler,
+            sampler,
             image_module,
             ui_module,
             image_layout,

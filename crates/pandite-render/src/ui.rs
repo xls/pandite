@@ -103,7 +103,7 @@ impl UiRenderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&pipes.ui_sampler),
+                    resource: wgpu::BindingResource::Sampler(&pipes.sampler),
                 },
             ],
         });

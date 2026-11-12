@@ -38,15 +38,21 @@
 //!   8-bit sources, `Rgba16Float` for 16-bit and floating point sources.
 //! - Every texture has a full mip chain, rendered on the GPU from the level
 //!   above with an exact box filter in linear light (see [`GpuImage`]).
-//! - Minification samples trilinearly with 16x anisotropic filtering and a
-//!   small negative level-of-detail bias ([`RenderSettings::lod_bias`]).
-//! - Magnification is bilinear up to [`RenderSettings::crisp_zoom`]
-//!   (default [`CRISP_ZOOM_DEFAULT`], 3 screen pixels per image pixel). From
-//!   there on each image pixel is drawn as a flat square with a one screen
-//!   pixel antialiased seam: crisp for pixel peeping, without the uneven
-//!   pixel widths of plain nearest sampling at fractional zoom.
-//! - The image origin is rounded to whole pixels, so 1:1 and integer zoom
-//!   map texels exactly onto pixels.
+//! - Minification samples trilinearly with a small negative level-of-detail
+//!   bias ([`RenderSettings::lod_bias`]). There is no anisotropic
+//!   filtering: content is always drawn with one uniform scale, so the
+//!   sampling footprint is square and anisotropic filtering cannot improve
+//!   on trilinear, while its implementation-defined result differs between
+//!   drivers (Mesa's software rasterizers blur 1:1 content with it).
+//! - Magnification is bilinear on mip level 0 up to
+//!   [`RenderSettings::crisp_zoom`] (default [`CRISP_ZOOM_DEFAULT`], 3
+//!   screen pixels per image pixel). From there on each image pixel is
+//!   drawn as a flat square with a one screen pixel antialiased seam: crisp
+//!   for pixel peeping, without the uneven pixel widths of plain nearest
+//!   sampling at fractional zoom.
+//! - The image origin is rounded to whole pixels and from 1:1 on the shader
+//!   samples level 0 by name, so 1:1 and integer zoom map texels exactly
+//!   onto pixels on every conforming driver, software rasterizers included.
 //! - Images larger than the device texture limit are tiled with overlapping
 //!   gutters, plus a downscaled overview used when zoomed out. When the
 //!   tiles do not fit in GPU memory only the overview is kept (documented
@@ -94,7 +100,7 @@ mod tests;
 pub use wgpu;
 
 pub use anim::{AnimationProvider, ANIMATION_CACHE_BYTES};
-pub use gpu::{Gpu, GpuOptions};
+pub use gpu::{list_adapters, AdapterSummary, Gpu, GpuOptions};
 pub use image::GpuImage;
 pub use pipelines::DEPTH_FORMAT;
 pub use provider::{

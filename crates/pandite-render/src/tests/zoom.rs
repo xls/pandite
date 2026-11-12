@@ -80,6 +80,45 @@ fn minified_checkerboard_is_flat_gray() {
     }
 }
 
+#[test]
+fn minification_is_shift_invariant() {
+    let gpu = gpu_or_skip!();
+    // Noise minified twice, the second time one pixel further right and
+    // down. Every pixel samples the same texture coordinates in both
+    // frames, but the 2x2 quads that give the derivatives pair other
+    // pixels. Isotropic filtering gives the same picture, shifted.
+    // Anisotropic filtering of a square footprint is implementation-
+    // defined: Mesa picks a blur axis per quad from rounding noise, which
+    // showed here as differences of up to 55 codes.
+    const SIDE: u32 = 257;
+    let image = rgba8(SIDE, SIDE, |x, y| {
+        // An integer hash of the position: white noise.
+        let mut h = (y * SIDE + x).wrapping_mul(0x9e37_79b9);
+        h ^= h >> 15;
+        h = h.wrapping_mul(0x85eb_ca6b);
+        h ^= h >> 13;
+        let v = (h >> 24) as u8;
+        [v, v, v, 255]
+    });
+    let mut r = offscreen(&gpu, 122, 122, plain(Color::BLACK));
+    r.set_content(Content::Still(image)).expect("set content");
+    for z in [0.9, 0.6, 0.37, 0.21] {
+        let view = zoom(z);
+        let first = Rect::new(0.0, 0.0, 121.0, 121.0);
+        let second = Rect::new(1.0, 1.0, 121.0, 121.0);
+        let a = frame_in(&mut r, &view, first, &DrawList::new());
+        let ra = r.placement(&view, first).expect("placement").image_rect;
+        let b = frame_in(&mut r, &view, second, &DrawList::new());
+        let rb = r.placement(&view, second).expect("placement").image_rect;
+        assert_eq!((rb.x - ra.x, rb.y - ra.y), (1.0, 1.0), "zoom {z}");
+        let mut worst = 0;
+        for (x, y) in interior(ra, 1.0, 121, 121) {
+            worst = worst.max(a.rgb(x, y)[0].abs_diff(b.rgb(x + 1, y + 1)[0]));
+        }
+        assert!(worst <= 2, "zoom {z}: shifted frames differ by {worst}");
+    }
+}
+
 /// Count pixels in row `y` between `x0` and `x1` that are neither black
 /// nor white.
 fn soft_pixels(px: &Pixels, y: u32, x0: u32, x1: u32) -> usize {
@@ -249,6 +288,128 @@ fn mipmaps_generated_in_linear_light() {
     }
 }
 
+#[test]
+fn one_to_one_maps_texels_exactly() {
+    let gpu = gpu_or_skip!();
+    // One white texel in black, at 1:1: every pixel shows exactly its own
+    // texel. These sizes and positions made Mesa's anisotropic filter blur
+    // one axis by 1/12 of each neighbor (rounding noise in the per-quad
+    // derivatives raised its probe count from 1 to 2).
+    for (w, h) in [
+        (3, 3),
+        (5, 3),
+        (5, 1),
+        (7, 7),
+        (8, 8),
+        (9, 9),
+        (16, 16),
+        (33, 9),
+    ] {
+        let (cx, cy) = (w / 2, h / 2);
+        let image = rgba8(w, h, |x, y| {
+            if (x, y) == (cx, cy) {
+                [255, 255, 255, 255]
+            } else {
+                [0, 0, 0, 255]
+            }
+        });
+        let mut r = offscreen(&gpu, 48, 40, plain(Color::rgb(255, 0, 0)));
+        r.set_content(Content::Still(image)).expect("set content");
+        let view = ViewState {
+            mode: DisplayMode::OneToOne,
+            ..ViewState::default()
+        };
+        let px = frame(&mut r, &view, &DrawList::new());
+        let rect = r
+            .placement(&view, r.full_viewport())
+            .expect("placement")
+            .image_rect;
+        let (ox, oy) = (rect.x as u32, rect.y as u32);
+        for y in 0..h {
+            for x in 0..w {
+                let want = if (x, y) == (cx, cy) { [255; 3] } else { [0; 3] };
+                let got = px.rgb(ox + x, oy + y);
+                assert_eq!(got, want, "{w}x{h} at ({ox}, {oy}): texel ({x}, {y})");
+            }
+        }
+    }
+}
+
+/// Uploads a black image and overwrites mip level 1 with green and level 2
+/// with blue, so the drawn color tells which levels were sampled.
+struct MipProbe;
+
+impl RenderProvider for MipProbe {
+    fn name(&self) -> &'static str {
+        "mip probe"
+    }
+
+    fn create(
+        &self,
+        ctx: &ProviderContext<'_>,
+        input: &RenderInput,
+    ) -> pandite_core::Result<Box<dyn ContentRenderer>> {
+        let RenderInput::Content(content) = input else {
+            return Err(Error::Unsupported("test".into()));
+        };
+        let image = GpuImage::upload(ctx.gpu, content.first_image())?;
+        let texture = image.tile_texture(0);
+        for (level, color) in [(1, [0u8, 255, 0, 255]), (2, [0, 0, 255, 255])] {
+            let (w, h) = (texture.width() >> level, texture.height() >> level);
+            let data: Vec<u8> = (0..w * h).flat_map(|_| color).collect();
+            // Ordered after the upload's mip passes, which were submitted.
+            ctx.gpu.queue().write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture,
+                    mip_level: level,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &data,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(w * 4),
+                    rows_per_image: Some(h),
+                },
+                wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+        Ok(Box::new(ImageRenderer { image }))
+    }
+}
+
+#[test]
+fn level_zero_from_one_to_one_up() {
+    let gpu = gpu_or_skip!();
+    let mut r = offscreen(&gpu, 80, 80, plain(Color::rgb(255, 0, 0)));
+    r.providers_mut()
+        .register(ContentKind::Still, std::sync::Arc::new(MipProbe));
+    r.set_content(Content::Still(rgba8(64, 64, |_, _| [0, 0, 0, 255])))
+        .expect("set content");
+    // From 1:1 up only level 0 (black) shows, whatever level of detail the
+    // driver would estimate from derivatives.
+    for z in [1.0, 1.5, 2.0, 2.9] {
+        let view = zoom(z);
+        let px = frame(&mut r, &view, &DrawList::new());
+        let rect = r
+            .placement(&view, r.full_viewport())
+            .expect("placement")
+            .image_rect;
+        for (x, y) in interior(rect, 1.0, 80, 80) {
+            assert_eq!(px.rgb(x, y), [0, 0, 0], "zoom {z}: ({x}, {y})");
+        }
+    }
+    // Minified by half, the mip chain is used: level 1 (green) dominates.
+    let view = zoom(0.5);
+    let px = frame(&mut r, &view, &DrawList::new());
+    let [red, green, _] = px.rgb(40, 40);
+    assert!(red == 0 && green > 128, "zoom 0.5: {:?}", px.rgb(40, 40));
+}
+
 /// Uploads stills with an artificially small texture limit, so ordinary
 /// test images take the tiled path.
 struct TiledStill {
@@ -257,7 +418,8 @@ struct TiledStill {
     reduced: bool,
 }
 
-struct TiledRenderer {
+/// Draws one image built by a test provider.
+struct ImageRenderer {
     image: GpuImage,
 }
 
@@ -281,11 +443,11 @@ impl RenderProvider for TiledStill {
             self.reduced || image.tile_count() > 1,
             "the test image must be tiled"
         );
-        Ok(Box::new(TiledRenderer { image }))
+        Ok(Box::new(ImageRenderer { image }))
     }
 }
 
-impl ContentRenderer for TiledRenderer {
+impl ContentRenderer for ImageRenderer {
     fn size(&self) -> Size {
         self.image.size()
     }

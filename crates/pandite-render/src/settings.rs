@@ -47,9 +47,9 @@ pub struct RenderSettings {
     /// Zoom factor (screen pixels per image pixel) from which content is
     /// magnified crisply: every image pixel becomes a flat square with a
     /// one screen pixel antialiased seam, for pixel peeping. Below it,
-    /// magnification is bilinear and minification is trilinear with 16x
-    /// anisotropic filtering over mip levels built in linear light. Values
-    /// below 1 act as 1, so minified content is always filtered.
+    /// magnification is bilinear on the full resolution level and
+    /// minification is trilinear over mip levels built in linear light.
+    /// Values below 1 act as 1, so minified content is always filtered.
     pub crisp_zoom: f32,
     /// Level of detail bias for minification. Slightly negative values
     /// counter the softness of trilinear filtering without aliasing.

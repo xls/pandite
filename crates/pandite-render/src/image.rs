@@ -205,13 +205,42 @@ pub(crate) fn texture_bind_group(
     })
 }
 
+/// How the image shader samples a texture: the `MODE_` constants in
+/// `image.wgsl`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Sampling {
+    /// Less than one screen pixel per texel: trilinear over the mip chain
+    /// with the level of detail bias.
+    Minify = 0,
+    /// One screen pixel per texel or more: bilinear on level 0, named
+    /// explicitly so 1:1 does not depend on level of detail precision.
+    Magnify = 1,
+    /// From [`RenderSettings::crisp_zoom`] on: flat texels with a one
+    /// pixel seam.
+    Crisp = 2,
+}
+
+impl Sampling {
+    /// The mode for `pixels_per_texel` screen pixels per texel, with crisp
+    /// sampling from `crisp_from` on.
+    fn for_scale(pixels_per_texel: f32, crisp_from: f32) -> Self {
+        if pixels_per_texel >= crisp_from {
+            Self::Crisp
+        } else if pixels_per_texel >= 1.0 {
+            Self::Magnify
+        } else {
+            Self::Minify
+        }
+    }
+}
+
 /// Per-draw uniforms, laid out as `DrawParams` in `image.wgsl`.
 struct DrawParams {
     dst: [f32; 4],
     uv: [f32; 4],
     tex_size: [f32; 2],
     checker_origin: [f32; 2],
-    crisp: bool,
+    mode: Sampling,
     hdr: bool,
     lod: f32,
 }
@@ -231,7 +260,7 @@ impl DrawParams {
             self.tex_size[1],
             self.checker_origin[0],
             self.checker_origin[1],
-            f32::from_bits(u32::from(self.crisp)),
+            f32::from_bits(self.mode as u32),
             f32::from_bits(u32::from(self.hdr)),
             self.lod,
             0.0,
@@ -555,7 +584,8 @@ impl GpuImage {
                 uv: interior_uv(tile),
                 tex_size: [r.w as f32, r.h as f32],
                 checker_origin: [0.0, 0.0],
-                crisp: false,
+                // Unused: the resample pass samples level `lod` by name.
+                mode: Sampling::Minify,
                 hdr: false,
                 lod: *shift as f32,
             }
@@ -667,7 +697,7 @@ impl GpuImage {
         if scale.is_nan() || scale <= 0.0 || rect.is_empty() {
             return;
         }
-        let crisp = scale >= settings.crisp_zoom.max(1.0);
+        let crisp_from = settings.crisp_zoom.max(1.0);
         let hdr = self.is_hdr();
         if let Some((overview, _)) = &self.overview {
             let overview_scale = overview.region.w as f32 / self.width as f32;
@@ -677,7 +707,8 @@ impl GpuImage {
                     uv: [0.0, 0.0, 1.0, 1.0],
                     tex_size: [overview.region.w as f32, overview.region.h as f32],
                     checker_origin: [rect.x, rect.y],
-                    crisp: false,
+                    // Never crisp: overview texels are not image pixels.
+                    mode: Sampling::for_scale(scale / overview_scale, f32::INFINITY),
                     hdr,
                     lod: 0.0,
                 }
@@ -703,7 +734,7 @@ impl GpuImage {
                 uv: interior_uv(tile),
                 tex_size: [tile.region.w as f32, tile.region.h as f32],
                 checker_origin: [rect.x, rect.y],
-                crisp,
+                mode: Sampling::for_scale(scale, crisp_from),
                 hdr,
                 lod: 0.0,
             }
@@ -1014,5 +1045,15 @@ mod unit {
         assert_eq!(mip_levels(1, 1), 1);
         assert_eq!(mip_levels(256, 3), 9);
         assert_eq!(mip_levels(257, 3), 9);
+    }
+
+    #[test]
+    fn sampling_mode_follows_zoom() {
+        assert_eq!(Sampling::for_scale(0.999, 3.0), Sampling::Minify);
+        assert_eq!(Sampling::for_scale(1.0, 3.0), Sampling::Magnify);
+        assert_eq!(Sampling::for_scale(2.99, 3.0), Sampling::Magnify);
+        assert_eq!(Sampling::for_scale(3.0, 3.0), Sampling::Crisp);
+        assert_eq!(Sampling::for_scale(1.0, 1.0), Sampling::Crisp);
+        assert_eq!(Sampling::for_scale(1.0e6, f32::INFINITY), Sampling::Magnify);
     }
 }

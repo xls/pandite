@@ -4,6 +4,13 @@
 //! Without a GPU adapter each test prints a skip notice and passes, so CI
 //! runners without a GPU stay green. With `PANDITE_REQUIRE_GPU=1` a missing
 //! adapter fails the test instead.
+//!
+//! With `PANDITE_FORCE_FALLBACK_ADAPTER=1` the tests run on the software
+//! adapter (WARP on Windows, lavapipe or llvmpipe on Linux) instead of the
+//! hardware GPU. `WGPU_BACKEND` (for example `gl` on Linux) picks among
+//! several software adapters. `PANDITE_ADAPTER_NAME=radeon` runs them on
+//! the adapter whose name contains that text (ignoring case) instead of
+//! the default choice, the discrete GPU.
 
 mod animation;
 mod interface;
@@ -16,15 +23,39 @@ use pandite_core::{Color, DrawList, Rect, ViewState};
 use std::io::Write;
 use std::sync::{Arc, Once, OnceLock};
 
+/// True when the environment variable is set to anything but empty or "0".
+fn switch(name: &str) -> bool {
+    std::env::var(name).is_ok_and(|v| !v.is_empty() && v != "0")
+}
+
 fn require_gpu() -> bool {
-    std::env::var("PANDITE_REQUIRE_GPU").is_ok_and(|v| !v.is_empty() && v != "0")
+    switch("PANDITE_REQUIRE_GPU")
+}
+
+fn force_fallback() -> bool {
+    switch("PANDITE_FORCE_FALLBACK_ADAPTER")
+}
+
+/// `PANDITE_ADAPTER_NAME`: run on the adapter whose name contains it.
+fn adapter_name() -> Option<String> {
+    std::env::var("PANDITE_ADAPTER_NAME")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
 }
 
 /// The shared test device, or `None` (after a printed notice) when the
 /// machine has no adapter and `PANDITE_REQUIRE_GPU` is not set.
 pub(crate) fn gpu() -> Option<Arc<Gpu>> {
     static GPU: OnceLock<std::result::Result<Arc<Gpu>, String>> = OnceLock::new();
-    match GPU.get_or_init(|| Gpu::new(&GpuOptions::default()).map_err(|e| e.to_string())) {
+    let open = || {
+        let options = GpuOptions {
+            force_fallback_adapter: force_fallback(),
+            adapter_name: adapter_name(),
+            ..GpuOptions::default()
+        };
+        Gpu::new(&options).map_err(|e| e.to_string())
+    };
+    match GPU.get_or_init(open) {
         Ok(gpu) => Some(Arc::clone(gpu)),
         Err(err) => {
             assert!(
@@ -145,6 +176,70 @@ pub(crate) fn rgba8(w: u32, h: u32, f: impl Fn(u32, u32) -> [u8; 4]) -> pandite_
         }
     }
     pandite_core::ImageBuf::new(w, h, pandite_core::PixelFormat::Rgba8, data).expect("image")
+}
+
+#[test]
+fn fallback_adapter_is_software() {
+    if !force_fallback() {
+        let _ = writeln!(
+            std::io::stderr(),
+            "NOTICE: fallback_adapter_is_software checks nothing: \
+             PANDITE_FORCE_FALLBACK_ADAPTER is not set."
+        );
+        return;
+    }
+    let gpu = gpu_or_skip!();
+    let info = gpu.adapter().get_info();
+    // Written past the test harness capture so gate logs name the adapter.
+    let _ = writeln!(
+        std::io::stderr(),
+        "ADAPTER: {}, driver {} {}, max texture {}",
+        gpu.describe(),
+        info.driver,
+        info.driver_info,
+        gpu.max_texture_size()
+    );
+    assert_eq!(
+        info.device_type,
+        wgpu::DeviceType::Cpu,
+        "PANDITE_FORCE_FALLBACK_ADAPTER is set but the adapter is not a software one: {info:?}"
+    );
+}
+
+#[test]
+fn default_adapter_is_discrete_when_present() {
+    if force_fallback() || adapter_name().is_some() {
+        let _ = writeln!(
+            std::io::stderr(),
+            "NOTICE: default_adapter_is_discrete_when_present checks nothing: \
+             PANDITE_FORCE_FALLBACK_ADAPTER or PANDITE_ADAPTER_NAME is set."
+        );
+        return;
+    }
+    let adapters = crate::list_adapters(&GpuOptions::default());
+    let listed: Vec<String> = adapters.iter().map(ToString::to_string).collect();
+    let _ = writeln!(std::io::stderr(), "ADAPTERS: {}", listed.join("; "));
+    let gpu = gpu_or_skip!();
+    let _ = writeln!(std::io::stderr(), "ADAPTER IN USE: {}", gpu.describe());
+    if !adapters
+        .iter()
+        .any(|a| a.device_type == wgpu::DeviceType::DiscreteGpu)
+    {
+        let _ = writeln!(
+            std::io::stderr(),
+            "NOTICE: default_adapter_is_discrete_when_present: no discrete adapter here."
+        );
+        return;
+    }
+    assert_eq!(
+        gpu.adapter_summary().device_type,
+        wgpu::DeviceType::DiscreteGpu,
+        "the default options chose {} over a discrete GPU ({})",
+        gpu.describe(),
+        listed.join("; ")
+    );
+    // The best adapter of the list is the one in use.
+    assert_eq!(&adapters[0], gpu.adapter_summary());
 }
 
 #[test]

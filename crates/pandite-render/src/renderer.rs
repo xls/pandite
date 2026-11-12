@@ -2,7 +2,7 @@
 //! pass, and turns a [`ViewState`] plus a [`DrawList`] into a frame.
 
 use crate::color::clear_value;
-use crate::gpu::{Gpu, GpuOptions};
+use crate::gpu::{self, Gpu, GpuOptions};
 use crate::image::frame_params;
 use crate::pipelines::{DisplayPipelines, Pipelines, DEPTH_FORMAT, FRAME_PARAMS_SIZE};
 use crate::provider::{
@@ -157,7 +157,7 @@ pub(crate) fn frame_bind_group(
             },
             wgpu::BindGroupEntry {
                 binding: 1,
-                resource: wgpu::BindingResource::Sampler(&pipes.image_sampler),
+                resource: wgpu::BindingResource::Sampler(&pipes.sampler),
             },
         ],
     })
@@ -254,6 +254,10 @@ impl Renderer {
 
     /// Open the GPU for `window` and create a renderer presenting to it.
     ///
+    /// Adapters are tried in the order [`GpuOptions`] describes, keeping
+    /// only those that can present to the window. When opening a device or
+    /// configuring the surface fails on one, the next one is tried.
+    ///
     /// `window` is anything with raw window and display handles, for
     /// example winit's `Arc<Window>`; this crate does not depend on winit.
     /// `width` and `height` are the window's inner size in physical pixels.
@@ -274,15 +278,45 @@ impl Renderer {
             + Sync
             + 'static,
     {
-        let (gpu, surface) = Gpu::for_window(window.clone(), options)?;
-        let factory: SurfaceFactory = Box::new(move |instance: &wgpu::Instance| {
-            instance
-                .create_surface(wgpu::SurfaceTarget::from_window_without_display(
-                    window.clone(),
-                ))
-                .map_err(|e| Error::Backend(format!("cannot recreate the window surface: {e}")))
-        });
-        Self::with_surface_impl(gpu, surface, Some(factory), width, height, settings)
+        let (instance, surface) = gpu::window_instance(window.clone(), options)?;
+        let candidates = gpu::candidates(&instance, Some(&surface), options);
+        let mut surface = Some(surface);
+        let mut failures = Vec::new();
+        for adapter in candidates {
+            let gpu = match Gpu::open(instance.clone(), adapter) {
+                Ok(gpu) => Arc::new(gpu),
+                Err(err) => {
+                    failures.push(err.to_string());
+                    continue;
+                }
+            };
+            let target = window.clone();
+            let factory: SurfaceFactory = Box::new(move |instance: &wgpu::Instance| {
+                instance
+                    .create_surface(wgpu::SurfaceTarget::from_window_without_display(
+                        target.clone(),
+                    ))
+                    .map_err(|e| Error::Backend(format!("cannot recreate the window surface: {e}")))
+            });
+            // A failed attempt drops its surface: the next one gets a new one.
+            let this_surface = match surface.take() {
+                Some(s) => s,
+                None => factory(&instance)?,
+            };
+            let summary = gpu.describe();
+            match Self::with_surface_impl(
+                gpu,
+                this_surface,
+                Some(factory),
+                width,
+                height,
+                settings.clone(),
+            ) {
+                Ok(renderer) => return Ok(renderer),
+                Err(err) => failures.push(format!("{summary}: {err}")),
+            }
+        }
+        Err(gpu::no_adapter(options, &failures))
     }
 
     /// A renderer presenting to `surface`, which must come from
@@ -327,7 +361,12 @@ impl Renderer {
             view_formats: vec![],
         };
         if width > 0 && height > 0 {
-            surface.configure(gpu.device(), &config);
+            // In a scope, so a failure reaches the caller (and lets
+            // `for_window` try the next adapter).
+            gpu.scoped("window surface configuration", || {
+                surface.configure(gpu.device(), &config);
+                Ok(())
+            })?;
         }
         Self::build(
             gpu,

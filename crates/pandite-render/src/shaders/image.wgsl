@@ -23,8 +23,8 @@ struct DrawParams {
     tex_size: vec2<f32>,
     // Screen position the checkerboard is anchored to (image top-left).
     checker_origin: vec2<f32>,
-    // 1 selects crisp texel sampling for strong magnification.
-    crisp: u32,
+    // One of the MODE_ constants below, chosen from the zoom.
+    mode: u32,
     // 1 applies exposure and tone mapping (high dynamic range content).
     hdr: u32,
     // Explicit level of detail for the resample pass.
@@ -52,12 +52,20 @@ fn image_uv(pos: vec2<f32>) -> vec2<f32> {
     return mix(draw.uv.xy, draw.uv.zw, t);
 }
 
+// Sampling modes (DrawParams.mode).
+// Less than one screen pixel per texel: trilinear over the mip chain.
+const MODE_MINIFY: u32 = 0u;
+// One screen pixel per texel or more: bilinear on level 0.
+const MODE_MAGNIFY: u32 = 1u;
+// Strong magnification: flat texels with a one pixel seam.
+const MODE_CRISP: u32 = 2u;
+
 fn sample_image(pos: vec2<f32>) -> vec4<f32> {
     let uv = image_uv(pos);
     let texel = uv * draw.tex_size;
     // Texels per screen pixel. Computed before any branch (uniform control flow).
     let footprint = max(fwidth(texel), vec2<f32>(1.0e-6));
-    if (draw.crisp != 0u) {
+    if (draw.mode == MODE_CRISP) {
         // Crisp magnification: hold each texel flat and blend only across a
         // one screen pixel wide seam, so edges are sharp but not jagged at
         // fractional zoom factors.
@@ -65,7 +73,13 @@ fn sample_image(pos: vec2<f32>) -> vec4<f32> {
         let snapped = seam + clamp((texel - seam) / footprint, vec2<f32>(-0.5), vec2<f32>(0.5));
         return textureSampleLevel(image_texture, image_sampler, snapped / draw.tex_size, 0.0);
     }
-    // Trilinear and anisotropic minification, bilinear magnification.
+    if (draw.mode == MODE_MAGNIFY) {
+        // Level 0 by name, not from a level of detail estimated from
+        // derivatives, whose precision the specifications leave open: 1:1
+        // and integer zoom then map texel centers exactly onto pixels.
+        return textureSampleLevel(image_texture, image_sampler, uv, 0.0);
+    }
+    // Trilinear minification with a small negative level of detail bias.
     return textureSampleBias(image_texture, image_sampler, uv, frame.lod_bias);
 }
 
