@@ -1,12 +1,28 @@
 [package]
 name = "pandite-render"
+description = "wgpu renderer for pandite: content providers, filtered zoom and the interface pass"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+include = ["src/**", "fonts/**", "Cargo.toml"]
 
 [dependencies]
 pandite-core = { path = "../pandite-core" }
+bytemuck = { version = "1.25", default-features = false, features = ["min_const_generics"] }
+fontdue = { version = "0.9.5", default-features = false, features = ["std", "simd"] }
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "wgsl"] }
+
+# One native backend per platform keeps the binary small. WGSL is the only
+# shader language compiled in.
+[target.'cfg(windows)'.dependencies]
+wgpu = { version = "30.0.1", default-features = false, features = ["dx12"] }
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+wgpu = { version = "30.0.1", default-features = false, features = ["metal"] }
+
+[target.'cfg(all(unix, not(target_vendor = "apple")))'.dependencies]
+wgpu = { version = "30.0.1", default-features = false, features = ["vulkan", "gles"] }
 
 [lints]
 workspace = true
