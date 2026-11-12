@@ -1,0 +1,55 @@
+// Writes blocks.heic: a 64 x 64 HEIC of four solid color blocks, through
+// the Windows Imaging Component HEIF encoder.
+//
+// Cargo.toml of the throwaway program:
+//   [dependencies]
+//   windows = { version = "0.62", features = ["Win32_Foundation",
+//     "Win32_System_Com", "Win32_System_Com_StructuredStorage",
+//     "Win32_System_Variant", "Win32_Graphics_Imaging",
+//     "Win32_Storage_FileSystem"] }
+//
+// Run: cargo run -- <output path>
+use windows::core::*;
+use windows::Win32::Graphics::Imaging::*;
+use windows::Win32::System::Com::*;
+
+fn main() -> Result<()> {
+    let out = std::env::args().nth(1).expect("output path");
+    unsafe {
+        CoInitializeEx(None, COINIT_MULTITHREADED).ok()?;
+        let factory: IWICImagingFactory = CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)?;
+        let stream = factory.CreateStream()?;
+        let wide: Vec<u16> = out.encode_utf16().chain(Some(0)).collect();
+        stream.InitializeFromFilename(PCWSTR(wide.as_ptr()), 0x40000000)?; // GENERIC_WRITE
+        let encoder = factory.CreateEncoder(&GUID_ContainerFormatHeif, std::ptr::null())?;
+        encoder.Initialize(&stream, WICBitmapEncoderNoCache)?;
+        let mut frame = None;
+        let mut props = None;
+        encoder.CreateNewFrame(&mut frame, &mut props)?;
+        let frame = frame.unwrap();
+        frame.Initialize(props.as_ref())?;
+        let (w, h) = (64u32, 64u32);
+        frame.SetSize(w, h)?;
+        let mut fmt = GUID_WICPixelFormat32bppBGRA;
+        frame.SetPixelFormat(&mut fmt)?;
+        println!("pixel format accepted: {:?}", fmt);
+        let mut px = vec![0u8; (w * h * 4) as usize];
+        for y in 0..h {
+            for x in 0..w {
+                let (r, g, b) = match (x / 32, y / 32) {
+                    (0, 0) => (230u8, 30u8, 30u8),
+                    (1, 0) => (30, 200, 40),
+                    (0, 1) => (30, 40, 220),
+                    _ => (240, 240, 240),
+                };
+                let i = ((y * w + x) * 4) as usize;
+                px[i..i + 4].copy_from_slice(&[b, g, r, 255]);
+            }
+        }
+        frame.WritePixels(h, w * 4, &px)?;
+        frame.Commit()?;
+        encoder.Commit()?;
+        stream.Commit(STGC_DEFAULT)?;
+    }
+    Ok(())
+}

@@ -21,7 +21,9 @@ all = { level = "warn", priority = -1 }
 opt-level = "s"
 lto = "fat"
 codegen-units = 1
-panic = "abort"
+# Unwind, not abort: decoders run inside a panic guard so a hostile file
+# becomes an error instead of closing the app.
+panic = "unwind"
 strip = true
 debug = false
 

@@ -1,0 +1,488 @@
+//! HEIC and HEIF through the operating system codec: Windows Imaging
+//! Component on Windows (needs the HEIF and HEVC extensions from the
+//! Microsoft Store) and ImageIO on macOS. Linux has no provider.
+//!
+//! This is the only module with `unsafe` code: COM and CoreFoundation calls.
+//! Each block states why it is sound.
+
+#![allow(unsafe_code)]
+
+use crate::util::{self, check_size, corrupt};
+use crate::{icc, jpeg, orient};
+use pandite_core::{
+    CancelToken, Content, ContentKind, DecodeOptions, DecoderProvider, ImageBuf, ImageMeta,
+    Orientation, PixelFormat, Result, Source,
+};
+
+const FORMAT: &str = "heic";
+
+/// Decodes HEIC and HEIF files with the platform codec.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct HeicDecoder;
+
+/// True for HEIF brands that are not AVIF.
+fn is_heif(header: &[u8]) -> bool {
+    let mut heif = false;
+    for b in util::ftyp_brands(header) {
+        match &b {
+            b"avif" | b"avis" => return false,
+            b"heic" | b"heix" | b"hevc" | b"hevx" | b"heim" | b"heis" | b"hevm" | b"hevs"
+            | b"mif1" | b"msf1" | b"mif2" => heif = true,
+            _ => {}
+        }
+    }
+    heif
+}
+
+impl DecoderProvider for HeicDecoder {
+    fn id(&self) -> &'static str {
+        FORMAT
+    }
+
+    fn name(&self) -> &'static str {
+        "HEIF image (system codec)"
+    }
+
+    fn extensions(&self) -> &'static [&'static str] {
+        &["heic", "heif"]
+    }
+
+    fn sniff(&self, header: &[u8]) -> bool {
+        is_heif(header)
+    }
+
+    fn probe(&self, source: &Source) -> Result<ImageMeta> {
+        let (w, h, orientation) = os::probe(source.bytes())?;
+        let (width, height) = jpeg::oriented(w, h, orientation);
+        Ok(ImageMeta {
+            width,
+            height,
+            format: FORMAT,
+            kind: ContentKind::Still,
+            frame_count: 1,
+            has_alpha: false,
+            orientation,
+        })
+    }
+
+    fn decode(&self, source: &Source, options: &DecodeOptions) -> Result<Content> {
+        options.cancel.check()?;
+        let (image, orientation) =
+            util::guard(FORMAT, || os::decode(source.bytes(), &options.cancel))?;
+        Ok(Content::Still(orient::apply(image, orientation)?))
+    }
+}
+
+/// Finish a decoded RGBA8 buffer: color management, then the image.
+fn finish(w: u32, h: u32, mut rgba: Vec<u8>, profile: Option<&[u8]>) -> Result<ImageBuf> {
+    icc::to_srgb_rgba8(profile, &mut rgba);
+    util::rgba8_image(w, h, rgba)
+}
+
+#[cfg(windows)]
+mod os {
+    use super::*;
+    use pandite_core::Error;
+    use windows::core::w;
+    use windows::Win32::Graphics::Imaging::{
+        CLSID_WICImagingFactory, GUID_WICPixelFormat32bppRGBA, IWICBitmapFrameDecode,
+        IWICColorContext, IWICImagingFactory, WICBitmapDitherTypeNone, WICBitmapPaletteTypeCustom,
+        WICColorContextProfile, WICDecodeMetadataCacheOnDemand,
+    };
+    use windows::Win32::System::Com::StructuredStorage::{
+        PropVariantClear, PropVariantToUInt16, PROPVARIANT,
+    };
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
+        COINIT_MULTITHREADED,
+    };
+
+    fn backend(what: &str, e: windows::core::Error) -> Error {
+        Error::Backend(format!("{FORMAT}: {what}: {e}"))
+    }
+
+    /// Balances a successful `CoInitializeEx` on this thread.
+    struct ComScope(bool);
+
+    impl ComScope {
+        fn enter() -> Self {
+            // SAFETY: CoInitializeEx has no preconditions. A thread already
+            // in a single-threaded apartment returns RPC_E_CHANGED_MODE; COM
+            // is usable then and must not be uninitialized by us.
+            let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+            ComScope(hr.is_ok())
+        }
+    }
+
+    impl Drop for ComScope {
+        fn drop(&mut self) {
+            if self.0 {
+                // SAFETY: paired with the successful CoInitializeEx in
+                // `enter` on the same thread; all COM objects created in the
+                // scope are dropped before this guard (declared first).
+                unsafe { CoUninitialize() };
+            }
+        }
+    }
+
+    /// Open the first frame. The returned objects borrow `data` through
+    /// the WIC stream, so they must not outlive it; callers keep both in
+    /// one function scope.
+    fn open(data: &[u8]) -> Result<(IWICImagingFactory, IWICBitmapFrameDecode)> {
+        // SAFETY: plain COM calls on interfaces we own. The stream reads
+        // from `data`, which the caller keeps alive while the frame lives.
+        unsafe {
+            let factory: IWICImagingFactory =
+                CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)
+                    .map_err(|e| backend("no imaging factory", e))?;
+            let stream = factory.CreateStream().map_err(|e| backend("stream", e))?;
+            stream
+                .InitializeFromMemory(data)
+                .map_err(|e| backend("stream", e))?;
+            let decoder = factory
+                .CreateDecoderFromStream(&stream, std::ptr::null(), WICDecodeMetadataCacheOnDemand)
+                .map_err(|e| {
+                    Error::Unsupported(format!(
+                        "{FORMAT}: no system codec could open the file ({e}); install the HEIF \
+                         and HEVC extensions"
+                    ))
+                })?;
+            let frame = decoder.GetFrame(0).map_err(|e| corrupt(FORMAT, e))?;
+            Ok((factory, frame))
+        }
+    }
+
+    fn size(frame: &IWICBitmapFrameDecode) -> Result<(u32, u32)> {
+        let (mut w, mut h) = (0u32, 0u32);
+        // SAFETY: GetSize writes two u32 values through valid pointers.
+        unsafe { frame.GetSize(&mut w, &mut h) }.map_err(|e| corrupt(FORMAT, e))?;
+        Ok((w, h))
+    }
+
+    fn orientation(frame: &IWICBitmapFrameDecode) -> Orientation {
+        // SAFETY: the query reader belongs to the frame; the PROPVARIANT is
+        // zero initialized, filled by WIC and cleared before it drops.
+        unsafe {
+            let Ok(reader) = frame.GetMetadataQueryReader() else {
+                return Orientation::Normal;
+            };
+            for name in [w!("System.Photo.Orientation"), w!("/heifProps/{ushort=1}")] {
+                let mut value = PROPVARIANT::default();
+                if reader.GetMetadataByName(name, &mut value).is_ok() {
+                    let v = PropVariantToUInt16(&value).unwrap_or(1);
+                    let _ = PropVariantClear(&mut value);
+                    return Orientation::from_exif(v);
+                }
+            }
+        }
+        Orientation::Normal
+    }
+
+    fn profile(factory: &IWICImagingFactory, frame: &IWICBitmapFrameDecode) -> Option<Vec<u8>> {
+        // SAFETY: GetColorContexts first reports the count, then fills
+        // contexts we created; GetProfileBytes writes into a buffer of the
+        // size it reported.
+        unsafe {
+            let mut count = 0u32;
+            frame.GetColorContexts(&mut [], &mut count).ok()?;
+            if count == 0 {
+                return None;
+            }
+            let mut contexts: Vec<Option<IWICColorContext>> = Vec::new();
+            for _ in 0..count.min(8) {
+                contexts.push(Some(factory.CreateColorContext().ok()?));
+            }
+            let mut actual = 0u32;
+            frame.GetColorContexts(&mut contexts, &mut actual).ok()?;
+            for ctx in contexts.iter().flatten().take(actual as usize) {
+                if ctx.GetType().ok()? != WICColorContextProfile {
+                    continue;
+                }
+                let mut len = 0u32;
+                ctx.GetProfileBytes(&mut [], &mut len).ok()?;
+                let mut bytes = vec![0u8; len as usize];
+                ctx.GetProfileBytes(&mut bytes, &mut len).ok()?;
+                return Some(bytes);
+            }
+        }
+        None
+    }
+
+    pub(super) fn probe(data: &[u8]) -> Result<(u32, u32, Orientation)> {
+        let _com = ComScope::enter();
+        let (_factory, frame) = open(data)?;
+        let (w, h) = size(&frame)?;
+        Ok((w, h, orientation(&frame)))
+    }
+
+    pub(super) fn decode(data: &[u8], cancel: &CancelToken) -> Result<(ImageBuf, Orientation)> {
+        let _com = ComScope::enter();
+        let (factory, frame) = open(data)?;
+        let (w, h) = size(&frame)?;
+        let len = check_size(w, h, PixelFormat::Rgba8)?;
+        cancel.check()?;
+        let mut rgba = util::alloc(len, w, h)?;
+        // SAFETY: the converter reads from the frame we own and writes
+        // exactly `stride * h` bytes into `rgba`, which has that length.
+        unsafe {
+            let converter = factory
+                .CreateFormatConverter()
+                .map_err(|e| backend("converter", e))?;
+            converter
+                .Initialize(
+                    &frame,
+                    &GUID_WICPixelFormat32bppRGBA,
+                    WICBitmapDitherTypeNone,
+                    None,
+                    0.0,
+                    WICBitmapPaletteTypeCustom,
+                )
+                .map_err(|e| corrupt(FORMAT, e))?;
+            converter
+                .CopyPixels(std::ptr::null(), w * 4, &mut rgba)
+                .map_err(|e| corrupt(FORMAT, e))?;
+        }
+        let icc = profile(&factory, &frame);
+        let orientation = orientation(&frame);
+        Ok((finish(w, h, rgba, icc.as_deref())?, orientation))
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod os {
+    use super::*;
+    use std::ffi::c_void;
+
+    type CFTypeRef = *const c_void;
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct CGPoint {
+        x: f64,
+        y: f64,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct CGSize {
+        width: f64,
+        height: f64,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct CGRect {
+        origin: CGPoint,
+        size: CGSize,
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFDataCreateWithBytesNoCopy(
+            allocator: CFTypeRef,
+            bytes: *const u8,
+            length: isize,
+            deallocator: CFTypeRef,
+        ) -> CFTypeRef;
+        fn CFRelease(cf: CFTypeRef);
+        fn CFDictionaryGetValue(dict: CFTypeRef, key: CFTypeRef) -> CFTypeRef;
+        fn CFNumberGetValue(number: CFTypeRef, the_type: isize, value: *mut c_void) -> u8;
+        static kCFAllocatorNull: CFTypeRef;
+    }
+
+    #[link(name = "ImageIO", kind = "framework")]
+    extern "C" {
+        fn CGImageSourceCreateWithData(data: CFTypeRef, options: CFTypeRef) -> CFTypeRef;
+        fn CGImageSourceGetCount(source: CFTypeRef) -> usize;
+        fn CGImageSourceCreateImageAtIndex(
+            source: CFTypeRef,
+            index: usize,
+            options: CFTypeRef,
+        ) -> CFTypeRef;
+        fn CGImageSourceCopyPropertiesAtIndex(
+            source: CFTypeRef,
+            index: usize,
+            options: CFTypeRef,
+        ) -> CFTypeRef;
+        static kCGImagePropertyOrientation: CFTypeRef;
+        static kCGImagePropertyPixelWidth: CFTypeRef;
+        static kCGImagePropertyPixelHeight: CFTypeRef;
+    }
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGImageGetWidth(image: CFTypeRef) -> usize;
+        fn CGImageGetHeight(image: CFTypeRef) -> usize;
+        fn CGColorSpaceCreateWithName(name: CFTypeRef) -> CFTypeRef;
+        fn CGColorSpaceRelease(space: CFTypeRef);
+        fn CGBitmapContextCreate(
+            data: *mut c_void,
+            width: usize,
+            height: usize,
+            bits_per_component: usize,
+            bytes_per_row: usize,
+            space: CFTypeRef,
+            bitmap_info: u32,
+        ) -> CFTypeRef;
+        fn CGContextDrawImage(context: CFTypeRef, rect: CGRect, image: CFTypeRef);
+        fn CGContextRelease(context: CFTypeRef);
+        fn CGImageRelease(image: CFTypeRef);
+        static kCGColorSpaceSRGB: CFTypeRef;
+    }
+
+    /// kCFNumberSInt64Type.
+    const CF_NUMBER_SINT64: isize = 4;
+    /// kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big.
+    const RGBA_PREMULTIPLIED: u32 = 1 | (4 << 12);
+
+    /// Owns one CoreFoundation reference.
+    struct Cf(CFTypeRef);
+
+    impl Drop for Cf {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                // SAFETY: the pointer came from a Create or Copy function,
+                // so we own exactly one reference.
+                unsafe { CFRelease(self.0) };
+            }
+        }
+    }
+
+    /// An image source over `data`. The source must not outlive `data`:
+    /// the CFData wraps the slice without copying.
+    fn source(data: &[u8]) -> Result<(Cf, Cf)> {
+        let len = isize::try_from(data.len()).map_err(|_| corrupt(FORMAT, "file too large"))?;
+        // SAFETY: CFDataCreateWithBytesNoCopy with kCFAllocatorNull wraps
+        // the slice without taking ownership; callers drop both returned
+        // objects before `data` goes away.
+        unsafe {
+            let cfdata = Cf(CFDataCreateWithBytesNoCopy(
+                std::ptr::null(),
+                data.as_ptr(),
+                len,
+                kCFAllocatorNull,
+            ));
+            if cfdata.0.is_null() {
+                return Err(corrupt(FORMAT, "cannot wrap data"));
+            }
+            let src = Cf(CGImageSourceCreateWithData(cfdata.0, std::ptr::null()));
+            if src.0.is_null() || CGImageSourceGetCount(src.0) == 0 {
+                return Err(pandite_core::Error::Unsupported(format!(
+                    "{FORMAT}: ImageIO cannot open the file"
+                )));
+            }
+            // Drop order: the source first, then the data it reads.
+            Ok((src, cfdata))
+        }
+    }
+
+    fn number(dict: CFTypeRef, key: CFTypeRef) -> Option<i64> {
+        // SAFETY: `dict` is a live CFDictionary; the value, when present,
+        // is a CFNumber borrowed from it (Get rule, no release).
+        unsafe {
+            let v = CFDictionaryGetValue(dict, key);
+            if v.is_null() {
+                return None;
+            }
+            let mut out: i64 = 0;
+            (CFNumberGetValue(v, CF_NUMBER_SINT64, &mut out as *mut i64 as *mut c_void) != 0)
+                .then_some(out)
+        }
+    }
+
+    fn properties(src: &Cf) -> (Option<u32>, Option<u32>, Orientation) {
+        // SAFETY: the properties dictionary is a Copy result we release.
+        unsafe {
+            let props = Cf(CGImageSourceCopyPropertiesAtIndex(
+                src.0,
+                0,
+                std::ptr::null(),
+            ));
+            if props.0.is_null() {
+                return (None, None, Orientation::Normal);
+            }
+            let w = number(props.0, kCGImagePropertyPixelWidth).and_then(|v| u32::try_from(v).ok());
+            let h =
+                number(props.0, kCGImagePropertyPixelHeight).and_then(|v| u32::try_from(v).ok());
+            let o = number(props.0, kCGImagePropertyOrientation)
+                .map(|v| Orientation::from_exif(v as u16))
+                .unwrap_or_default();
+            (w, h, o)
+        }
+    }
+
+    pub(super) fn probe(data: &[u8]) -> Result<(u32, u32, Orientation)> {
+        let (src, _data) = source(data)?;
+        match properties(&src) {
+            (Some(w), Some(h), o) => Ok((w, h, o)),
+            _ => Err(corrupt(FORMAT, "no image size")),
+        }
+    }
+
+    pub(super) fn decode(data: &[u8], cancel: &CancelToken) -> Result<(ImageBuf, Orientation)> {
+        let (src, _data) = source(data)?;
+        let (_, _, orientation) = properties(&src);
+        // SAFETY: every Create result is checked for null and owned by a
+        // guard; the bitmap context draws into `rgba`, which has exactly
+        // `w * 4 * h` bytes and outlives the context.
+        unsafe {
+            let image = CGImageSourceCreateImageAtIndex(src.0, 0, std::ptr::null());
+            if image.is_null() {
+                return Err(corrupt(FORMAT, "ImageIO could not decode the image"));
+            }
+            struct Img(CFTypeRef);
+            impl Drop for Img {
+                fn drop(&mut self) {
+                    // SAFETY: owned reference from CGImageSourceCreateImageAtIndex.
+                    unsafe { CGImageRelease(self.0) };
+                }
+            }
+            let image = Img(image);
+            let (w, h) = (CGImageGetWidth(image.0), CGImageGetHeight(image.0));
+            let (w32, h32) = (
+                u32::try_from(w).map_err(|_| corrupt(FORMAT, "bad width"))?,
+                u32::try_from(h).map_err(|_| corrupt(FORMAT, "bad height"))?,
+            );
+            let len = check_size(w32, h32, PixelFormat::Rgba8)?;
+            cancel.check()?;
+            let mut rgba = util::alloc(len, w32, h32)?;
+            let space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+            if space.is_null() {
+                return Err(corrupt(FORMAT, "no sRGB color space"));
+            }
+            let ctx = CGBitmapContextCreate(
+                rgba.as_mut_ptr().cast(),
+                w,
+                h,
+                8,
+                w * 4,
+                space,
+                RGBA_PREMULTIPLIED,
+            );
+            CGColorSpaceRelease(space);
+            if ctx.is_null() {
+                return Err(corrupt(FORMAT, "cannot create a bitmap context"));
+            }
+            let rect = CGRect {
+                origin: CGPoint { x: 0.0, y: 0.0 },
+                size: CGSize {
+                    width: w as f64,
+                    height: h as f64,
+                },
+            };
+            CGContextDrawImage(ctx, rect, image.0);
+            CGContextRelease(ctx);
+            // The context stores premultiplied alpha.
+            for p in rgba.chunks_exact_mut(4) {
+                let a = u32::from(p[3]);
+                if a != 0 && a != 255 {
+                    for c in &mut p[..3] {
+                        *c = ((u32::from(*c) * 255 + a / 2) / a).min(255) as u8;
+                    }
+                }
+            }
+            // ImageIO already converted to sRGB while drawing.
+            Ok((finish(w32, h32, rgba, None)?, orientation))
+        }
+    }
+}

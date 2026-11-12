@@ -1,12 +1,79 @@
 [package]
 name = "pandite-codecs"
+description = "Image decoder and encoder providers for the pandite viewer."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+# Base formats (JPEG, PNG, APNG, GIF, WebP, BMP) are always compiled.
+# Every extended format sits behind its own feature, all on by default.
+default = [
+    "tiff",
+    "tga",
+    "ico",
+    "qoi",
+    "avif",
+    "jxl",
+    "dds",
+    "ktx2",
+    "exr",
+    "hdr",
+    "svg",
+    "svg-text",
+    "psd",
+    "raw",
+    "heic",
+    "icc",
+]
+tiff = ["dep:tiff", "dep:weezl", "dep:flate2"]
+tga = []
+ico = []
+qoi = ["dep:qoi"]
+avif = ["dep:sqzer-rav1d"]
+jxl = ["dep:jxl", "dep:bytemuck"]
+dds = ["dep:bcdec_rs", "dep:texture2ddecoder"]
+ktx2 = ["dep:bcdec_rs", "dep:texture2ddecoder", "dep:ruzstd", "dep:flate2"]
+exr = ["dep:exr"]
+hdr = []
+svg = ["dep:resvg"]
+# Text in SVG documents (shaping and system fonts); a large share of the
+# SVG renderer's size.
+svg-text = ["svg", "resvg/text", "resvg/system-fonts", "resvg/memmap-fonts"]
+psd = ["dep:flate2"]
+raw = []
+# HEIC and HEIF through the operating system codec: Windows Imaging
+# Component on Windows, ImageIO on macOS. No provider exists on other systems.
+heic = ["dep:windows"]
+# Convert embedded ICC profiles (wide gamut RGB, CMYK) to sRGB.
+icc = ["dep:moxcms"]
+
 [dependencies]
 pandite-core = { path = "../pandite-core" }
+# Base formats.
+gif = { version = "0.14", default-features = false, features = ["std"] }
+image-webp = { version = "0.2", default-features = false }
+jpeg-decoder = { version = "0.3", default-features = false }
+jpeg-encoder = { version = "0.7", default-features = false, features = ["std"] }
+png = { version = "0.18", default-features = false }
+# Extended formats, each enabled by its feature.
+bcdec_rs = { version = "0.2", default-features = false, optional = true }
+bytemuck = { version = "1", default-features = false, optional = true }
+exr = { version = "1.74", default-features = false, optional = true }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"], optional = true }
+jxl = { version = "0.8", default-features = false, optional = true }
+moxcms = { version = "0.9", default-features = false, features = ["lut"], optional = true }
+qoi = { version = "0.4", default-features = false, features = ["std"], optional = true }
+resvg = { version = "0.50", default-features = false, features = ["raster-images"], optional = true }
+ruzstd = { version = "0.9", default-features = false, features = ["std"], optional = true }
+sqzer-rav1d = { version = "0.1", default-features = false, features = ["bitdepth_8", "bitdepth_16"], optional = true }
+texture2ddecoder = { version = "0.1", default-features = false, features = ["alloc"], optional = true }
+tiff = { version = "0.11", default-features = false, features = ["deflate", "lzw", "jpeg", "fax"], optional = true }
+weezl = { version = "0.1", default-features = false, features = ["alloc"], optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", default-features = false, features = ["std", "Win32_Foundation", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_Graphics_Imaging"], optional = true }
 
 [lints]
 workspace = true
