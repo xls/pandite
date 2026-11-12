@@ -1,5 +1,6 @@
 [package]
 name = "pandite-library"
+description = "Folder listing, read-ahead decoding and thumbnails for the pandite viewer. Standard library only."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
