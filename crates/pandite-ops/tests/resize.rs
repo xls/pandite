@@ -56,7 +56,7 @@ fn pxf32(img: &ImageBuf) -> Vec<[f32; 4]> {
 }
 
 fn checker(x: u32, y: u32) -> bool {
-    (x + y) % 2 == 0
+    (x + y).is_multiple_of(2)
 }
 
 /// sRGB code of linear 0.5: the true average brightness of black and white.
