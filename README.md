@@ -30,7 +30,7 @@ into the program on any platform.
 
 ## Features
 
-- Opens 36 file extensions: JPEG, PNG, APNG, GIF, WebP, BMP, TIFF, Targa,
+- Opens 37 file extensions: JPEG, PNG, APNG, GIF, WebP, BMP, TIFF, Targa,
   ICO, QOI, AVIF, HEIC, JPEG XL, DDS, KTX2, OpenEXR, Radiance HDR, SVG,
   Photoshop and ten camera RAW formats. See [docs/formats.md](docs/formats.md).
 - Plays animated GIF, APNG, WebP and JPEG XL.

@@ -1,4 +1,5 @@
-//! HEIC and HEIF through the operating system codec: Windows Imaging
+//! HEIC and HEIF (and Sony's `.hif` name for HEIF) through the operating
+//! system codec: Windows Imaging
 //! Component on Windows (needs the HEIF and HEVC extensions from the
 //! Microsoft Store) and ImageIO on macOS. Linux has no provider.
 //!
@@ -44,7 +45,7 @@ impl DecoderProvider for HeicDecoder {
     }
 
     fn extensions(&self) -> &'static [&'static str] {
-        &["heic", "heif"]
+        &["heic", "heif", "hif"]
     }
 
     fn sniff(&self, header: &[u8]) -> bool {
@@ -213,6 +214,30 @@ mod os {
         let (_factory, frame) = open(data)?;
         let (w, h) = size(&frame)?;
         Ok((w, h, orientation(&frame)))
+    }
+
+    /// The codec's native pixel format of the first frame: its GUID, bits
+    /// per pixel and channel count. For tests that report bit depths.
+    #[cfg(test)]
+    pub(super) fn source_format(data: &[u8]) -> Result<(String, u32, u32)> {
+        use windows::core::Interface;
+        use windows::Win32::Graphics::Imaging::IWICPixelFormatInfo;
+        let _com = ComScope::enter();
+        let (factory, frame) = open(data)?;
+        // SAFETY: plain COM calls on interfaces owned by this scope.
+        unsafe {
+            let guid = frame
+                .GetPixelFormat()
+                .map_err(|e| backend("pixel format", e))?;
+            let info: IWICPixelFormatInfo = factory
+                .CreateComponentInfo(&guid)
+                .map_err(|e| backend("component info", e))?
+                .cast()
+                .map_err(|e| backend("pixel format info", e))?;
+            let bpp = info.GetBitsPerPixel().map_err(|e| backend("bits", e))?;
+            let channels = info.GetChannelCount().map_err(|e| backend("channels", e))?;
+            Ok((format!("{guid:?}"), bpp, channels))
+        }
     }
 
     pub(super) fn decode(data: &[u8], cancel: &CancelToken) -> Result<(ImageBuf, Orientation)> {
@@ -483,6 +508,75 @@ mod os {
             }
             // ImageIO already converted to sRGB while drawing.
             Ok((finish(w32, h32, rgba, None)?, orientation))
+        }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    /// Decodes the `.hif` files (Sony's name for HEIF) in the folder named
+    /// by `PANDITE_HIF_SAMPLES` through Windows Imaging Component and
+    /// prints the codec's native bit depth. Opt-in: needs the HEIF and HEVC
+    /// extensions of the operating system and sample files.
+    #[test]
+    #[ignore = "needs the HEIF and HEVC codecs of the operating system and HIF samples"]
+    fn hif_decodes_through_os_codec() {
+        let Ok(dir) = std::env::var("PANDITE_HIF_SAMPLES") else {
+            println!("skip: PANDITE_HIF_SAMPLES is not set");
+            return;
+        };
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let folder = root.join(dir);
+        let mut files: Vec<_> = std::fs::read_dir(&folder)
+            .expect("sample folder")
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| {
+                p.extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| e.eq_ignore_ascii_case("hif"))
+            })
+            .collect();
+        files.sort();
+        assert!(!files.is_empty(), "no .HIF files in {}", folder.display());
+        for path in files {
+            let data = std::fs::read(&path).unwrap();
+            assert!(is_heif(&data[..data.len().min(64)]), "HEIF brand");
+            let (guid, bpp, channels) = os::source_format(&data).expect("WIC opens the file");
+            // GUID_WICPixelFormat32bppBGR: 8 bits per channel and one
+            // padding byte.
+            let name = if guid.eq_ignore_ascii_case("6FDDC324-4E03-4BFE-B185-3D77768DC90E") {
+                "32bppBGR, 8 bits per channel"
+            } else {
+                "other"
+            };
+            // The encoded HEVC stream: hvcC (ISO/IEC 14496-15) byte 16 holds
+            // chroma_format_idc, bytes 17 and 18 the bit depths minus 8.
+            let coded = data
+                .windows(4)
+                .take(1 << 20)
+                .position(|w| w == b"hvcC")
+                .and_then(|i| data.get(i + 4..i + 4 + 19))
+                .map(|c| {
+                    let chroma = ["4:0:0", "4:2:0", "4:2:2", "4:4:4"][usize::from(c[16] & 3)];
+                    format!("{chroma}, {} / {} bits", (c[17] & 7) + 8, (c[18] & 7) + 8)
+                })
+                .unwrap_or_else(|| "no hvcC box".into());
+            let start = std::time::Instant::now();
+            let source = Source::from_bytes(data, Some(path.clone()));
+            let content = HeicDecoder
+                .decode(&source, &DecodeOptions::default())
+                .expect("WIC decodes the file");
+            let img = content.first_image();
+            println!(
+                "{}: coded HEVC {coded}; WIC native format {guid} ({name}), {bpp} bits per pixel, {channels} channels; decoded {}x{} {:?} in {:.2}s",
+                path.file_name().unwrap().to_string_lossy(),
+                img.width(),
+                img.height(),
+                img.format(),
+                start.elapsed().as_secs_f64()
+            );
         }
     }
 }

@@ -12,7 +12,7 @@ if (!fmt) { console.error('usage: rawtrace.mjs <format>'); process.exit(2); }
 const specPath = `specs/raw/${fmt}.md`;
 if (!existsSync(specPath)) { console.error(`STEP FAILED: ${specPath} missing`); process.exit(1); }
 const tag = `R-${fmt.toUpperCase()}-`;
-const wanted = new Set([...readFileSync(specPath, 'utf8').matchAll(new RegExp(`\b${tag}\d+\b`, 'g'))].map((m) => m[0]));
+const wanted = new Set([...readFileSync(specPath, 'utf8').matchAll(new RegExp(`${tag}[0-9]+(?![0-9])`, 'g'))].map((m) => m[0]));
 if (wanted.size < 25) { console.error(`STEP FAILED: spec has only ${wanted.size} requirements`); process.exit(1); }
 const found = new Set();
 const walk = (dir) => {
@@ -20,7 +20,7 @@ const walk = (dir) => {
     const p = join(dir, name);
     if (statSync(p).isDirectory()) walk(p);
     else if (p.endsWith('.rs')) {
-      for (const m of readFileSync(p, 'utf8').matchAll(new RegExp(`\b${tag}\d+\b`, 'g'))) found.add(m[0]);
+      for (const m of readFileSync(p, 'utf8').matchAll(new RegExp(`${tag}[0-9]+(?![0-9])`, 'g'))) found.add(m[0]);
     }
   }
 };

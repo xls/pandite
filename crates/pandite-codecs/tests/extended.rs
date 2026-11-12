@@ -951,7 +951,7 @@ fn heic_provider_registered() {
     let found = reg().decoders().iter().find(|d| d.id() == "heic");
     if cfg!(any(windows, target_os = "macos")) {
         let d = found.expect("the HEIC provider is registered on Windows and macOS");
-        assert_eq!(d.extensions(), &["heic", "heif"]);
+        assert_eq!(d.extensions(), &["heic", "heif", "hif"]);
         // HEIF brands are claimed, AVIF brands are left to the AVIF decoder.
         let heic = b"\0\0\0\x18ftypheic\0\0\0\0mif1heic";
         assert!(d.sniff(heic));
@@ -959,6 +959,8 @@ fn heic_provider_registered() {
         let src = source(heic, "photo.HEIC");
         assert_eq!(reg().decoder_for(&src).map(|p| p.id()), Some("heic"));
         assert!(reg().can_open_path(std::path::Path::new("x.heif")));
+        // Sony cameras name their HEIF files .HIF.
+        assert!(reg().can_open_path(std::path::Path::new("DSC00001.HIF")));
     } else {
         assert!(found.is_none(), "no HEIC provider without an OS codec");
     }

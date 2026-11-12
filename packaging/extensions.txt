@@ -13,6 +13,7 @@ gif
 hdr
 heic
 heif
+hif
 ico
 jfif
 jpe

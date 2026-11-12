@@ -22,7 +22,7 @@ crate prints it with `cargo run -p pandite-codecs --example extensions`.
 | Icon and cursor | .ico .cur | Shows the largest image in the file. |
 | QOI | .qoi | |
 | AVIF | .avif | 8, 10 and 12-bit, alpha, HDR (PQ and HLG). An animated AVIF shows its primary still image when the file has one. |
-| HEIC and HEIF | .heic .heif | Operating system codec. See "HEIC and HEIF" below. |
+| HEIC and HEIF | .heic .heif .hif | Operating system codec. See "HEIC and HEIF" below. |
 | JPEG XL | .jxl | Stills and animations. |
 | DDS | .dds | Shows the top mip level of the first surface. Legacy and DX10 headers, BC compression. |
 | KTX2 | .ktx2 | Shows the top mip level. Uncompressed, BC, ETC, EAC and ASTC data. Basis Universal data is not supported. |

@@ -284,14 +284,14 @@ fn default_registry_covers_contract_extensions() {
     // The contract list from the plan: every extension the viewer opens.
     const CONTRACT: &[&str] = &[
         "jpg", "jpeg", "jpe", "jfif", "png", "apng", "gif", "webp", "bmp", "dib", "tif", "tiff",
-        "tga", "ico", "cur", "qoi", "avif", "heic", "heif", "jxl", "dds", "ktx2", "exr", "hdr",
-        "svg", "psd", "dng", "cr2", "cr3", "nef", "arw", "raf", "orf", "rw2", "pef", "srw",
+        "tga", "ico", "cur", "qoi", "avif", "heic", "heif", "hif", "jxl", "dds", "ktx2", "exr",
+        "hdr", "svg", "psd", "dng", "cr2", "cr3", "nef", "arw", "raf", "orf", "rw2", "pef", "srw",
     ];
 
     let mut want: Vec<&str> = CONTRACT.to_vec();
     if !cfg!(any(windows, target_os = "macos")) {
         // HEIC uses the operating system codec, which Linux lacks.
-        want.retain(|e| *e != "heic" && *e != "heif");
+        want.retain(|e| *e != "heic" && *e != "heif" && *e != "hif");
     }
     want.sort_unstable();
     let have = reg().decodable_extensions();

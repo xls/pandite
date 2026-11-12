@@ -6,15 +6,19 @@
 //! white balance, the color matrix to sRGB, baseline exposure and the
 //! orientation tag. The result is a 16-bit sRGB image.
 //!
-//! The proprietary formats (CR2, CR3, NEF, ARW, RAF, ORF, RW2, PEF, SRW)
+//! Sony ARW files are developed from sensor data by the [`arw`] module,
+//! written from the clean-room specification `specs/raw/arw.md`, with the
+//! same 16-bit sRGB output. Its out-of-scope variants show their preview.
+//!
+//! The other proprietary formats (CR2, CR3, NEF, RAF, ORF, RW2, PEF, SRW)
 //! show the camera's embedded JPEG preview, the largest one in the file
-//! (full resolution on most cameras). No permissively licensed pure Rust
-//! decoder for their sensor data exists; the maintained ones are LGPL.
-//! DNG files whose sensor data uses an unsupported compression fall back
-//! to their preview as well.
+//! (full resolution on most cameras). DNG files whose sensor data uses an
+//! unsupported compression fall back to their preview as well.
 //!
 //! With `DecodeOptions::target_size`, the smallest preview that still
 //! covers the target is used, which makes thumbnails fast.
+
+mod arw;
 
 use crate::exif::{tag, Entry, Tiff};
 use crate::util::{self, check_size, corrupt, guard, unsupported};
@@ -56,7 +60,7 @@ pub(crate) fn is_camera_raw(source: &Source) -> bool {
         return true;
     }
     let d = source.bytes();
-    if distinctive_signature(d) {
+    if distinctive_signature(d) || arw::is_arw(d, None) {
         return true;
     }
     let Some(t) = Tiff::new(d) else {
@@ -96,6 +100,19 @@ impl DecoderProvider for RawDecoder {
     fn probe(&self, source: &Source) -> Result<ImageMeta> {
         guard(FORMAT, || {
             let d = source.bytes();
+            if use_arw(source) {
+                if let Some((w, h, orientation)) = arw::probe(d)? {
+                    return Ok(ImageMeta {
+                        width: w,
+                        height: h,
+                        format: FORMAT,
+                        kind: ContentKind::Still,
+                        frame_count: 1,
+                        has_alpha: false,
+                        orientation,
+                    });
+                }
+            }
             let orientation = container_orientation(d);
             let (w, h) = match dng_info(d) {
                 Some(info) => info.output_size(),
@@ -122,8 +139,26 @@ impl DecoderProvider for RawDecoder {
 
     fn decode(&self, source: &Source, options: &DecodeOptions) -> Result<Content> {
         options.cancel.check()?;
-        guard(FORMAT, || decode(source.bytes(), options)).map(Content::Still)
+        guard(FORMAT, || {
+            if use_arw(source) {
+                if let Some(img) = arw::decode(source.bytes(), options)? {
+                    return Ok(img);
+                }
+            }
+            decode(source.bytes(), options)
+        })
+        .map(Content::Still)
     }
+}
+
+/// True when the ARW decoder handles the source: not a DNG, and either the
+/// `.arw` extension or a Sony TIFF structure.
+fn use_arw(source: &Source) -> bool {
+    let d = source.bytes();
+    arw::is_arw(d, source.extension().as_deref())
+        && !Tiff::new(d)
+            .and_then(|t| t.ifd(t.first_ifd()?))
+            .is_some_and(|(ifd0, _)| ifd0.iter().any(|e| e.tag == tag::DNG_VERSION))
 }
 
 /// One embedded JPEG preview.

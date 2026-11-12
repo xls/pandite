@@ -173,6 +173,7 @@
             <uap:SupportedFileTypes>
               <uap:FileType>.heic</uap:FileType>
               <uap:FileType>.heif</uap:FileType>
+              <uap:FileType>.hif</uap:FileType>
             </uap:SupportedFileTypes>
           </uap3:FileTypeAssociation>
         </uap3:Extension>
