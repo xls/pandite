@@ -211,12 +211,9 @@ To measure recognition time against the size limit for large images, run:
 cargo run --release -p pandite-ocr --example ocr_bench
 ```
 
-The GitHub runners have no GPU, only software rasterizers. On Linux, the
-CI runs the renderer tests on the Mesa software rasterizer with
-`PANDITE_REQUIRE_GPU=1` and `PANDITE_FORCE_FALLBACK_ADAPTER=1`. In the
-workspace test step, the CI sets `WGPU_BACKEND` to a backend that the
-build does not contain, so the GPU tests skip there. Run the full GPU tests
-on a computer with a real GPU.
+The GitHub runners have no GPU. The CI runs the unit tests only. It sets
+`WGPU_BACKEND` to a backend that the build does not contain, so the GPU
+tests skip there. Run the GPU tests on a computer with a real GPU.
 
 ## Packaging files
 
