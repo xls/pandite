@@ -1,216 +1,131 @@
-# pandite
+<p align="center">
+  <img src="packaging/linux/icons/hicolor/128x128/apps/pandite.png" width="112" height="112" alt="Pandite logo">
+</p>
 
-pandite is an image viewer for Windows, macOS and Linux. Open a picture and
-it is on screen. Press the arrow key and the next one is already there. It
-works offline, and a file that is stuck on a cloud drive cannot freeze it.
+<h1 align="center">Pandite</h1>
 
-## Why pandite
+<p align="center"><b>Sick and tired of slow image viewing? Pandite is for you.</b></p>
 
-Most viewers stop and wait when a file is slow to arrive. pandite does
-not. Every file read and every decode runs on a worker thread, so the
-window keeps drawing and Esc always answers: it closes pandite at once,
-also in the middle of a load. When a file on a cloud drive or a network
-share takes its time, pandite shows a loading screen that you can leave
-at once. On Windows, pandite also knows which OneDrive files are
-only placeholders. It reads ahead only the files that are already on your
-disk, so browsing a folder does not start downloads behind your back.
+<p align="center">
+  <a href="https://github.com/xls/pandite/actions/workflows/ci.yml"><img src="https://github.com/xls/pandite/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/xls/pandite/releases"><img src="https://img.shields.io/github/v/release/xls/pandite?include_prereleases&label=release" alt="Release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-informational" alt="Windows, macOS, Linux">
+  <img src="https://img.shields.io/badge/arch-x64%20%7C%20ARM64-informational" alt="x64, ARM64">
+  <img src="https://img.shields.io/badge/rust-1.87%2B-orange" alt="Rust 1.87 or later">
+  <img src="https://img.shields.io/badge/GPU-Direct3D%2012%20%7C%20Metal%20%7C%20Vulkan-success" alt="Direct3D 12, Metal, Vulkan">
+  <img src="https://img.shields.io/badge/network-none-success" alt="No network code">
+</p>
 
-pandite reads ahead. After it shows an image, it decodes the next and the
-previous images and the thumbnails for the gallery strip, inside a fixed
-memory budget. When you press the arrow key, the work is usually done
-already.
+<p align="center">
+  <a href="#performance">Performance</a> |
+  <a href="#formats">Formats</a> |
+  <a href="#features">Features</a> |
+  <a href="#install">Install</a> |
+  <a href="#build">Build</a>
+</p>
 
-pandite draws with the GPU (Direct3D 12, Metal, Vulkan or OpenGL ES).
-Zoomed out, images are filtered through a full mipmap chain, so fine detail
-stays clean instead of shimmering. Zoomed in past 3x, every image pixel is
-a crisp square.
+Pandite is a GPU image viewer for Windows, macOS and Linux, written in
+Rust with wgpu. It is one executable of 12 MiB. It has no account, no
+telemetry and no network code.
 
-pandite is one executable. It has no account, no telemetry and no network
-code. On every push, the CI checks that no networking library is linked
-into the program on any platform.
+**Made for** photographers who page through folders of 60 MP camera
+files, and for anyone who wants a picture on screen the moment they
+open it.
+
+## Performance
+
+Time from program start to the picture on screen, measured by
+`pandite --smoke <file> --timing` on a release build. Machine: AMD Ryzen 9
+9950X3D, Windows 11, Direct3D 12.
+
+| File | GPU | First picture | Full resolution |
+|---|---|---|---|
+| Sony ARW, 9504 x 6336 (60 MP) | NVIDIA RTX 5090 | 47 to 60 ms | 47 to 60 ms |
+| Sony ARW, 9504 x 6336 (60 MP) | AMD Radeon integrated | 356 to 389 ms | 356 to 389 ms |
+| Sony JPEG, camera original | AMD Radeon integrated | 181 ms | 571 ms |
+| JPEG, 1280 x 720 | NVIDIA RTX 5090 | 56 ms | 56 ms |
+
+The test suite fails when a first picture takes longer than 200 ms for
+ARW or 300 ms for JPEG on the discrete GPU.
+
+How Pandite gets these times:
+
+- Every file read and decode runs on a worker thread. The window never
+  waits for a file, also not for a stalled cloud or network file.
+- The next and previous images and the thumbnails decode ahead, inside a
+  fixed memory budget. One thread stays free for the image you select.
+- Camera files show their embedded preview first, then the full image.
+- Decoders use SIMD. Textures get a full mipmap chain on the GPU.
+- On Windows, Pandite stays in the background after you close it and keeps
+  the GPU device and the thumbnails of the last folder. The next image
+  opens without a new program start.
+
+## Formats
+
+37 file extensions. Details and limits: [docs/formats.md](docs/formats.md).
+
+| Format | Extensions | Notes |
+|---|---|---|
+| JPEG | .jpg .jpeg .jpe .jfif | Baseline, progressive, lossless. Gray, YCbCr, RGB, CMYK, YCCK |
+| PNG, APNG | .png .apng | Every color type and bit depth. Animation |
+| GIF | .gif | Animation |
+| WebP | .webp | Lossy, lossless, alpha. Animation |
+| AVIF | .avif | 8, 10 and 12-bit, alpha, HDR (PQ, HLG) |
+| HEIC, HEIF | .heic .heif .hif | Codec of the operating system. Not on Linux |
+| JPEG XL | .jxl | Stills and animation, HDR |
+| TIFF | .tif .tiff | Integer to 32-bit, float to 64-bit. LZW, Deflate, PackBits, JPEG, CCITT |
+| BMP | .bmp .dib | 1 to 32 bits per pixel, RLE, bit fields |
+| Targa | .tga | Color-mapped, true-color, gray, RLE |
+| Icon, cursor | .ico .cur | Largest image in the file |
+| QOI | .qoi | |
+| DDS | .dds | Legacy and DX10 headers, BC compression |
+| KTX2 | .ktx2 | Uncompressed, BC, ETC, EAC, ASTC |
+| OpenEXR | .exr | HDR, tone mapped |
+| Radiance HDR | .hdr | HDR, tone mapped |
+| SVG | .svg | System fonts, embedded and linked images |
+| Photoshop | .psd | Stored composite image |
+| Camera RAW | .dng .cr2 .cr3 .nef .arw .raf .orf .rw2 .pef .srw | See docs/formats.md |
+
+Writes PNG, JPEG, lossless WebP and BMP.
 
 ## Features
 
-- Opens 37 file extensions: JPEG, PNG, APNG, GIF, WebP, BMP, TIFF, Targa,
-  ICO, QOI, AVIF, HEIC, JPEG XL, DDS, KTX2, OpenEXR, Radiance HDR, SVG,
-  Photoshop and ten camera RAW formats. See [docs/formats.md](docs/formats.md).
-- Plays animated GIF, APNG, WebP and JPEG XL.
-- Shows HDR images (OpenEXR, Radiance HDR, HDR AVIF) with tone mapping.
-- Converts embedded color profiles to sRGB and turns photos upright from
-  their EXIF orientation.
-- Fit to window, 1:1, and zoom at the mouse pointer. F11 for full screen.
-- A gallery strip of thumbnails along the bottom. Scroll it with the wheel.
-- Press I for the facts of the image: file size, pixel size, format and
-  codec, channels and bit depth, compression ratio, animation timing,
-  color profile and the camera settings. See
-  [Image information](#image-information).
-- Rotate, flip, crop and resize. Edits change only the view until you
-  choose Save as, and pandite asks before it writes over the original.
-- Save as PNG, JPEG, WebP (lossless) or BMP.
-- Bulk convert and resize a set of files or a whole folder.
-- Ctrl+C copies the image to the clipboard at full resolution, with your
-  rotation, flip and crop applied. The copy runs in the background.
-- Select and copy the text in an image, on Windows. See
-  [Text in images](#text-in-images).
-- Ctrl+Shift+C, or a toolbar button, copies the path of the current file.
-- Remembers the window size and position. On first open, the window takes
-  a share of the screen and the image fits inside it.
-- A minimal dark interface that steps aside for the image and follows the
-  light or dark theme of the system.
+- **Gallery strip.** Thumbnails of the folder along the bottom. G shows
+  or hides it.
+- **Zoom.** Fit, 1:1 and zoom at the pointer. Past 3x, each image pixel
+  is a crisp square.
+- **Edit.** Rotate, flip, crop and resize with undo. Save as PNG, JPEG,
+  WebP or BMP.
+- **Bulk convert.** Convert and resize a set of files or a whole folder.
+- **Text in images (Windows).** Select and copy the text in a picture
+  with the mouse. The Windows recognizer reads it offline.
+- **Image information.** I shows file size, pixel size, codec, channels,
+  bit depth, compression ratio, color profile and camera settings.
+- **Copy.** Ctrl+C copies the image, Ctrl+Shift+C copies the file path.
+- **Color.** Embedded ICC profiles convert to sRGB. HDR images are tone
+  mapped. Photos turn upright from their EXIF orientation.
+- **Stall safe.** A file stuck on a cloud drive cannot freeze the window.
+  Esc always quits at once.
+- **Offline.** No account, no telemetry, no network code. CI checks that
+  no networking library is linked.
 
-## Text in images
-
-On Windows, pandite reads the text in the image on screen. Point at a word
-and the pointer becomes a text cursor. Drag across words to select them,
-double-click a word or triple-click a line, or press Ctrl+A for all the
-text. Keep the button down after a double-click or a triple-click and drag
-to add whole words or whole lines. Ctrl+C then copies the text, with one
-line for each line in the image. Without a selection, Ctrl+C copies the
-image itself. Esc closes pandite, also while text is selected. Click the
-image away from the text to clear a selection.
-
-The reading happens on your computer, with the text recognizer that comes
-with Windows, so it works offline. It starts in the background once the
-image is on screen, so the image always comes first. The recognizer reads
-upright text best. When you rotate or flip the image, pandite reads it
-again the way it now stands, so a photo that opens on its side gets its
-text when you turn it upright. Turn it back and the earlier text returns
-at once. The recognizer needs an OCR language, and Windows installs one
-with most display languages. Without one, pandite shows no text features.
-macOS and Linux have no text features yet. To turn the feature off, set
-`ocr = off` in the settings file.
-[docs/text-recognition.md](docs/text-recognition.md) has the details.
-
-## Image information
-
-Press I to show the facts of the image on screen in a panel in the bottom
-right corner of the window. Press I again to hide it. The panel follows
-you to the next image, and pandite remembers whether it was open.
-
-The panel lists the file name, folder, size and modification time, the
-pixel size, megapixels and aspect ratio, the format, codec and FourCC, the
-channels and bits, the chroma subsampling of a JPEG, the size without
-compression and the compression ratio, and the color space and embedded
-color profile. For an animation it adds the frame count, the length, the
-frame rate and the loop count. It also shows how long the decode took, and
-the camera, lens and exposure settings that the file records. A fact that
-the file does not state gets no line. pandite reads these facts from the
-file headers, so the panel does not slow down the image.
-
-The panel is not a dialog. Every key and every mouse action works as
-before, and Esc still closes pandite.
+Keys: [docs/shortcuts.md](docs/shortcuts.md), or F1 in the program.
+Text recognition: [docs/text-recognition.md](docs/text-recognition.md).
 
 ## Install
 
-### Windows
+Release packages come from the
+[releases page](https://github.com/xls/pandite/releases).
 
-1. Download `pandite-<version>-x86_64-pc-windows-msvc.zip` from the
-   [releases page](https://github.com/xls/pandite/releases). On an ARM64
-   computer, download the `aarch64-pc-windows-msvc` zip.
-2. Extract the zip to a folder.
-3. Start `pandite.exe`.
-4. To open images with pandite from File Explorer, run this command once
-   in the folder of the program:
+| System | Package | Steps |
+|---|---|---|
+| Windows x64, ARM64 | `pandite-<version>-<target>.zip` | Extract. Run `pandite.exe --register` once to add Pandite to Open with and Default apps. |
+| macOS 11+, universal | `pandite-<version>-universal-apple-darwin.dmg` | Drag to Applications. The app is not notarized: allow it in Privacy and Security. |
+| Linux x86_64, glibc 2.35+ | `pandite-<version>-x86_64-unknown-linux-gnu.tar.gz` | Extract. Run `./install.sh` to install for your user. |
 
-   ```text
-   pandite.exe --register
-   ```
-
-   The command adds pandite to "Open with" and to Default apps for each
-   supported file type, for your user account only. It needs no
-   administrator rights. pandite then opens each file type that you did
-   not give to a different program in Settings. Windows keeps the choices
-   you made in Settings. The command opens the Default apps page, where
-   you can change them.
-5. If you move the program to a different folder, run the command again.
-6. To remove the entries, run `pandite.exe --unregister`.
-
-A Microsoft Store version is in preparation. It registers the file types
-itself and adds automatic updates.
-
-### macOS
-
-pandite needs macOS 11 or later and runs natively on Apple Silicon and Intel.
-
-1. Download `pandite-<version>-universal-apple-darwin.dmg` from the
-   [releases page](https://github.com/xls/pandite/releases).
-2. Open the disk image and drag pandite to Applications.
-3. The app is not notarized. When macOS blocks the first start, open
-   System Settings, Privacy and Security, and select Open Anyway. If the
-   button does not show, run this command in Terminal:
-
-   ```sh
-   xattr -dr com.apple.quarantine /Applications/pandite.app
-   ```
-
-### Linux
-
-pandite needs an x86_64 system with glibc 2.35 or later, and a Vulkan or
-OpenGL ES driver (Mesa supplies both).
-
-1. Download `pandite-<version>-x86_64-unknown-linux-gnu.tar.gz` from the
-   [releases page](https://github.com/xls/pandite/releases).
-2. Extract it:
-
-   ```sh
-   tar -xzf pandite-<version>-x86_64-unknown-linux-gnu.tar.gz
-   cd pandite-<version>-x86_64-unknown-linux-gnu
-   ```
-
-3. Start pandite from this folder with `./pandite`, or install it for your
-   user (`~/.local`) with `./install.sh`. To remove it, run
-   `./install.sh --uninstall`.
-
-HEIC and HEIF files do not open on Linux. On Windows and macOS, pandite
-reads them through the image codec of the system. On Windows, that codec
-comes from "HEIF Image Extensions" and "HEVC Video Extensions" in the
-Microsoft Store.
-
-To check a download, compare its SHA-256 hash with `SHA256SUMS.txt` on the
-releases page.
-
-## Quick start
-
-1. Open an image. Use one of these methods:
-   - Start pandite with the file: `pandite photo.jpg`.
-   - Start pandite and press Ctrl+O.
-   - On Windows and Linux, open the image with pandite from the file
-     manager (Open with).
-2. Press Right or Space for the next image. Press Left or Backspace for the
-   previous image.
-3. Turn the mouse wheel to zoom at the pointer. Drag the image to pan.
-4. Press F to fit the image to the window. Press 1 for 1:1.
-5. Press F1 to see every keyboard shortcut.
-
-## Key shortcuts
-
-On macOS, use Command for Ctrl and Option for Alt.
-
-| Keys | Command |
-|---|---|
-| Right, Space / Left, Backspace | Next image / previous image |
-| Home / End | First image / last image |
-| F or 0 / 1 | Fit to window / actual size (1:1) |
-| + / - | Zoom in / zoom out |
-| F11 | Full screen |
-| G | Show or hide the gallery strip |
-| I | Show or hide the image information panel |
-| R / Shift+R | Rotate right / rotate left |
-| H / V | Flip horizontal / flip vertical |
-| C | Crop |
-| Ctrl+R | Resize |
-| Ctrl+B | Bulk convert and resize |
-| Ctrl+Shift+S | Save as |
-| Ctrl+C | Copy the image, or the selected text when text is selected |
-| Ctrl+Shift+C | Copy the file path |
-| Ctrl+A | Select all the text in the image (Windows) |
-| Ctrl+Z | Undo |
-| Esc | Close the open dialog or menu. With none open, quit pandite |
-| Ctrl+Q / Ctrl+W | Quit pandite |
-| F1 | Show all shortcuts |
-
-The full list, with the mouse actions, is in
-[docs/shortcuts.md](docs/shortcuts.md).
+On Windows, HEIC needs "HEIF Image Extensions" and "HEVC Video
+Extensions" from the Microsoft Store.
 
 ## Command line
 
@@ -227,56 +142,23 @@ pandite [options] [--] [<image>]
   -V, --version       show the version
 ```
 
-pandite keeps its settings in `%APPDATA%\pandite\settings.ini` on Windows,
-`~/Library/Application Support/pandite/settings.ini` on macOS and
-`~/.config/pandite/settings.ini` (or `$XDG_CONFIG_HOME/pandite`) on Linux.
-In the Microsoft Store version, Windows keeps the file in the private
-folder of the app. The file explains each setting. For example,
-`ocr = off` turns off the reading of text in images, and
-`info_panel = on` opens the image information panel at start.
+Settings file: `%APPDATA%\pandite\settings.ini` on Windows,
+`~/Library/Application Support/pandite/settings.ini` on macOS,
+`~/.config/pandite/settings.ini` on Linux. The file explains each setting.
 
-### Instant open on Windows
+## Build
 
-On Windows, pandite stays in the background when you close its window. It
-frees every image first. It keeps the open graphics device, a few megabytes
-of memory and the thumbnails of the last folder, up to the thumbnail cache
-limit (`thumbnail_cache_mb`, 64 MB by default). The next image you open
-appears in about a tenth of a second, because the program does not start
-again. If that image is in the same folder, the gallery shows the kept
-thumbnails at once and makes new ones only for files that changed. If no
-image opens within 30 minutes, pandite frees the thumbnails too.
+Rust 1.87 or later. Linux needs the libraries in
+[docs/building.md](docs/building.md).
 
-- To have the first image of a session open as fast, start
-  `pandite --background` when you sign in.
-- To end the program that waits, run `pandite --quit`.
-- To turn the behavior off, set `stay_ready = false` in the settings file.
+```sh
+cargo build --release -p pandite-app
+./target/release/pandite
+```
 
-While a pandite window is open, another image you open from the file
-manager gets its own window, as before.
-
-## Build from source
-
-1. Install Rust 1.87 or later from https://rustup.rs.
-2. On Linux, install the libraries in [docs/building.md](docs/building.md).
-3. Build and start pandite:
-
-   ```sh
-   cargo build --release -p pandite-app
-   ./target/release/pandite
-   ```
-
-[docs/building.md](docs/building.md) gives the steps for each system and for
-the release packages. [docs/store-submission.md](docs/store-submission.md)
-gives the steps for the Microsoft Store.
-
-## Status
-
-This release is for 2D images. Support for 3D formats (STL, OBJ, FBX and
-glTF) is planned for a later release. This release does not open them.
+Store packaging: [docs/store-submission.md](docs/store-submission.md).
 
 ## License
 
-pandite is released under the [MIT License](LICENSE). The licenses of the
-libraries in pandite, the IJG attribution and the SIL Open Font License of
-the embedded Fira Sans font are in
+[MIT](LICENSE). Third-party licenses:
 [docs/THIRD-PARTY-NOTICES.md](docs/THIRD-PARTY-NOTICES.md).
