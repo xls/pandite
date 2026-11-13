@@ -189,6 +189,8 @@ The full list, with the mouse actions, is in
 pandite [options] [--] [<image>]
 
   --config-dir <dir>  keep settings in this folder
+  --background        Windows: start hidden and wait for the first image
+  --quit              Windows: end the pandite that waits in the background
   --register          Windows: add pandite to Open with and Default apps
                       for every supported file type (this user only)
   --unregister        Windows: remove what --register added
@@ -202,6 +204,21 @@ pandite keeps its settings in `%APPDATA%\pandite\settings.ini` on Windows,
 In the Microsoft Store version, Windows keeps the file in the private
 folder of the app. The file explains each setting. For example,
 `ocr = off` turns off the reading of text in images.
+
+### Instant open on Windows
+
+On Windows, pandite stays in the background when you close its window. It
+frees every image first and keeps a few megabytes of memory and the open
+graphics device. The next image you open appears in about a tenth of a
+second, because the program does not start again.
+
+- To have the first image of a session open as fast, start
+  `pandite --background` when you sign in.
+- To end the program that waits, run `pandite --quit`.
+- To turn the behavior off, set `stay_ready = false` in the settings file.
+
+While a pandite window is open, another image you open from the file
+manager gets its own window, as before.
 
 ## Build from source
 

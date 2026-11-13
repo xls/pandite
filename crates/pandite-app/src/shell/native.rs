@@ -366,6 +366,23 @@ pub fn paint_background(window: &Window, color: pandite_core::Color) {
     let _ = (window, color);
 }
 
+/// Turn off the system's animation when the window opens and closes
+/// (Windows; nothing elsewhere), so an image is on screen the moment the
+/// window shows.
+pub fn disable_transitions(window: &Window) {
+    #[cfg(windows)]
+    {
+        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        if let Ok(handle) = window.window_handle() {
+            if let RawWindowHandle::Win32(h) = handle.as_raw() {
+                win::disable_transitions(h.hwnd.get());
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = window;
+}
+
 /// Every monitor, the primary one first.
 pub fn monitors(
     primary: Option<MonitorHandle>,
@@ -438,6 +455,35 @@ mod win {
     extern "system" {
         fn CreateSolidBrush(color: u32) -> isize;
         fn DeleteObject(object: isize) -> i32;
+    }
+
+    #[link(name = "dwmapi")]
+    extern "system" {
+        fn DwmSetWindowAttribute(
+            hwnd: isize,
+            attribute: u32,
+            value: *const std::ffi::c_void,
+            size: u32,
+        ) -> i32;
+    }
+
+    /// The window attribute that turns its open and close animation off.
+    const DWMWA_TRANSITIONS_FORCEDISABLED: u32 = 3;
+
+    /// Turn off the open and close animation of `hwnd`.
+    pub fn disable_transitions(hwnd: isize) {
+        let on: i32 = 1;
+        // SAFETY: `hwnd` is the live window of this process; `on` is a
+        // BOOL valid for reads of the size passed. A failure changes
+        // nothing.
+        unsafe {
+            DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_TRANSITIONS_FORCEDISABLED,
+                std::ptr::from_ref(&on).cast(),
+                std::mem::size_of::<i32>() as u32,
+            );
+        }
     }
 
     /// Index of the background brush in the window class.

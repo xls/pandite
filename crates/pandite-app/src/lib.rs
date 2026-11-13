@@ -26,6 +26,7 @@ pub mod edit;
 pub mod icon;
 pub mod platform;
 pub mod register;
+pub mod resident;
 pub mod settings;
 pub mod shell;
 #[cfg(test)]
