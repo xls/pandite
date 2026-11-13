@@ -31,7 +31,7 @@ const diff = (a, b) => [...a].filter((x) => !b.has(x)).sort();
 
 // HEIC and HEIF decode through the operating system codec (WIC, ImageIO).
 // Linux has none, so the desktop entry leaves them out.
-const LINUX_EXCLUDED = new Set(['heic', 'heif']);
+const LINUX_EXCLUDED = new Set(['heic', 'heif', 'hif']);
 
 const MIME_EXT = {
   'image/jpeg': ['jpg', 'jpeg', 'jpe', 'jfif'],
@@ -54,7 +54,7 @@ const MIME_EXT = {
   'image/x-qoi': ['qoi'],
   'image/avif': ['avif'],
   'image/heic': ['heic'],
-  'image/heif': ['heif'],
+  'image/heif': ['heif', 'hif'],
   'image/jxl': ['jxl'],
   'image/x-dds': ['dds'],
   'image/ktx2': ['ktx2'],
