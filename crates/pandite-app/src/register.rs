@@ -33,6 +33,8 @@ pub struct Registration {
     /// Application name: the `RegisteredApplications` value and the
     /// `Software\<name>` key.
     pub name: String,
+    /// The application name people see in "Open with" and Default apps.
+    pub display: String,
     /// The program to start, absolute.
     pub exe: PathBuf,
     /// Extensions without the dot, lowercase.
@@ -62,6 +64,7 @@ impl Registration {
         let registry = pandite_codecs::default_registry();
         Ok(Self {
             name: "pandite".into(),
+            display: "Pandite".into(),
             exe: std::env::current_exe()?,
             extensions: registry
                 .decodable_extensions()
@@ -110,7 +113,7 @@ impl Registration {
         key(
             &mut t,
             &format!(r"{CLASSES}\{prog}"),
-            &[("", quoted(&format!("{} image", self.name)))],
+            &[("", quoted(&format!("{} image", self.display)))],
         );
         key(
             &mut t,
@@ -120,14 +123,14 @@ impl Registration {
         key(
             &mut t,
             &format!(r"{CLASSES}\{prog}\shell\open"),
-            &[("FriendlyAppName", quoted(&self.name))],
+            &[("FriendlyAppName", quoted(&self.display))],
         );
         key(
             &mut t,
             &format!(r"{CLASSES}\{prog}\shell\open\command"),
             &[("", quoted(&command))],
         );
-        key(&mut t, &app, &[("FriendlyAppName", quoted(&self.name))]);
+        key(&mut t, &app, &[("FriendlyAppName", quoted(&self.display))]);
         key(
             &mut t,
             &format!(r"{app}\shell\open\command"),
@@ -150,7 +153,7 @@ impl Registration {
             &mut t,
             &caps,
             &[
-                ("ApplicationName", quoted(&self.name)),
+                ("ApplicationName", quoted(&self.display)),
                 (
                     "ApplicationDescription",
                     quoted("A fast, offline image viewer"),
@@ -322,6 +325,7 @@ mod tests {
     fn sample() -> Registration {
         Registration {
             name: "pandite".into(),
+            display: "Pandite".into(),
             exe: PathBuf::from(r"C:\Tools\pan dite\pandite.exe"),
             extensions: vec!["png".into(), "arw".into()],
         }
@@ -362,6 +366,9 @@ mod tests {
             "[HKEY_CURRENT_USER\\Software\\RegisteredApplications]\r\n\"pandite\"=\"Software\\\\pandite\\\\Capabilities\""
         ));
         assert!(text.contains(r"\Applications\pandite.exe\shell\open\command]"));
+        assert!(text.contains("\"FriendlyAppName\"=\"Pandite\""));
+        assert!(text.contains("\"ApplicationName\"=\"Pandite\""));
+        assert!(text.contains("@=\"Pandite image\""));
         assert!(text.is_ascii());
     }
 
@@ -405,6 +412,7 @@ mod tests {
         let name = format!("pandite-selftest-{}", std::process::id());
         let reg = Registration {
             name: name.clone(),
+            display: "Pandite selftest".into(),
             exe: PathBuf::from(format!(r"C:\No Such Folder\{name}.exe")),
             extensions: vec![format!("{name}-ext")],
         };
