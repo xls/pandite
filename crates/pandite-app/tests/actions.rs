@@ -15,6 +15,8 @@ fn sample(kind: ActionKind, dir: &std::path::Path) -> Action {
         ActionKind::SaveAs => Action::SaveAs,
         ActionKind::CopyPath => Action::CopyPath,
         ActionKind::CopyImage => Action::CopyImage,
+        ActionKind::MoveToTrash => Action::MoveToTrash,
+        ActionKind::DeleteFile => Action::DeleteFile,
         ActionKind::CopyText => Action::CopyText("some text".into()),
         ActionKind::RequestPaste => Action::RequestPaste,
         ActionKind::RotateLeft => Action::RotateLeft,
@@ -61,6 +63,7 @@ fn sample(kind: ActionKind, dir: &std::path::Path) -> Action {
         ActionKind::Next => Action::Next,
         ActionKind::Previous => Action::Previous,
         ActionKind::GoTo => Action::GoTo(0),
+        ActionKind::StepBy => Action::StepBy(1),
         ActionKind::ToggleGallery => Action::ToggleGallery,
         ActionKind::ToggleInfo => Action::ToggleInfo,
         ActionKind::ConfirmResult => Action::ConfirmResult {
@@ -79,6 +82,8 @@ fn kind_of(action: &Action) -> ActionKind {
         Action::SaveAs => ActionKind::SaveAs,
         Action::CopyPath => ActionKind::CopyPath,
         Action::CopyImage => ActionKind::CopyImage,
+        Action::MoveToTrash => ActionKind::MoveToTrash,
+        Action::DeleteFile => ActionKind::DeleteFile,
         Action::CopyText(_) => ActionKind::CopyText,
         Action::RequestPaste => ActionKind::RequestPaste,
         Action::RotateLeft => ActionKind::RotateLeft,
@@ -107,6 +112,7 @@ fn kind_of(action: &Action) -> ActionKind {
         Action::Next => ActionKind::Next,
         Action::Previous => ActionKind::Previous,
         Action::GoTo(_) => ActionKind::GoTo,
+        Action::StepBy(_) => ActionKind::StepBy,
         Action::ToggleGallery => ActionKind::ToggleGallery,
         Action::ToggleInfo => ActionKind::ToggleInfo,
         Action::ConfirmResult { .. } => ActionKind::ConfirmResult,
@@ -152,6 +158,16 @@ fn every_action_has_a_handler() {
                     "the image reached the clipboard"
                 );
             }
+            ActionKind::MoveToTrash => {
+                assert!(h.wait_until(|a| !a.deleting()));
+                assert_eq!(h.disk.removals(), [("trash", "a.png".to_string())]);
+                assert!(!paths[0].exists());
+            }
+            ActionKind::DeleteFile => {
+                // It only asks; the answer comes from the dialog.
+                assert_eq!(h.app().ui().mode(), pandite_ui::UiMode::Modal);
+                assert_eq!(h.disk.removals().len(), 1);
+            }
             ActionKind::CopyText => assert_eq!(h.clipboard().as_deref(), Some("some text")),
             ActionKind::RequestPaste => {
                 assert_eq!(result, Handled::Paste("some text".into()))
@@ -169,7 +185,7 @@ fn every_action_has_a_handler() {
         handled.push(kind);
         h.pump();
     }
-    assert_eq!(handled.len(), 36);
+    assert_eq!(handled.len(), 39);
     // The dialogs asked for: open, save, bulk files, bulk folder and bulk
     // destination.
     assert_eq!(lock(&h.dialogs).shown.len(), 5);

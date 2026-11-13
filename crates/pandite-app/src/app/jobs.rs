@@ -1,6 +1,6 @@
 //! Background jobs of the application core: edits, Save As, image
 //! copies, size probes, folder resolution, bulk conversion, text
-//! recognition and settings writes.
+//! recognition, file removal and settings writes.
 //!
 //! Each job runs on its own thread, touches the disk only through
 //! [`Disk`], and reports with one [`Msg`] followed by a wake of the event
@@ -197,6 +197,44 @@ pub(crate) fn copy_image(out: Outbox, job: CopyJob) -> std::io::Result<()> {
             Err(err) => Copied::Failed(err.to_string()),
         };
         out.send(Msg::Copied { id, outcome });
+    })
+}
+
+/// How a file removal ended: on failure, the kind of error and why.
+pub(crate) type Removal = Result<(), (std::io::ErrorKind, String)>;
+
+/// What a file removal needs.
+pub(crate) struct DeleteJob {
+    pub id: u64,
+    pub path: PathBuf,
+    /// Remove the file for good instead of moving it to the trash.
+    pub permanent: bool,
+}
+
+/// Move a file to the trash of the system, or remove it for good. The
+/// event loop never waits for this thread.
+pub(crate) fn delete(out: Outbox, disk: Arc<dyn Disk>, job: DeleteJob) -> std::io::Result<()> {
+    spawn("pandite-delete", move || {
+        let DeleteJob {
+            id,
+            path,
+            permanent,
+        } = job;
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            if permanent {
+                disk.remove_file(&path)
+            } else {
+                disk.trash(&path)
+            }
+        }))
+        .unwrap_or_else(|_| Err(std::io::Error::other("the delete stopped unexpectedly")))
+        .map_err(|err| (err.kind(), err.to_string()));
+        out.send(Msg::Deleted {
+            id,
+            path,
+            permanent,
+            result,
+        });
     })
 }
 

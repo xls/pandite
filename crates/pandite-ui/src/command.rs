@@ -20,6 +20,10 @@ pub enum Command {
     CopyPath,
     /// Copy the image on screen, with its view edits, as pixels.
     CopyImage,
+    /// Move the current file to the trash of the system.
+    MoveToTrash,
+    /// Remove the current file for good, after a question.
+    DeleteFile,
     /// Undo the last view edit.
     Undo,
     /// Rotate 90 degrees counterclockwise.
@@ -56,6 +60,10 @@ pub enum Command {
     Previous,
     /// Next image.
     Next,
+    /// Back by the number of thumbnails that fit in the gallery strip.
+    PagePrevious,
+    /// Forward by the number of thumbnails that fit in the gallery strip.
+    PageNext,
     /// First image in the folder.
     First,
     /// Last image in the folder.
@@ -89,13 +97,15 @@ pub enum Command {
 
 impl Command {
     /// Every command, in the order the shortcut overlay lists them.
-    pub const ALL: [Command; 36] = [
+    pub const ALL: [Command; 40] = [
         Command::Open,
         Command::SaveAs,
         Command::CopyImage,
         Command::CopyPath,
         Command::CopyText,
         Command::SelectAllText,
+        Command::MoveToTrash,
+        Command::DeleteFile,
         Command::Undo,
         Command::RotateLeft,
         Command::RotateRight,
@@ -114,6 +124,8 @@ impl Command {
         Command::PanRight,
         Command::Previous,
         Command::Next,
+        Command::PagePrevious,
+        Command::PageNext,
         Command::First,
         Command::Last,
         Command::ToggleGallery,
@@ -135,6 +147,9 @@ impl Command {
             Command::SaveAs => "Save as...",
             Command::CopyPath => "Copy file path",
             Command::CopyImage => "Copy image",
+            Command::MoveToTrash if cfg!(windows) => "Move to Recycle Bin",
+            Command::MoveToTrash => "Move to Trash",
+            Command::DeleteFile => "Delete permanently...",
             Command::Undo => "Undo",
             Command::RotateLeft => "Rotate left",
             Command::RotateRight => "Rotate right",
@@ -153,6 +168,8 @@ impl Command {
             Command::PanRight => "Pan right",
             Command::Previous => "Previous image",
             Command::Next => "Next image",
+            Command::PagePrevious => "Back one gallery page",
+            Command::PageNext => "Forward one gallery page",
             Command::First => "First image",
             Command::Last => "Last image",
             Command::ToggleGallery => "Gallery strip",
@@ -239,6 +256,8 @@ impl Command {
             self,
             Command::Next
                 | Command::Previous
+                | Command::PageNext
+                | Command::PagePrevious
                 | Command::ZoomIn
                 | Command::ZoomOut
                 | Command::PanUp
@@ -365,6 +384,8 @@ pub const SHORTCUTS: &[Shortcut] = &[
     Shortcut::new(Key::C, CTRL, Command::CopyText),
     Shortcut::new(Key::C, CTRL_SHIFT, Command::CopyPath),
     Shortcut::new(Key::A, CTRL, Command::SelectAllText),
+    Shortcut::new(Key::Delete, N, Command::MoveToTrash),
+    Shortcut::new(Key::Delete, SHIFT, Command::DeleteFile),
     Shortcut::new(Key::Z, CTRL, Command::Undo),
     Shortcut::new(Key::R, SHIFT, Command::RotateLeft),
     Shortcut::new(Key::L, N, Command::RotateLeft),
@@ -387,11 +408,11 @@ pub const SHORTCUTS: &[Shortcut] = &[
     Shortcut::new(Key::Left, CTRL, Command::PanLeft),
     Shortcut::new(Key::Right, CTRL, Command::PanRight),
     Shortcut::new(Key::Left, N, Command::Previous),
-    Shortcut::new(Key::PageUp, N, Command::Previous),
     Shortcut::new(Key::Backspace, N, Command::Previous),
     Shortcut::new(Key::Right, N, Command::Next),
-    Shortcut::new(Key::PageDown, N, Command::Next),
     Shortcut::new(Key::Space, N, Command::Next),
+    Shortcut::new(Key::PageUp, N, Command::PagePrevious),
+    Shortcut::new(Key::PageDown, N, Command::PageNext),
     Shortcut::new(Key::Home, N, Command::First),
     Shortcut::new(Key::End, N, Command::Last),
     Shortcut::new(Key::G, N, Command::ToggleGallery),
@@ -508,6 +529,40 @@ mod tests {
         assert_eq!(
             Command::CopyPath.tooltip(),
             "Copy file path  (Ctrl+Shift+C)"
+        );
+    }
+
+    #[test]
+    fn delete_and_page_keys() {
+        assert_eq!(
+            command_for_key(Key::Delete, Modifiers::NONE, false),
+            Some(Command::MoveToTrash)
+        );
+        assert_eq!(
+            command_for_key(Key::Delete, Modifiers::SHIFT, false),
+            Some(Command::DeleteFile)
+        );
+        assert_eq!(command_for_key(Key::Delete, Modifiers::CTRL, false), None);
+        assert_eq!(command_for_key(Key::Delete, Modifiers::ALT, false), None);
+        assert_eq!(
+            command_for_key(Key::PageDown, Modifiers::NONE, false),
+            Some(Command::PageNext)
+        );
+        assert_eq!(
+            command_for_key(Key::PageUp, Modifiers::NONE, false),
+            Some(Command::PagePrevious)
+        );
+        // One press, one file: the delete commands never repeat and stay
+        // out of crop mode. The page keys repeat like the other steps.
+        for cmd in [Command::MoveToTrash, Command::DeleteFile] {
+            assert!(!cmd.repeats() && !cmd.allowed_in_crop(), "{cmd:?}");
+        }
+        for cmd in [Command::PageNext, Command::PagePrevious] {
+            assert!(cmd.repeats() && !cmd.allowed_in_crop(), "{cmd:?}");
+        }
+        assert_eq!(
+            Command::DeleteFile.tooltip(),
+            "Delete permanently  (Shift+Del)"
         );
     }
 

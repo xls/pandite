@@ -181,12 +181,24 @@ fn f11_maps_to_fullscreen() {
     );
     assert!(held.is_empty());
 
-    // The other keys the gate names.
-    let table: [(Key, Modifiers, Action); 10] = [
+    // The other keys the gate names. Page Down and Page Up move by the
+    // thumbnails that fit whole in the 1280 pixel strip: 10 pixels of
+    // padding on each side, 64 pixel cells 70 pixels apart, so
+    // (1280 - 20 - 64) / 70 + 1 = 18.
+    assert_eq!(Ui::gallery_page(&ctx), 18);
+    let mut hidden = ctx;
+    hidden.gallery_visible = false;
+    assert_eq!(Ui::gallery_page(&hidden), 18, "the hidden strip counts too");
+    let mut narrow = ctx;
+    narrow.window_size = Size::new(60.0, 800.0);
+    assert_eq!(Ui::gallery_page(&narrow), 1, "never less than one image");
+    let table: [(Key, Modifiers, Action); 12] = [
         (Key::Right, Modifiers::NONE, Action::Next),
-        (Key::PageDown, Modifiers::NONE, Action::Next),
+        (Key::Space, Modifiers::NONE, Action::Next),
+        (Key::PageDown, Modifiers::NONE, Action::StepBy(18)),
         (Key::Left, Modifiers::NONE, Action::Previous),
-        (Key::PageUp, Modifiers::NONE, Action::Previous),
+        (Key::Backspace, Modifiers::NONE, Action::Previous),
+        (Key::PageUp, Modifiers::NONE, Action::StepBy(-18)),
         (Key::Plus, Modifiers::SHIFT, Action::ZoomIn),
         (Key::Equals, Modifiers::NONE, Action::ZoomIn),
         (Key::Minus, Modifiers::NONE, Action::ZoomOut),

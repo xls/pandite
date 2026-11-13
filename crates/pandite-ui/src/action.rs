@@ -175,6 +175,13 @@ pub enum Action {
     /// the frame on screen for an animation. Do the work off the event
     /// loop and confirm with [`crate::Ui::toast`].
     CopyImage,
+    /// Move the file of the current image to the trash of the system
+    /// without a question (Delete), then show its neighbor.
+    MoveToTrash,
+    /// Remove the file of the current image for good (Shift+Delete). Ask
+    /// first with [`crate::Ui::show_confirm`] and a request whose
+    /// [`crate::ConfirmRequest::cancel_is_default`] is set.
+    DeleteFile,
     /// Put this text on the clipboard (Ctrl+C or Ctrl+X in a text field).
     CopyText(String),
     /// Read the clipboard and send its text back as
@@ -254,6 +261,12 @@ pub enum Action {
     Previous,
     /// Show the image with this index in the folder.
     GoTo(usize),
+    /// Show the image this many places after the current one, or before it
+    /// when negative (Page Down and Page Up move one gallery page). A move
+    /// past an end stops at the first or last image. From that image, the
+    /// next move in the same direction wraps when the application wraps
+    /// single steps.
+    StepBy(isize),
     /// Show or hide the gallery strip
     /// (flip [`crate::UiContext::gallery_visible`]).
     ToggleGallery,
@@ -283,6 +296,10 @@ pub enum ActionKind {
     CopyPath,
     /// [`Action::CopyImage`].
     CopyImage,
+    /// [`Action::MoveToTrash`].
+    MoveToTrash,
+    /// [`Action::DeleteFile`].
+    DeleteFile,
     /// [`Action::CopyText`].
     CopyText,
     /// [`Action::RequestPaste`].
@@ -339,6 +356,8 @@ pub enum ActionKind {
     Previous,
     /// [`Action::GoTo`].
     GoTo,
+    /// [`Action::StepBy`].
+    StepBy,
     /// [`Action::ToggleGallery`].
     ToggleGallery,
     /// [`Action::ToggleInfo`].
@@ -351,11 +370,13 @@ pub enum ActionKind {
 
 impl ActionKind {
     /// Every kind, in declaration order.
-    pub const ALL: [ActionKind; 36] = [
+    pub const ALL: [ActionKind; 39] = [
         ActionKind::Open,
         ActionKind::SaveAs,
         ActionKind::CopyPath,
         ActionKind::CopyImage,
+        ActionKind::MoveToTrash,
+        ActionKind::DeleteFile,
         ActionKind::CopyText,
         ActionKind::RequestPaste,
         ActionKind::RotateLeft,
@@ -384,6 +405,7 @@ impl ActionKind {
         ActionKind::Next,
         ActionKind::Previous,
         ActionKind::GoTo,
+        ActionKind::StepBy,
         ActionKind::ToggleGallery,
         ActionKind::ToggleInfo,
         ActionKind::ConfirmResult,
@@ -398,38 +420,41 @@ impl ActionKind {
             ActionKind::SaveAs => 1,
             ActionKind::CopyPath => 2,
             ActionKind::CopyImage => 3,
-            ActionKind::CopyText => 4,
-            ActionKind::RequestPaste => 5,
-            ActionKind::RotateLeft => 6,
-            ActionKind::RotateRight => 7,
-            ActionKind::FlipHorizontal => 8,
-            ActionKind::FlipVertical => 9,
-            ActionKind::StartCrop => 10,
-            ActionKind::ApplyCrop => 11,
-            ActionKind::CancelCrop => 12,
-            ActionKind::OpenResizeDialog => 13,
-            ActionKind::ApplyResize => 14,
-            ActionKind::OpenBulkDialog => 15,
-            ActionKind::PickBulkFiles => 16,
-            ActionKind::PickBulkFolder => 17,
-            ActionKind::PickBulkDestination => 18,
-            ActionKind::RunBulk => 19,
-            ActionKind::CancelBulk => 20,
-            ActionKind::Undo => 21,
-            ActionKind::FitToWindow => 22,
-            ActionKind::OneToOne => 23,
-            ActionKind::ZoomIn => 24,
-            ActionKind::ZoomOut => 25,
-            ActionKind::ZoomAt => 26,
-            ActionKind::PanBy => 27,
-            ActionKind::ToggleFullscreen => 28,
-            ActionKind::Next => 29,
-            ActionKind::Previous => 30,
-            ActionKind::GoTo => 31,
-            ActionKind::ToggleGallery => 32,
-            ActionKind::ToggleInfo => 33,
-            ActionKind::ConfirmResult => 34,
-            ActionKind::Quit => 35,
+            ActionKind::MoveToTrash => 4,
+            ActionKind::DeleteFile => 5,
+            ActionKind::CopyText => 6,
+            ActionKind::RequestPaste => 7,
+            ActionKind::RotateLeft => 8,
+            ActionKind::RotateRight => 9,
+            ActionKind::FlipHorizontal => 10,
+            ActionKind::FlipVertical => 11,
+            ActionKind::StartCrop => 12,
+            ActionKind::ApplyCrop => 13,
+            ActionKind::CancelCrop => 14,
+            ActionKind::OpenResizeDialog => 15,
+            ActionKind::ApplyResize => 16,
+            ActionKind::OpenBulkDialog => 17,
+            ActionKind::PickBulkFiles => 18,
+            ActionKind::PickBulkFolder => 19,
+            ActionKind::PickBulkDestination => 20,
+            ActionKind::RunBulk => 21,
+            ActionKind::CancelBulk => 22,
+            ActionKind::Undo => 23,
+            ActionKind::FitToWindow => 24,
+            ActionKind::OneToOne => 25,
+            ActionKind::ZoomIn => 26,
+            ActionKind::ZoomOut => 27,
+            ActionKind::ZoomAt => 28,
+            ActionKind::PanBy => 29,
+            ActionKind::ToggleFullscreen => 30,
+            ActionKind::Next => 31,
+            ActionKind::Previous => 32,
+            ActionKind::GoTo => 33,
+            ActionKind::StepBy => 34,
+            ActionKind::ToggleGallery => 35,
+            ActionKind::ToggleInfo => 36,
+            ActionKind::ConfirmResult => 37,
+            ActionKind::Quit => 38,
         }
     }
 }
@@ -442,6 +467,8 @@ impl Action {
             Action::SaveAs => ActionKind::SaveAs,
             Action::CopyPath => ActionKind::CopyPath,
             Action::CopyImage => ActionKind::CopyImage,
+            Action::MoveToTrash => ActionKind::MoveToTrash,
+            Action::DeleteFile => ActionKind::DeleteFile,
             Action::CopyText(_) => ActionKind::CopyText,
             Action::RequestPaste => ActionKind::RequestPaste,
             Action::RotateLeft => ActionKind::RotateLeft,
@@ -470,6 +497,7 @@ impl Action {
             Action::Next => ActionKind::Next,
             Action::Previous => ActionKind::Previous,
             Action::GoTo(_) => ActionKind::GoTo,
+            Action::StepBy(_) => ActionKind::StepBy,
             Action::ToggleGallery => ActionKind::ToggleGallery,
             Action::ToggleInfo => ActionKind::ToggleInfo,
             Action::ConfirmResult { .. } => ActionKind::ConfirmResult,

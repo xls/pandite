@@ -21,6 +21,10 @@ pub struct ConfirmRequest {
     pub confirm_label: String,
     /// Label of the cancelling button, for example "Cancel".
     pub cancel_label: String,
+    /// The cancelling button is the default: it has the focus and the
+    /// accent color when the dialog opens, and Enter outside a button
+    /// cancels. Set it for a question whose yes cannot be undone.
+    pub cancel_is_default: bool,
 }
 
 impl ConfirmRequest {
@@ -32,6 +36,16 @@ impl ConfirmRequest {
             message: message.into(),
             confirm_label: "OK".into(),
             cancel_label: "Cancel".into(),
+            cancel_is_default: false,
+        }
+    }
+
+    /// The button that has the focus when the dialog opens.
+    pub(crate) fn default_button(&self) -> Id {
+        if self.cancel_is_default {
+            BTN_NO
+        } else {
+            BTN_YES
         }
     }
 }
@@ -62,8 +76,9 @@ pub(crate) enum Answer {
 impl ConfirmDialog {
     pub fn on_event(&self, event: &FormEvent) -> Option<Answer> {
         match event {
-            FormEvent::Activate(BTN_YES) | FormEvent::Submit => Some(Answer::Yes),
-            FormEvent::Activate(BTN_NO) | FormEvent::Cancel => Some(Answer::No),
+            FormEvent::Activate(BTN_YES) => Some(Answer::Yes),
+            FormEvent::Submit if !self.request.cancel_is_default => Some(Answer::Yes),
+            FormEvent::Activate(BTN_NO) | FormEvent::Submit | FormEvent::Cancel => Some(Answer::No),
             _ => None,
         }
     }
@@ -74,20 +89,16 @@ impl FormHost for ConfirmDialog {
         b.title(self.request.title.clone());
         b.paragraph(&self.request.message, Tone::Normal, 4);
         b.space(10.0);
+        // The default button takes the accent color.
+        let (no_style, yes_style) = if self.request.cancel_is_default {
+            (ButtonStyle::Primary, ButtonStyle::Secondary)
+        } else {
+            (ButtonStyle::Secondary, ButtonStyle::Primary)
+        };
         b.buttons_row(
             &[
-                (
-                    BTN_NO,
-                    &self.request.cancel_label,
-                    ButtonStyle::Secondary,
-                    true,
-                ),
-                (
-                    BTN_YES,
-                    &self.request.confirm_label,
-                    ButtonStyle::Primary,
-                    true,
-                ),
+                (BTN_NO, &self.request.cancel_label, no_style, true),
+                (BTN_YES, &self.request.confirm_label, yes_style, true),
             ],
             true,
         );
@@ -99,5 +110,38 @@ impl FormHost for ConfirmDialog {
 
     fn field_mut(&mut self, _id: Id) -> Option<&mut TextField> {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn safe_default_answers_no_to_enter() {
+        let mut request = ConfirmRequest::new(1, "Delete?", "Delete a.png for good?");
+        let ask = |request: &ConfirmRequest| ConfirmDialog {
+            owner: ConfirmOwner::App(request.id),
+            request: request.clone(),
+        };
+        assert_eq!(request.default_button(), BTN_YES);
+        assert_eq!(
+            ask(&request).on_event(&FormEvent::Submit),
+            Some(Answer::Yes)
+        );
+        request.cancel_is_default = true;
+        let dialog = ask(&request);
+        assert_eq!(request.default_button(), BTN_NO);
+        assert_eq!(dialog.on_event(&FormEvent::Submit), Some(Answer::No));
+        assert_eq!(dialog.on_event(&FormEvent::Cancel), Some(Answer::No));
+        assert_eq!(
+            dialog.on_event(&FormEvent::Activate(BTN_NO)),
+            Some(Answer::No)
+        );
+        assert_eq!(
+            dialog.on_event(&FormEvent::Activate(BTN_YES)),
+            Some(Answer::Yes),
+            "only the confirming button itself says yes"
+        );
     }
 }

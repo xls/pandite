@@ -30,5 +30,6 @@ pub mod register;
 pub mod resident;
 pub mod settings;
 pub mod shell;
+pub mod trash;
 #[cfg(test)]
 mod winres;

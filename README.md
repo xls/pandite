@@ -101,6 +101,8 @@ Writes PNG, JPEG, lossless WebP and BMP.
 - **Image information.** I shows file size, pixel size, codec, channels,
   bit depth, compression ratio, color profile and camera settings.
 - **Copy.** Ctrl+C copies the image, Ctrl+Shift+C copies the file path.
+- **Delete.** Del sends the file to the Recycle Bin or the Trash and
+  shows the next image. Shift+Del asks first, then deletes the file for good.
 - **Color.** Embedded ICC profiles convert to sRGB. HDR images are tone
   mapped. Photos turn upright from their EXIF orientation.
 - **Stall safe.** A file stuck on a cloud drive cannot freeze the window.
@@ -124,7 +126,7 @@ Release packages come from the
 | Debian, Ubuntu x86_64, glibc 2.35+ | `pandite_<version>_amd64.deb` | `sudo apt install ./pandite_<version>_amd64.deb` |
 | Fedora, openSUSE x86_64, glibc 2.35+ | `pandite-<version>-1.x86_64.rpm` | `sudo dnf install ./pandite-<version>-1.x86_64.rpm` |
 | Linux x86_64, glibc 2.35+ | `pandite-<version>-x86_64-unknown-linux-gnu.tar.gz` | Extract. Run `./install.sh` to install for your user. |
-| Node.js 18+ | npm package `pandite` | `npx pandite photo.jpg`. The first run downloads the release file for your system and checks its SHA-256. |
+| Windows, macOS, Linux x86_64 with Node.js 18+ | npm package `pandite` (installer) | `npx pandite` installs the latest release for your user. It checks the download against `SHA256SUMS.txt`. `npx pandite update` installs a newer release, `npx pandite -v <version>` a named one, `npx pandite uninstall` removes Pandite. |
 
 On Windows, HEIC needs "HEIF Image Extensions" and "HEVC Video
 Extensions" from the Microsoft Store.

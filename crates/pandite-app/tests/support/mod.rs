@@ -22,7 +22,7 @@ use pandite_core::{
 };
 use pandite_library::{FileAccess, FileInfo, KeptThumbnails};
 use pandite_ui::{Action, CursorShape, InputEvent, Key, Modifiers};
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -178,11 +178,26 @@ struct DiskState {
     stall_full_read: HashSet<String>,
     stall_write: HashSet<String>,
     released: bool,
+    /// Removals of these names fail with this kind of error.
+    fail_removal: HashMap<String, io::ErrorKind>,
+    /// Removals that succeeded, in order: "trash" or "remove_file", and the
+    /// file name.
+    removals: Vec<(&'static str, String)>,
 }
+
+/// The folder the fake trash of [`TestDisk`] moves a file into: a hidden
+/// folder beside the file. The library lists files only, so the folder
+/// never shows in the gallery, and the temporary folder of the test takes
+/// it away.
+pub const FAKE_TRASH: &str = ".fake-trash";
 
 /// `std::fs` with injected stalls (reads and writes of chosen file names
 /// block until released, ignoring cancellation like a read stuck in the
 /// operating system) and a record of every call with its thread.
+///
+/// The trash of the system is never touched: `trash` moves the file into
+/// [`FAKE_TRASH`] beside it, and `remove_file` removes it. Either fails on
+/// demand ([`TestDisk::fail_removal`]).
 #[derive(Default)]
 pub struct TestDisk {
     state: Mutex<DiskState>,
@@ -237,6 +252,48 @@ impl TestDisk {
                 .unwrap_or_else(|e| e.into_inner())
                 .0;
         }
+    }
+
+    /// Moving `name` to the trash or removing it fails with `kind`, until
+    /// [`TestDisk::allow_removal`].
+    pub fn fail_removal(&self, name: &str, kind: io::ErrorKind) {
+        lock(&self.state).fail_removal.insert(name.into(), kind);
+    }
+
+    pub fn allow_removal(&self, name: &str) {
+        lock(&self.state).fail_removal.remove(name);
+    }
+
+    /// Removals that succeeded, in order: ("trash" or "remove_file", name).
+    pub fn removals(&self) -> Vec<(&'static str, String)> {
+        lock(&self.state).removals.clone()
+    }
+
+    /// Removal calls that started, failed ones too.
+    pub fn removal_calls(&self) -> usize {
+        lock(&self.state)
+            .calls
+            .iter()
+            .filter(|c| c.op == "trash" || c.op == "remove_file")
+            .count()
+    }
+
+    fn remove(&self, op: &'static str, path: &Path) -> io::Result<()> {
+        let name = self.enter(op, path, false);
+        let fail = lock(&self.state).fail_removal.get(&name).copied();
+        let result = match fail {
+            Some(kind) => Err(io::Error::new(kind, "the test disk refuses")),
+            None if op == "trash" => {
+                let bin = path.parent().unwrap_or(Path::new(".")).join(FAKE_TRASH);
+                std::fs::create_dir_all(&bin).and_then(|()| std::fs::rename(path, bin.join(&name)))
+            }
+            None => std::fs::remove_file(path),
+        };
+        if result.is_ok() {
+            lock(&self.state).removals.push((op, name.clone()));
+        }
+        self.leave(op, name);
+        result
     }
 
     pub fn release_all(&self) {
@@ -326,8 +383,9 @@ impl TestDisk {
 }
 
 impl FileAccess for TestDisk {
+    /// Stalls like a read when [`TestDisk::stall_read`] names the folder.
     fn list_dir(&self, dir: &Path) -> io::Result<Vec<FileInfo>> {
-        let name = self.enter("list_dir", dir, false);
+        let name = self.enter("list_dir", dir, true);
         let r = StdDisk.list_dir(dir);
         self.leave("list_dir", name);
         r
@@ -382,6 +440,14 @@ impl Disk for TestDisk {
         let r = StdDisk.create_dir_all(dir);
         self.leave("create_dir_all", name);
         r
+    }
+
+    fn trash(&self, path: &Path) -> io::Result<()> {
+        self.remove("trash", path)
+    }
+
+    fn remove_file(&self, path: &Path) -> io::Result<()> {
+        self.remove("remove_file", path)
     }
 }
 

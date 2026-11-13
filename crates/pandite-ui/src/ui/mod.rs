@@ -282,6 +282,21 @@ impl Ui {
         Metrics::new(ctx.scale_factor).cell() as u32
     }
 
+    /// The number of thumbnails that fit whole in the gallery strip at the
+    /// window width of `ctx`, with the strip's side padding: the step of
+    /// Page Up and Page Down. The same number when the strip is hidden.
+    /// At least 1.
+    pub fn gallery_page(ctx: &UiContext<'_>) -> usize {
+        let m = Metrics::new(ctx.scale_factor);
+        let room = ctx.window_rect().w - 2.0 * m.gallery_pad() - m.cell();
+        let pitch = m.cell() + m.cell_gap();
+        if room.is_finite() && room > 0.0 {
+            (room / pitch).floor() as usize + 1
+        } else {
+            1
+        }
+    }
+
     /// The pointer shape wanted at the pointer position.
     pub fn cursor(&self) -> CursorShape {
         self.cursor
@@ -333,7 +348,15 @@ impl Ui {
         }
         match cmd {
             Command::Undo => ctx.can_undo,
-            Command::Previous | Command::Next | Command::First | Command::Last => ctx.count > 1,
+            Command::Previous
+            | Command::Next
+            | Command::PagePrevious
+            | Command::PageNext
+            | Command::First
+            | Command::Last => ctx.count > 1,
+            // A file that failed to open can go too: the folder still
+            // lists it.
+            Command::MoveToTrash | Command::DeleteFile => ctx.image.is_some() || ctx.count > 0,
             Command::CropApply => self.crop.as_ref().is_some_and(|c| c.pixel_rect().is_some()),
             Command::CropSelectAll | Command::CropCancel => self.crop.is_some(),
             Command::SelectAllText => TextGeom::new(ctx).is_some(),
@@ -461,11 +484,11 @@ impl Ui {
     fn open_confirm(&mut self, owner: ConfirmOwner, request: ConfirmRequest) {
         self.menu = None;
         self.help = false;
-        self.confirm = Some(ConfirmDialog { owner, request });
         self.confirm_form = FormState {
-            focus: Some(crate::confirm::BTN_YES),
+            focus: Some(request.default_button()),
             ..FormState::default()
         };
+        self.confirm = Some(ConfirmDialog { owner, request });
     }
 
     fn close_dialog(&mut self) {
@@ -948,6 +971,8 @@ impl Ui {
             Command::SaveAs => out.push(Action::SaveAs),
             Command::CopyPath => out.push(Action::CopyPath),
             Command::CopyImage => out.push(Action::CopyImage),
+            Command::MoveToTrash => out.push(Action::MoveToTrash),
+            Command::DeleteFile => out.push(Action::DeleteFile),
             Command::Undo => out.push(Action::Undo),
             Command::RotateLeft => out.push(Action::RotateLeft),
             Command::RotateRight => out.push(Action::RotateRight),
@@ -989,6 +1014,14 @@ impl Ui {
             Command::PanRight => out.push(Action::PanBy { dx: -step, dy: 0.0 }),
             Command::Previous => out.push(Action::Previous),
             Command::Next => out.push(Action::Next),
+            Command::PagePrevious => {
+                let page = Self::gallery_page(ctx).min(isize::MAX as usize) as isize;
+                out.push(Action::StepBy(-page));
+            }
+            Command::PageNext => {
+                let page = Self::gallery_page(ctx).min(isize::MAX as usize) as isize;
+                out.push(Action::StepBy(page));
+            }
             Command::First => out.push(Action::GoTo(0)),
             Command::Last => out.push(Action::GoTo(ctx.count - 1)),
             Command::ToggleGallery => out.push(Action::ToggleGallery),

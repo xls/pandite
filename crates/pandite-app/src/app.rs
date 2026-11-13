@@ -21,12 +21,15 @@ use crate::edit::{self, Edit, EditStack, Undo};
 use crate::info::{self, FileReport};
 use crate::platform::{Clipboard, DialogKind, Dialogs, Filter, Waker, WindowControl};
 use crate::settings::{self, Settings, TextRecognition, ThemeChoice, WindowPlacement};
-use jobs::{Copied, CopyJob, Outbox};
+use crate::trash::TRASH_NAME;
+use jobs::{Copied, CopyJob, DeleteJob, Outbox, Removal};
 use pandite_core::{
     CancelToken, Color, Content, DrawList, EncodeOptions, Error, ImageBuf, PixelFormat, Point,
     Rect, Registry, Size, TextLayout, TextMeasure, TextureSink, ViewState,
 };
-use pandite_library::{Event, Fetch, FileAccess, KeptThumbnails, Library, LibraryConfig, Reduced};
+use pandite_library::{
+    natural_cmp, Event, Fetch, FileAccess, KeptThumbnails, Library, LibraryConfig, Reduced,
+};
 use pandite_ui::{
     Action, ConfirmRequest, CursorShape, EncoderInfo, ImageInfo, InfoRow, InputEvent, Loading,
     Progress, TextView, ThemeKind, ThumbState, Ui, UiContext, ZOOM_STEP,
@@ -85,6 +88,13 @@ pub(crate) enum Msg {
         ticket: u64,
         path: PathBuf,
         report: Box<FileReport>,
+    },
+    /// File removal `id` of `path` ended.
+    Deleted {
+        id: u64,
+        path: PathBuf,
+        permanent: bool,
+        result: Removal,
     },
 }
 
@@ -333,6 +343,25 @@ struct PendingSave {
     encoder: String,
 }
 
+/// What an open question waits to do on a yes.
+#[derive(Clone, Debug)]
+enum Question {
+    /// Save over the original.
+    Replace(PendingSave),
+    /// Remove this file for good.
+    Delete(PathBuf),
+}
+
+/// A file removal on a worker.
+#[derive(Clone, Debug)]
+struct DeleteRun {
+    id: u64,
+    path: PathBuf,
+    /// The load of the file stopped for the removal: it starts again when
+    /// the file stays.
+    stopped_load: bool,
+}
+
 /// A save on a worker.
 #[derive(Clone, Debug)]
 struct Saving {
@@ -426,6 +455,12 @@ struct State {
 
     target: Option<Target>,
     count: usize,
+    /// The library was asked to open a file and its folder listing has not
+    /// arrived yet: the list holds that file alone.
+    awaiting_listing: bool,
+    /// A removed file whose folder is listed again: when the listing
+    /// arrives, its neighbor shows.
+    show_after_listing: Option<PathBuf>,
     folder: Option<PathBuf>,
     shown: Option<Shown>,
     loading: Option<LoadState>,
@@ -441,9 +476,11 @@ struct State {
 
     next_id: u64,
     dialogs_open: HashMap<u64, DialogPurpose>,
-    confirms: HashMap<u64, PendingSave>,
+    confirms: HashMap<u64, Question>,
     pending_save: Option<PendingSave>,
     saving: Option<Saving>,
+    /// The file removal on a worker.
+    deleting: Option<DeleteRun>,
     bulk: Option<BulkRun>,
     /// The image copy on a worker.
     copying: Option<CopyRun>,
@@ -583,6 +620,8 @@ impl App {
             resume_save: false,
             target: None,
             count: 0,
+            awaiting_listing: false,
+            show_after_listing: None,
             folder: open
                 .as_deref()
                 .and_then(Path::parent)
@@ -611,6 +650,7 @@ impl App {
             confirms: HashMap::new(),
             pending_save: None,
             saving: None,
+            deleting: None,
             bulk: None,
             copying: None,
             copy_wanted: None,
@@ -753,6 +793,11 @@ impl App {
     /// True while a bulk job runs.
     pub fn bulk_running(&self) -> bool {
         self.st.bulk.is_some()
+    }
+
+    /// True while a file moves to the trash or is removed for good.
+    pub fn deleting(&self) -> bool {
+        self.st.deleting.is_some()
     }
 
     /// The path the user wants to see (shown or loading).
@@ -920,6 +965,8 @@ impl App {
             Action::SaveAs => st.save_as_dialog(&mut self.ui, now),
             Action::CopyPath => st.copy_path(&mut self.ui, now),
             Action::CopyImage => st.copy_image(&mut self.ui, now),
+            Action::MoveToTrash => st.request_delete(false, &mut self.ui, now),
+            Action::DeleteFile => st.request_delete(true, &mut self.ui, now),
             Action::CopyText(text) => {
                 st.drop_image_copy();
                 match st.clipboard.set_text(&text) {
@@ -1014,6 +1061,7 @@ impl App {
             }
             Action::Next => st.step(1, now),
             Action::Previous => st.step(-1, now),
+            Action::StepBy(delta) => st.step(delta, now),
             Action::GoTo(index) => {
                 if index < st.library.len() {
                     st.go_to(index, now);
@@ -1033,12 +1081,19 @@ impl App {
                 Handled::Done
             }
             Action::ConfirmResult { id, accepted } => match st.confirms.remove(&id) {
-                Some(save) if accepted => {
+                Some(Question::Replace(save)) if accepted => {
                     st.request_save(save, &mut self.ui, now);
                     Handled::Done
                 }
-                Some(_) => {
+                Some(Question::Replace(_)) => {
                     self.ui.toast("Not saved", now);
+                    Handled::Done
+                }
+                Some(Question::Delete(path)) if accepted => {
+                    st.start_delete(path, true, &mut self.ui, now)
+                }
+                Some(Question::Delete(path)) => {
+                    self.ui.toast(format!("Kept {}", file_name(&path)), now);
                     Handled::Done
                 }
                 None => Handled::Ignored,
@@ -1390,6 +1445,12 @@ impl App {
                 path,
                 report,
             } => st.facts_done(ticket, path, *report),
+            Msg::Deleted {
+                id,
+                path,
+                permanent,
+                result,
+            } => st.deleted(id, &path, permanent, result, &mut self.ui, now),
         }
     }
 }
@@ -1681,6 +1742,8 @@ impl State {
         self.folder = path.parent().map(Path::to_path_buf);
         self.load_started = Some((path.clone(), now));
         self.library.open(path.clone());
+        self.awaiting_listing = true;
+        self.show_after_listing = None;
         // A file decoded earlier is served from the cache without an event.
         self.check_target();
         if self.auto_size == AutoSize::Waiting {
@@ -1742,19 +1805,29 @@ impl State {
         self.library.paths().iter().position(|p| p == path)
     }
 
+    /// Move `delta` images forward (back when negative). A move past an
+    /// end stops at the first or last image. From that image, a move on in
+    /// the same direction wraps to the other end when the settings wrap,
+    /// as a single step does.
     fn step(&mut self, delta: isize, now: Duration) -> Handled {
         let len = self.library.len();
-        if len < 2 {
+        if len < 2 || delta == 0 {
             return Handled::Ignored;
         }
-        let current = self.target.as_ref().map_or(0, |t| t.index.min(len - 1));
-        let next = current as isize + delta;
+        let last = len - 1;
+        let current = self.target.as_ref().map_or(0, |t| t.index.min(last));
+        let next = (current as isize).saturating_add(delta);
         let index = if (0..len as isize).contains(&next) {
             next as usize
-        } else if self.settings.wrap_around {
-            next.rem_euclid(len as isize) as usize
         } else {
-            return Handled::Ignored;
+            let (end, other) = if delta > 0 { (last, 0) } else { (0, last) };
+            if current != end {
+                end
+            } else if self.settings.wrap_around {
+                other
+            } else {
+                return Handled::Ignored;
+            }
         };
         self.go_to(index, now);
         Handled::Done
@@ -1924,9 +1997,18 @@ impl State {
     fn on_library_event(&mut self, event: Event) {
         match event {
             Event::Listed { len, current } => {
+                self.awaiting_listing = false;
                 self.count = len;
                 self.thumbs.reset(len);
-                if let Some(target) = &mut self.target {
+                let removed = self.show_after_listing.take();
+                if self.target.is_none() {
+                    // The folder of a removed file, listed again: show the
+                    // image that took its place, or the last one.
+                    if let Some(removed) = removed.filter(|_| len > 0) {
+                        let index = neighbor_index(&self.library.paths(), &removed);
+                        self.go_to(index, self.clock);
+                    }
+                } else if let Some(target) = &mut self.target {
                     match current {
                         Some(index) => target.index = index,
                         None => {
@@ -2064,7 +2146,7 @@ impl State {
         let Some(shown) = &self.shown else {
             return;
         };
-        if self.info_report(&shown.path).is_some() {
+        if self.info_report(&shown.path).is_some() || self.removing(&shown.path) {
             return;
         }
         if let Some((_, reading)) = &self.info.job {
@@ -2132,6 +2214,12 @@ impl State {
         shown.standin.is_none()
             && !shown.animated()
             && self.target.as_ref().is_some_and(|t| t.path == shown.path)
+            && !self.removing(&shown.path)
+    }
+
+    /// True while `path` moves to the trash or is removed for good.
+    fn removing(&self, path: &Path) -> bool {
+        self.deleting.as_ref().is_some_and(|d| d.path == path)
     }
 
     /// When recognition of the shown image may start, if it is waiting:
@@ -2487,13 +2575,14 @@ impl State {
         if same_path(&save.target, &shown.path) {
             let name = shown.name.clone();
             let id = self.next_id();
-            self.confirms.insert(id, save);
+            self.confirms.insert(id, Question::Replace(save));
             ui.show_confirm(ConfirmRequest {
                 id,
                 title: "Replace the original?".into(),
                 message: format!("Saving replaces {name} on disk with the edited image."),
                 confirm_label: "Replace".into(),
                 cancel_label: "Cancel".into(),
+                cancel_is_default: false,
             });
         } else {
             self.request_save(save, ui, now);
@@ -2612,6 +2701,8 @@ impl State {
                 index: 0,
             });
             self.library.open(save.target.clone());
+            self.awaiting_listing = true;
+            self.show_after_listing = None;
         }
         if animated {
             self.push_content(Some(Content::Still(committed)));
@@ -2763,4 +2854,229 @@ impl State {
         });
         Handled::Done
     }
+
+    // ----- removing files ----------------------------------------------------
+
+    /// The file a delete key acts on: the image the user wants to see, when
+    /// the folder list holds it (never a folder that is still resolved).
+    fn delete_target(&self) -> Option<PathBuf> {
+        let target = self.target.as_ref()?;
+        (self.library.path(target.index).as_deref() == Some(target.path.as_path()))
+            .then(|| target.path.clone())
+    }
+
+    /// Delete: move the current file to the trash at once. Shift+Delete:
+    /// ask first, with Keep as the default answer.
+    fn request_delete(&mut self, permanent: bool, ui: &mut Ui, now: Duration) -> Handled {
+        let Some(path) = self.delete_target() else {
+            return Handled::Ignored;
+        };
+        if self.deleting.is_some() {
+            ui.toast("Still deleting", now);
+            return Handled::Ignored;
+        }
+        if self.saving.is_some() || self.pending_save.is_some() {
+            ui.toast("Still saving", now);
+            return Handled::Ignored;
+        }
+        if !permanent {
+            return self.start_delete(path, false, ui, now);
+        }
+        let name = file_name(&path);
+        let id = self.next_id();
+        self.confirms.insert(id, Question::Delete(path));
+        ui.show_confirm(ConfirmRequest {
+            id,
+            title: "Delete permanently?".into(),
+            message: format!("{name} will be deleted for good. This cannot be undone."),
+            confirm_label: "Delete".into(),
+            cancel_label: "Keep".into(),
+            cancel_is_default: true,
+        });
+        Handled::Done
+    }
+
+    /// Stop the work on `path` and remove it on a worker: to the trash, or
+    /// for good when `permanent`.
+    fn start_delete(
+        &mut self,
+        path: PathBuf,
+        permanent: bool,
+        ui: &mut Ui,
+        now: Duration,
+    ) -> Handled {
+        if self.deleting.is_some() {
+            ui.toast("Still deleting", now);
+            return Handled::Ignored;
+        }
+        // Nothing of this process holds the file while it goes: its load
+        // (with its read-ahead and thumbnail), its text recognition and its
+        // facts stop first.
+        let wanted = self.target.as_ref().is_some_and(|t| t.path == path);
+        let stopped_load = wanted && self.loading.is_some();
+        if stopped_load {
+            self.library.cancel_current();
+        }
+        if let Some(shown) = self.shown.as_ref().filter(|s| s.path == path) {
+            let image = shown.id;
+            if self.text.job.as_ref().is_some_and(|j| j.image == image) {
+                self.text.cancel_job();
+            }
+        }
+        self.forget_info(&path);
+        let id = self.next_id();
+        let job = DeleteJob {
+            id,
+            path: path.clone(),
+            permanent,
+        };
+        match jobs::delete(self.out.clone(), Arc::clone(&self.disk), job) {
+            Ok(()) => {
+                self.deleting = Some(DeleteRun {
+                    id,
+                    path,
+                    stopped_load,
+                });
+                Handled::Done
+            }
+            Err(_) => {
+                self.resume_load(&path, stopped_load);
+                ui.toast("Could not start deleting", now);
+                Handled::Ignored
+            }
+        }
+    }
+
+    /// Start the load of `path` again when a removal stopped it.
+    fn resume_load(&mut self, path: &Path, stopped: bool) {
+        if let Some(target) = self.target.as_ref().filter(|t| stopped && t.path == path) {
+            self.library.set_current(target.index);
+        }
+    }
+
+    /// A removal ended. On success, or when the file was gone already, it
+    /// leaves the folder. On failure the image and the list stay as they
+    /// were and the notice says why.
+    fn deleted(
+        &mut self,
+        id: u64,
+        path: &Path,
+        permanent: bool,
+        result: Removal,
+        ui: &mut Ui,
+        now: Duration,
+    ) {
+        let Some(run) = self.deleting.take_if(|d| d.id == id) else {
+            return;
+        };
+        let name = file_name(path);
+        match result {
+            Ok(()) => {
+                let done = if permanent {
+                    format!("Deleted {name}")
+                } else {
+                    format!("Moved {name} to {TRASH_NAME}")
+                };
+                ui.toast(done, now);
+                self.drop_from_folder(path, now);
+            }
+            Err((std::io::ErrorKind::NotFound, _)) => {
+                ui.toast(format!("{name} was already gone"), now);
+                self.drop_from_folder(path, now);
+            }
+            Err((_, why)) => {
+                let what = if permanent {
+                    format!("Could not delete {name}")
+                } else {
+                    format!("Could not move {name} to {TRASH_NAME}")
+                };
+                let text = format!("{what}: {why}");
+                if run.stopped_load {
+                    // The load starts again and its image clears the
+                    // notice: the toast keeps the reason readable.
+                    ui.toast(text.clone(), now);
+                }
+                self.notice = Some(text);
+                self.resume_load(path, run.stopped_load);
+            }
+        }
+    }
+
+    /// The file at `path` is gone. It leaves the folder list, the counter
+    /// and the gallery strip at once, and the pixels, thumbnail, text and
+    /// facts kept for it are freed. When it was the image the user wanted,
+    /// the next image shows, or the previous one when it was the last; with
+    /// no image left the window is empty.
+    fn drop_from_folder(&mut self, path: &Path, now: Duration) {
+        let old = self.target.clone();
+        let wanted = old.as_ref().is_some_and(|t| t.path == path);
+        self.text.forget(path);
+        self.forget_info(path);
+        if self.shown.as_ref().is_some_and(|s| s.path == path) {
+            // Unsaved edits go with the file.
+            self.shown = None;
+            self.pending_save = None;
+            self.view = ViewState::default();
+            self.push_content(None);
+        }
+        if wanted {
+            self.target = None;
+            self.loading = None;
+            self.load_started = None;
+            self.notice = None;
+        }
+        let mut paths = self.library.paths();
+        let Some(at) = paths.iter().position(|p| p == path) else {
+            // Not in the list (the user opened another file meanwhile):
+            // only its cached data goes.
+            self.library.invalidate(path);
+            if let Some(old) = old.filter(|_| wanted && !paths.is_empty()) {
+                self.go_to(old.index.min(paths.len() - 1), now);
+            }
+            return;
+        };
+        if self.awaiting_listing {
+            // The folder listing has not arrived: the list holds this file
+            // alone. List the folder again now that the file is gone.
+            self.library.set_items(Vec::new());
+            self.library.refresh();
+            self.count = 0;
+            self.thumbs.reset(0);
+            if wanted {
+                self.show_after_listing = Some(path.to_path_buf());
+            }
+            return;
+        }
+        paths.remove(at);
+        let len = paths.len();
+        // Without disk access; cached data follows its path, the file's own
+        // goes and its running jobs stop.
+        self.library.set_items(paths);
+        self.count = len;
+        self.thumbs.reset(len);
+        if !wanted {
+            // The user moved on while the file went: that image keeps its
+            // place by path.
+            if let Some(index) = old.and_then(|t| self.index_of(&t.path)) {
+                if let Some(t) = &mut self.target {
+                    t.index = index;
+                }
+                self.library.set_current(index);
+            }
+            return;
+        }
+        if len > 0 {
+            self.go_to(at.min(len - 1), now);
+        }
+    }
+}
+
+/// The index in `paths` of the image that takes the place of the removed
+/// file `removed`: the first one that sorts after it, or the last.
+fn neighbor_index(paths: &[PathBuf], removed: &Path) -> usize {
+    let name = file_name(removed);
+    paths
+        .iter()
+        .position(|p| natural_cmp(&file_name(p), &name) == std::cmp::Ordering::Greater)
+        .unwrap_or(paths.len().saturating_sub(1))
 }

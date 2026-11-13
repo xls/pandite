@@ -3,7 +3,8 @@
 //! [`Disk`] extends the library's [`FileAccess`] with the few calls the
 //! application needs besides reading images: a bounded read of a file's
 //! head (to probe its size), small reads and atomic writes (settings, Save
-//! As) and directory creation. The application calls these only from
+//! As), directory creation and the removal of a file (to the trash or for
+//! good). The application calls these only from
 //! worker threads; tests inject implementations that stall or record the
 //! calling thread.
 
@@ -42,6 +43,17 @@ pub trait Disk: FileAccess {
     /// Create `dir` and its parents.
     fn create_dir_all(&self, dir: &Path) -> io::Result<()> {
         std::fs::create_dir_all(dir)
+    }
+
+    /// Move the file `path` to the trash of the system. See
+    /// [`crate::trash::trash`].
+    fn trash(&self, path: &Path) -> io::Result<()> {
+        crate::trash::trash(path)
+    }
+
+    /// Remove the file `path` for good.
+    fn remove_file(&self, path: &Path) -> io::Result<()> {
+        std::fs::remove_file(path)
     }
 }
 

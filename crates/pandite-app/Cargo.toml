@@ -33,13 +33,19 @@ arboard = { version = "3.7", default-features = false }
 # client and pulls in no async runtime; it falls back to zenity. Outside
 # Windows, images reach the clipboard through arboard ("image-data");
 # Windows uses its own clipboard functions (src/shell/native.rs).
+# The trash (src/trash.rs) uses libc for the user id and the local time
+# on Linux, and NSFileManager through objc2 on macOS. Windows calls
+# shell32 directly. All of these crates are in the tree already.
 [target.'cfg(all(unix, not(target_vendor = "apple")))'.dependencies]
 winit = { version = "0.30.13", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen", "wayland-csd-adwaita"] }
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 arboard = { version = "3.7", default-features = false, features = ["wayland-data-control", "image-data"] }
+libc = "0.2"
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 arboard = { version = "3.7", default-features = false, features = ["image-data"] }
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSError", "NSFileManager", "NSString", "NSURL"] }
 
 [lints]
 workspace = true

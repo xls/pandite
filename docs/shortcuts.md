@@ -18,6 +18,8 @@ On macOS, Ctrl is the Command key and Alt is the Option key.
 | Copy selected text | Ctrl+C |
 | Copy file path | Ctrl+Shift+C |
 | Select all text | Ctrl+A |
+| Move to Recycle Bin (Windows), Move to Trash (macOS, Linux) | Del |
+| Delete permanently... | Shift+Del |
 | Undo | Ctrl+Z |
 | Rotate left | Shift+R, L |
 | Rotate right | R |
@@ -34,8 +36,10 @@ On macOS, Ctrl is the Command key and Alt is the Option key.
 | Pan down | Down, Ctrl+Down |
 | Pan left | Ctrl+Left |
 | Pan right | Ctrl+Right |
-| Previous image | Left, PgUp, Backspace |
-| Next image | Right, PgDn, Space |
+| Previous image | Left, Backspace |
+| Next image | Right, Space |
+| Back one gallery page | PgUp |
+| Forward one gallery page | PgDn |
 | First image | Home |
 | Last image | End |
 | Gallery strip | G |
@@ -61,7 +65,17 @@ On macOS, Ctrl is the Command key and Alt is the Option key.
 - The keys +, -, = and the digits ignore Shift, so keyboard layouts that
   need Shift for these keys work.
 - When you hold the key, these commands repeat: previous image, next image,
-  zoom in, zoom out and the four pan commands. Other commands run one time.
+  back and forward one gallery page, zoom in, zoom out and the four pan
+  commands. Other commands run one time.
+- PgDn and PgUp move by one page of the gallery strip: the number of
+  thumbnails that fit whole in the strip at the current window width. When
+  the strip is hidden, the page is the number that the strip would show.
+  At the first and last image the move stops. When you press the key again
+  there, the move wraps to the other end only if single steps wrap.
+- Del moves the file of the current image to the Recycle Bin (Windows) or
+  the Trash (macOS, Linux) without a question, because you can restore it.
+  Then the next image shows, or the previous image if the file was the
+  last. See [Delete a file](#delete-a-file).
 - Ctrl+C copies the selected text when text in the image is selected.
   Otherwise, Ctrl+C copies the image. See [Copy the image](#copy-the-image).
 - Ctrl+Shift+C copies the full path of the file. The copy path button on
@@ -88,6 +102,37 @@ On macOS, Ctrl is the Command key and Alt is the Option key.
   screen, gallery strip, image information, context menu, keyboard
   shortcuts, Esc, quit and the crop commands.
 - The arrow keys move the selection only when a selection exists.
+
+## Delete a file
+
+Del and Shift+Del act on the file of the current image.
+
+- Del moves the file to the Recycle Bin (Windows) or the Trash (macOS,
+  Linux). pandite does not ask first. To get the file back, restore it from
+  the Recycle Bin or the Trash.
+- Shift+Del deletes the file permanently. You cannot undo this, so pandite
+  asks first and names the file. Keep is the default button: Enter or Esc
+  keeps the file. To delete it, press Right and then Enter, or click
+  Delete.
+- After a delete, the next image shows, or the previous image if the file
+  was the last. The folder list, the position counter and the gallery strip
+  drop the file at once. When the folder has no image left, the window is
+  empty.
+- Unsaved edits of the image (rotate, flip, crop, resize) go with the file.
+- When the delete fails, the image stays and a message at the bottom gives
+  the reason. When the file is already gone, pandite drops it from the list
+  and shows the next image.
+- One key press deletes one file. A held key does not delete more files.
+- The keys do nothing while a dialog is open, in crop mode, or while a text
+  field has the focus. In a text field, Del deletes text.
+- On Windows, only fixed drives have a Recycle Bin. On a network drive or a
+  removable drive, Del does not delete the file and the message says why.
+  When Windows cannot put a file in the Recycle Bin of a fixed drive (the
+  file is too large for it, or it is turned off), Windows asks before it
+  deletes the file permanently.
+- On Linux, the file goes to the trash in your home folder
+  (`$XDG_DATA_HOME/Trash`), or to the trash at the top of its drive when it
+  is on another drive. This follows the FreeDesktop Trash specification.
 
 ## Copy the image
 

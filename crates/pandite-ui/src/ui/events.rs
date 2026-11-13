@@ -851,6 +851,7 @@ impl Ui {
                         .into(),
                     confirm_label: "Replace".into(),
                     cancel_label: "Cancel".into(),
+                    cancel_is_default: false,
                 };
                 self.open_confirm(ConfirmOwner::BulkOverwrite, request);
             }
