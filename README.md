@@ -34,8 +34,7 @@ their time to show a picture.
 
 ## Performance
 
-Time from program start to the picture on screen, measured by
-`pandite --smoke <file> --timing` on a release build. Machine: AMD Ryzen 9
+Time from program start to the picture on screen. Machine: AMD Ryzen 9
 9950X3D, Windows 11, Direct3D 12.
 
 | File | GPU | First picture | Full resolution |
