@@ -1,4 +1,4 @@
-//! Gate G6: the loading overlay and escaping a slow load.
+//! Gate G6: the loading overlay, and Escape quitting during a slow load.
 
 mod support;
 
@@ -9,7 +9,7 @@ use pandite_ui::{
 use std::time::Duration;
 use support::*;
 
-const HINT: &str = "Press Esc to cancel";
+const HINT: &str = "Press Esc to quit";
 
 fn loading(
     name: &'static str,
@@ -177,47 +177,38 @@ fn loading_overlay_reports_cloud_download() {
 }
 
 #[test]
-fn escape_during_loading_emits_cancel_load() {
+fn escape_during_loading_emits_quit() {
+    // Escape while a file loads quits at once: over a shown image, in full
+    // screen, before the overlay shows and on the first screen. It never
+    // stops the load and keeps the application open.
     let mut ctx = over_ctx(ms(5000));
     ctx.fullscreen = true;
     let mut ui = Ui::new();
-    assert_eq!(
-        press_key(&mut ui, &ctx, Key::Escape),
-        vec![Action::CancelLoad]
-    );
-    // Even before the overlay shows.
+    assert_eq!(press_key(&mut ui, &ctx, Key::Escape), vec![Action::Quit]);
     let early = over_ctx(ms(20));
+    assert_eq!(press_key(&mut ui, &early, Key::Escape), vec![Action::Quit]);
+    let splash = splash_ctx(ms(800));
     assert_eq!(
-        press_key(&mut ui, &early, Key::Escape),
-        vec![Action::CancelLoad]
+        press_key(&mut Ui::new(), &splash, Key::Escape),
+        vec![Action::Quit]
     );
-    // Before other meanings: crop mode stays, a dialog stays, a menu stays.
-    let mut plain = image_ctx();
-    plain.fullscreen = true;
-    press_key(&mut ui, &plain, Key::C);
-    assert_eq!(
-        press_key(&mut ui, &ctx, Key::Escape),
-        vec![Action::CancelLoad]
-    );
+    // Crop mode is no dialog: Escape quits there too.
+    assert_eq!(press_key(&mut ui, &ctx, Key::C), vec![Action::StartCrop]);
     assert_eq!(ui.mode(), UiMode::Crop);
-    press_key(&mut ui, &plain, Key::Escape);
-    key(&mut ui, &plain, Key::R, Modifiers::CTRL);
-    assert_eq!(
-        press_key(&mut ui, &ctx, Key::Escape),
-        vec![Action::CancelLoad]
-    );
+    assert_eq!(press_key(&mut ui, &ctx, Key::Escape), vec![Action::Quit]);
+    assert_eq!(press_key(&mut ui, &ctx, Key::C), vec![Action::CancelCrop]);
+    // A dialog or a menu takes Escape first, also while a file loads.
+    key(&mut ui, &ctx, Key::R, Modifiers::CTRL);
     assert_eq!(ui.mode(), UiMode::Modal);
-    press_key(&mut ui, &plain, Key::Escape);
-    let p = Point::new(500.0, 100.0);
-    press(&mut ui, &plain, p, PointerButton::Right);
-    release(&mut ui, &plain, p, PointerButton::Right);
-    assert_eq!(
-        press_key(&mut ui, &ctx, Key::Escape),
-        vec![Action::CancelLoad]
-    );
-    press_key(&mut ui, &plain, Key::Escape);
+    assert!(press_key(&mut ui, &ctx, Key::Escape).is_empty());
     assert_eq!(ui.mode(), UiMode::Normal);
-    // A held Escape sends one cancel.
+    let p = Point::new(500.0, 100.0);
+    press(&mut ui, &ctx, p, PointerButton::Right);
+    release(&mut ui, &ctx, p, PointerButton::Right);
+    assert_eq!(ui.mode(), UiMode::Modal);
+    assert!(press_key(&mut ui, &ctx, Key::Escape).is_empty());
+    assert_eq!(ui.mode(), UiMode::Normal);
+    // A held Escape sends nothing; the next press quits.
     let held = ui.handle_event(
         pandite_ui::InputEvent::KeyDown {
             key: Key::Escape,
@@ -227,17 +218,7 @@ fn escape_during_loading_emits_cancel_load() {
         &ctx,
     );
     assert!(held.is_empty());
-    // Without a load, Escape leaves full screen again.
-    assert_eq!(
-        press_key(&mut ui, &plain, Key::Escape),
-        vec![Action::ToggleFullscreen]
-    );
-    // The splash case too, where cancel may close the application.
-    let splash = splash_ctx(ms(800));
-    assert_eq!(
-        press_key(&mut Ui::new(), &splash, Key::Escape),
-        vec![Action::CancelLoad]
-    );
+    assert_eq!(press_key(&mut ui, &ctx, Key::Escape), vec![Action::Quit]);
 }
 
 #[test]

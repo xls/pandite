@@ -581,6 +581,12 @@ impl Renderer {
         self.content.as_ref().map(|c| c.renderer.size())
     }
 
+    /// The frame of the content on screen: its index among the frames of an
+    /// animation, 0 for a still. `None` without content.
+    pub fn content_frame(&self) -> Option<usize> {
+        self.content.as_ref().map(|c| c.renderer.frame_index())
+    }
+
     /// Advance animated content by `dt` (the real time since the previous
     /// call). Returns how long until the next redraw is due, or `None` when
     /// the picture will not change by itself; sleep that long between

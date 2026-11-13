@@ -14,6 +14,7 @@ fn sample(kind: ActionKind, dir: &std::path::Path) -> Action {
         ActionKind::Open => Action::Open,
         ActionKind::SaveAs => Action::SaveAs,
         ActionKind::CopyPath => Action::CopyPath,
+        ActionKind::CopyImage => Action::CopyImage,
         ActionKind::CopyText => Action::CopyText("some text".into()),
         ActionKind::RequestPaste => Action::RequestPaste,
         ActionKind::RotateLeft => Action::RotateLeft,
@@ -46,7 +47,6 @@ fn sample(kind: ActionKind, dir: &std::path::Path) -> Action {
             overwrite: OverwritePolicy::Rename,
         }),
         ActionKind::CancelBulk => Action::CancelBulk,
-        ActionKind::CancelLoad => Action::CancelLoad,
         ActionKind::Undo => Action::Undo,
         ActionKind::FitToWindow => Action::FitToWindow,
         ActionKind::OneToOne => Action::OneToOne { anchor: None },
@@ -77,6 +77,7 @@ fn kind_of(action: &Action) -> ActionKind {
         Action::Open => ActionKind::Open,
         Action::SaveAs => ActionKind::SaveAs,
         Action::CopyPath => ActionKind::CopyPath,
+        Action::CopyImage => ActionKind::CopyImage,
         Action::CopyText(_) => ActionKind::CopyText,
         Action::RequestPaste => ActionKind::RequestPaste,
         Action::RotateLeft => ActionKind::RotateLeft,
@@ -94,7 +95,6 @@ fn kind_of(action: &Action) -> ActionKind {
         Action::PickBulkDestination => ActionKind::PickBulkDestination,
         Action::RunBulk(_) => ActionKind::RunBulk,
         Action::CancelBulk => ActionKind::CancelBulk,
-        Action::CancelLoad => ActionKind::CancelLoad,
         Action::Undo => ActionKind::Undo,
         Action::FitToWindow => ActionKind::FitToWindow,
         Action::OneToOne { .. } => ActionKind::OneToOne,
@@ -139,6 +139,14 @@ fn every_action_has_a_handler() {
             ActionKind::ToggleFullscreen => assert_ne!(h.app().fullscreen(), fullscreen),
             ActionKind::CopyPath => {
                 assert_eq!(h.clipboard().as_deref(), Some(paths[0].to_str().unwrap()))
+            }
+            ActionKind::CopyImage => {
+                assert!(h.wait_until(|a| !a.copying_image()));
+                assert_eq!(
+                    h.images.images().len(),
+                    1,
+                    "the image reached the clipboard"
+                );
             }
             ActionKind::CopyText => assert_eq!(h.clipboard().as_deref(), Some("some text")),
             ActionKind::RequestPaste => {

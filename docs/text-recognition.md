@@ -33,8 +33,8 @@ The copied text has one line for each line in the image, and one space
 between the words of a line.
 
 A drag that starts on the image away from the text pans the image, as
-before. Click the image away from the text, or press Esc, to clear the
-selection.
+before. Click the image away from the text to clear the selection. Esc
+closes pandite, also while text is selected.
 
 The selection stays on the words when you zoom, pan, rotate, flip or crop
 the image. Words that a crop removes are not selected and not copied.
@@ -47,8 +47,10 @@ the image. Words that a crop removes are not selected and not copied.
 | Double-click a word | Select the word |
 | Triple-click a word | Select the line |
 | Ctrl+A | Select all the text in the image |
-| Ctrl+C | Copy the selected text. Without a selection: copy the file path |
-| Esc | Clear the selection. With no selection, Esc has its usual meaning |
+| Ctrl+C | Copy the selected text. Without a selection: copy the image |
+| Ctrl+Shift+C | Copy the file path, also while text is selected |
+| Click the image away from the text | Clear the selection |
+| Esc | Close pandite (a menu or dialog closes first) |
 
 ## Platforms and limits
 

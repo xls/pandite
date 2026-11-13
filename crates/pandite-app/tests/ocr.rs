@@ -241,11 +241,11 @@ fn copy_selected_text_reaches_clipboard() {
     drag(&mut h, a, b);
     h.key(Key::C, Modifiers::CTRL);
     assert_eq!(h.clipboard().as_deref(), Some("world\nsecond"));
-    // Escape drops the selection; Ctrl+C copies the file path again.
-    h.key(Key::Escape, Modifiers::NONE);
-    h.key(Key::C, Modifiers::CTRL);
+    // Ctrl+Shift+C copies the file path, also while text is selected.
+    h.key(Key::C, Modifiers::CTRL_SHIFT);
     let path = pandite_app::app::display_path(&paths[0]);
     assert_eq!(h.clipboard().as_deref(), Some(path.as_str()));
+    assert!(h.images.images().is_empty(), "no image copy so far");
     // Ctrl+A, Ctrl+C.
     h.key(Key::A, Modifiers::CTRL);
     h.key(Key::C, Modifiers::CTRL);
@@ -326,13 +326,17 @@ fn ocr_setting_off_disables_recognition() {
     assert!(h.app().shown_text().is_none());
     assert!(!h.app().reading_text());
     assert_eq!(h.app().next_frame_at(), h.app().ui().next_redraw_at());
-    // No text features: the pointer over the words keeps its shape and
-    // Ctrl+A, Ctrl+C copy the path.
+    // No text features: the pointer over the words keeps its shape,
+    // Ctrl+A selects nothing and Ctrl+C copies the image, not text.
     let p = word_at(&mut h, 0, 600, 300);
     h.input(InputEvent::PointerMove { pos: p });
     assert_ne!(last_cursor(&h), Some(CursorShape::Text));
     h.key(Key::A, Modifiers::CTRL);
     h.key(Key::C, Modifiers::CTRL);
+    assert!(h.wait_until(|a| !a.copying_image()));
+    assert_eq!(h.images.images().len(), 1);
+    assert_eq!(h.clipboard(), None, "no text was copied");
+    h.key(Key::C, Modifiers::CTRL_SHIFT);
     let path = pandite_app::app::display_path(&paths[0]);
     assert_eq!(h.clipboard().as_deref(), Some(path.as_str()));
     // The setting stays off when the settings are written.
@@ -384,8 +388,9 @@ fn no_provider_hides_text_features() {
     assert!(!shows_text_commands(&mut h));
     h.key(Key::A, Modifiers::CTRL);
     h.key(Key::C, Modifiers::CTRL);
-    let path = pandite_app::app::display_path(&paths[0]);
-    assert_eq!(h.clipboard().as_deref(), Some(path.as_str()));
+    assert!(h.wait_until(|a| !a.copying_image()));
+    assert_eq!(h.images.images().len(), 1, "Ctrl+C copied the image");
+    assert_eq!(h.clipboard(), None, "no text was copied");
     assert!(h.app().notice().is_none());
 
     // A recognizer that is registered but has no language: it is asked

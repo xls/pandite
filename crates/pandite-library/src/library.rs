@@ -466,7 +466,7 @@ impl Library {
         self.update(|st| st.set_visible(range));
     }
 
-    /// Stop loading the current image (the Escape key). A read stuck in
+    /// Stop loading the current image. A read stuck in
     /// the operating system is abandoned and its worker replaced.
     /// [`Library::get`] then returns [`Fetch::Cancelled`].
     pub fn cancel_current(&self) {

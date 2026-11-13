@@ -138,10 +138,19 @@ fn copy_path_button_emits_action() {
     assert!(release(&mut ui, &ctx, away, pandite_ui::PointerButton::Left).is_empty());
     // A full click on the dedicated button copies the path.
     assert_eq!(click(&mut ui, &ctx, r.center()), vec![Action::CopyPath]);
-    // So does Ctrl+C.
+    // So does Ctrl+Shift+C; Ctrl+C copies the image instead. The tooltip
+    // names the key.
+    assert_eq!(
+        key(&mut ui, &ctx, Key::C, Modifiers::CTRL_SHIFT),
+        vec![Action::CopyPath]
+    );
     assert_eq!(
         key(&mut ui, &ctx, Key::C, Modifiers::CTRL),
-        vec![Action::CopyPath]
+        vec![Action::CopyImage]
+    );
+    assert_eq!(
+        Command::CopyPath.tooltip(),
+        "Copy file path  (Ctrl+Shift+C)"
     );
     // The application confirms with a toast.
     ui.toast("Path copied", ctx.now);
@@ -238,6 +247,7 @@ fn toolbar_disabled_without_image() {
     // Keys for image commands do nothing either.
     assert!(press_key(&mut ui, &ctx, Key::R).is_empty());
     assert!(key(&mut ui, &ctx, Key::C, Modifiers::CTRL).is_empty());
+    assert!(key(&mut ui, &ctx, Key::C, Modifiers::CTRL_SHIFT).is_empty());
     // Open still works, and the toolbar never hides without an image.
     let (r, _) = bar_draws(&list, Icon::Open)[0];
     assert_eq!(click(&mut ui, &ctx, r.center()), vec![Action::Open]);

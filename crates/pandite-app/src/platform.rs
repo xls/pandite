@@ -5,7 +5,7 @@
 //! system clipboard and native dialogs, and tests implement them with
 //! recorders.
 
-use pandite_core::Rect;
+use pandite_core::{CancelToken, ImageBuf, Rect};
 use pandite_ui::CursorShape;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -14,12 +14,30 @@ use std::sync::Arc;
 /// workers; after a worker queues a result it calls the waker.
 pub type Waker = Arc<dyn Fn() + Send + Sync>;
 
-/// Text on the system clipboard.
+/// The system clipboard: text, and images through an [`ImageWriter`].
 pub trait Clipboard {
     /// Put `text` on the clipboard.
     fn set_text(&mut self, text: &str) -> Result<(), String>;
     /// Read text from the clipboard.
     fn get_text(&mut self) -> Result<String, String>;
+    /// A writer for one image. The core asks for it on the event loop and
+    /// calls it on a worker thread; asking must return at once.
+    fn image_writer(&mut self) -> Box<dyn ImageWriter>;
+}
+
+/// Puts one image on the system clipboard. It runs on a worker thread: a
+/// large image takes a while to convert and hand over, and another
+/// program may hold the clipboard for a moment.
+pub trait ImageWriter: Send {
+    /// Replace the clipboard contents with `image` (8-bit RGBA, straight
+    /// alpha, top row first). Returns [`pandite_core::Error::Cancelled`]
+    /// without touching the clipboard when `cancel` is set before the
+    /// hand-over starts.
+    fn set_image(
+        self: Box<Self>,
+        image: &ImageBuf,
+        cancel: &CancelToken,
+    ) -> pandite_core::Result<()>;
 }
 
 /// A file type filter for a dialog: a name and its extensions (no dots).

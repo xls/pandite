@@ -14,8 +14,9 @@ On macOS, Ctrl is the Command key and Alt is the Option key.
 |---|---|
 | Open... | Ctrl+O |
 | Save as... | Ctrl+Shift+S, Ctrl+S |
-| Copy file path | Ctrl+C |
+| Copy image | Ctrl+C |
 | Copy selected text | Ctrl+C |
+| Copy file path | Ctrl+Shift+C |
 | Select all text | Ctrl+A |
 | Undo | Ctrl+Z |
 | Rotate left | Shift+R, L |
@@ -41,7 +42,7 @@ On macOS, Ctrl is the Command key and Alt is the Option key.
 | Full screen | F11, Alt+Enter |
 | Context menu | Menu, Shift+F10 |
 | Keyboard shortcuts | F1 |
-| Cancel or leave full screen | Esc |
+| Close dialog or quit | Esc |
 | Quit | Ctrl+Q, Ctrl+W |
 
 ### In crop mode
@@ -50,7 +51,7 @@ On macOS, Ctrl is the Command key and Alt is the Option key.
 |---|---|
 | Apply crop | Enter |
 | Select whole image | Ctrl+A |
-| Cancel crop | Esc |
+| Cancel crop | C |
 | Move the selection 1 pixel | Left, Right, Up, Down |
 | Move the selection 10 pixels | Shift+Left, Shift+Right, Shift+Up, Shift+Down |
 
@@ -61,22 +62,48 @@ On macOS, Ctrl is the Command key and Alt is the Option key.
 - When you hold the key, these commands repeat: previous image, next image,
   zoom in, zoom out and the four pan commands. Other commands run one time.
 - Ctrl+C copies the selected text when text in the image is selected.
-  Otherwise, Ctrl+C copies the file path.
+  Otherwise, Ctrl+C copies the image. See [Copy the image](#copy-the-image).
+- Ctrl+Shift+C copies the full path of the file. The copy path button on
+  the toolbar does the same.
 - Ctrl+A and Copy selected text work only on Windows, when pandite has read
   the text of the image. See [text-recognition.md](text-recognition.md).
   On other systems, the shortcut overlay does not show them.
-- When a text selection exists and no menu or dialog is open, Esc clears
-  the selection first. The next Esc has its usual meaning.
-- When a file is loading, Esc stops the load. If the file is the first image,
-  pandite closes. If the file is a later image, pandite shows the previous image.
-- Esc closes the topmost menu, dialog or mode first. When nothing is open,
-  Esc leaves full screen.
+- Esc closes the topmost menu, dialog, question or the shortcut overlay.
+  When none of these is open, Esc closes pandite. This is also true in full
+  screen, in crop mode, while text is selected and while a file loads.
+- Esc closes pandite without a question about unsaved edits, the same as
+  Ctrl+Q. pandite does not wait for a slow file, a decode, an image copy or
+  text recognition.
+- A held Esc does not repeat. When it closes a dialog, pandite stays open.
+- To leave full screen, press F11 or Alt+Enter. To leave crop mode without
+  a crop, press C or click Cancel.
 - In a dialog, Full screen and Quit stay available. The dialog receives all
   other keys.
 - In crop mode, these commands stay available: fit, 1:1, zoom, pan, full
-  screen, gallery strip, context menu, keyboard shortcuts, cancel, quit and
+  screen, gallery strip, context menu, keyboard shortcuts, Esc, quit and
   the crop commands.
 - The arrow keys move the selection only when a selection exists.
+
+## Copy the image
+
+Ctrl+C puts the image on the clipboard as pixels. Paste it into an image
+editor, a document or a chat.
+
+- The copy has the full resolution of the file, with 8 bits for each color
+  channel and alpha.
+- The copy includes the rotation, flip and crop that you applied, the same
+  pixels that Save as writes. A resize is included too.
+- For an animation, the copy is the frame on screen.
+- pandite copies in the background. A large image shows "Copying
+  image..." first. "Image copied" shows when the image is on the
+  clipboard.
+- When only a reduced image is on screen because the full resolution is
+  still loading, pandite says "Copying when the full image has loaded" and
+  copies the full image when it arrives.
+- When you press Ctrl+C again before a copy ends, pandite does not start a
+  second copy of the same image.
+- On Windows, the clipboard gets a 32-bit bitmap. An image with
+  transparency up to 16 megapixels also goes on the clipboard as PNG.
 
 ## Mouse
 

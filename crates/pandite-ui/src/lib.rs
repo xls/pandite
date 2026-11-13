@@ -55,9 +55,16 @@
 //! selects words in reading order, a double click selects a word and a
 //! triple click its line. Ctrl+A selects everything, Ctrl+C copies the
 //! selection as [`Action::CopyText`] (lines joined with `"\n"`, words with
-//! one space) and Escape clears it before any other meaning. Drags that
-//! start off text pan as before. Highlights are drawn over the image with
-//! the same placement as the image itself.
+//! one space). Without a selection Ctrl+C copies the image
+//! ([`Action::CopyImage`]). Drags that start off text pan as before.
+//! Highlights are drawn over the image with the same placement as the
+//! image itself.
+//!
+//! # Escape
+//!
+//! Escape closes the topmost menu, shortcut overlay or dialog. When none
+//! is open it emits [`Action::Quit`], also in full screen, in crop mode,
+//! with a text selection and while a file loads.
 
 #![forbid(unsafe_code)]
 

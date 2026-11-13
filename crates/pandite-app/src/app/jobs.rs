@@ -1,6 +1,6 @@
-//! Background jobs of the application core: edits, Save As, size probes,
-//! folder resolution, bulk conversion, text recognition and settings
-//! writes.
+//! Background jobs of the application core: edits, Save As, image
+//! copies, size probes, folder resolution, bulk conversion, text
+//! recognition and settings writes.
 //!
 //! Each job runs on its own thread, touches the disk only through
 //! [`Disk`], and reports with one [`Msg`] followed by a wake of the event
@@ -11,7 +11,7 @@ use super::text::TextKey;
 use super::Msg;
 use crate::disk::{list_images, Disk};
 use crate::edit::Edit;
-use crate::platform::Waker;
+use crate::platform::{ImageWriter, Waker};
 use pandite_core::{
     CancelToken, EncodeOptions, Error, ImageBuf, Registry, Result as CoreResult, Source,
     TextProvider,
@@ -145,6 +145,52 @@ pub(crate) fn save(
         })
         .map_err(|e| e.to_string());
         out.send(Msg::Saved { id: job.id, result });
+    })
+}
+
+/// What an image copy needs.
+pub(crate) struct CopyJob {
+    pub id: u64,
+    /// The pixels to copy, in any format.
+    pub image: ImageBuf,
+    pub writer: Box<dyn ImageWriter>,
+    pub cancel: CancelToken,
+}
+
+/// How an image copy ended.
+#[derive(Debug)]
+pub(crate) enum Copied {
+    /// The image is on the clipboard.
+    Done,
+    /// Stopped before the clipboard was touched.
+    Cancelled,
+    /// It failed; the text says why.
+    Failed(String),
+}
+
+/// Convert the image to 8-bit RGBA and put it on the clipboard. The event
+/// loop never waits for this thread, also not at exit.
+pub(crate) fn copy_image(out: Outbox, job: CopyJob) -> std::io::Result<()> {
+    spawn("pandite-copy", move || {
+        let CopyJob {
+            id,
+            image,
+            writer,
+            cancel,
+        } = job;
+        let result = guarded("copying the image", || {
+            let rgba = pandite_ops::to_rgba8(&image)?;
+            drop(image);
+            cancel.check()?;
+            writer.set_image(&rgba, &cancel)
+        });
+        let outcome = match result {
+            Ok(()) => Copied::Done,
+            Err(Error::Cancelled) => Copied::Cancelled,
+            Err(Error::Backend(why)) => Copied::Failed(why),
+            Err(err) => Copied::Failed(err.to_string()),
+        };
+        out.send(Msg::Copied { id, outcome });
     })
 }
 

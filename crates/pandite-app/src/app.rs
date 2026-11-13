@@ -6,10 +6,11 @@
 //! with draw lists, content to upload and calls on the [`WindowControl`].
 //!
 //! Threading: every method runs on the event-loop thread and returns at
-//! once. File reads, folder listings, decodes, encodes, writes, bulk work
-//! and text recognition run on library workers or on the job threads in
-//! [`jobs`], which report through a channel and the [`Waker`]. A job stuck
-//! in a file system call is never waited for.
+//! once. File reads, folder listings, decodes, encodes, writes, bulk work,
+//! image copies to the clipboard and text recognition run on library
+//! workers or on the job threads in [`jobs`], which report through a
+//! channel and the [`Waker`]. A job stuck in a file system call or a
+//! clipboard hand-over is never waited for, also not when the app quits.
 
 mod jobs;
 mod text;
@@ -19,10 +20,10 @@ use crate::disk::Disk;
 use crate::edit::{self, Edit, EditStack, Undo};
 use crate::platform::{Clipboard, DialogKind, Dialogs, Filter, Waker, WindowControl};
 use crate::settings::{self, Settings, TextRecognition, ThemeChoice, WindowPlacement};
-use jobs::Outbox;
+use jobs::{Copied, CopyJob, Outbox};
 use pandite_core::{
-    CancelToken, Color, Content, DrawList, EncodeOptions, Error, ImageBuf, Point, Rect, Registry,
-    Size, TextLayout, TextMeasure, TextureSink, ViewState,
+    CancelToken, Color, Content, DrawList, EncodeOptions, Error, ImageBuf, PixelFormat, Point,
+    Rect, Registry, Size, TextLayout, TextMeasure, TextureSink, ViewState,
 };
 use pandite_library::{Event, Fetch, FileAccess, Library, LibraryConfig, Reduced};
 use pandite_ui::{
@@ -69,6 +70,8 @@ pub(crate) enum Msg {
         summary: String,
         destination: PathBuf,
     },
+    /// Image copy `id` ended.
+    Copied { id: u64, outcome: Copied },
     /// Text recognition job `ticket` of shown image `image` ended.
     TextDone {
         ticket: u64,
@@ -303,6 +306,21 @@ struct BulkRun {
     label: String,
 }
 
+/// An image copy on a worker.
+#[derive(Clone, Debug)]
+struct CopyRun {
+    id: u64,
+    /// The shown image it copies.
+    image: u64,
+    /// The content generation on screen when it started: the picture.
+    picture: u64,
+    cancel: CancelToken,
+}
+
+/// Copies of at least this many pixels say so when they start; smaller
+/// ones finish before a toast could be read.
+const COPY_NOTICE_PIXELS: u64 = 12_000_000;
+
 /// Largest image (in bytes of pixel data) the edit commands accept.
 const MAX_EDIT_BYTES: usize = 1 << 30;
 
@@ -374,6 +392,14 @@ struct State {
     pending_save: Option<PendingSave>,
     saving: Option<Saving>,
     bulk: Option<BulkRun>,
+    /// The image copy on a worker.
+    copying: Option<CopyRun>,
+    /// The shown image a copy waits for: its full resolution, its edits
+    /// or the copy that runs.
+    copy_wanted: Option<u64>,
+    /// The content generation the renderer shows and the animation frame
+    /// of it on screen.
+    frame_on_screen: Option<(u64, usize)>,
 
     title: String,
     busy_text: String,
@@ -530,6 +556,9 @@ impl App {
             pending_save: None,
             saving: None,
             bulk: None,
+            copying: None,
+            copy_wanted: None,
+            frame_on_screen: None,
             title: String::new(),
             busy_text: String::new(),
             bulk_text: String::new(),
@@ -626,6 +655,12 @@ impl App {
         self.st.saving.is_some()
             || self.st.pending_save.is_some()
             || self.st.shown.as_ref().is_some_and(|s| s.edits.is_busy())
+    }
+
+    /// True while an image copy runs or waits (for the full resolution,
+    /// for edits, or for the copy before it).
+    pub fn copying_image(&self) -> bool {
+        self.st.copying.is_some() || self.st.copy_wanted.is_some()
     }
 
     /// True while a bulk job runs.
@@ -741,6 +776,14 @@ impl App {
         self.st.poll_text(now);
     }
 
+    /// The renderer shows content `generation` (from
+    /// [`ContentUpdate::generation`]) with animation frame `frame` (0 for a
+    /// still). Call after each frame; an image copy takes the frame on
+    /// screen.
+    pub fn frame_on_screen(&mut self, generation: u64, frame: usize) {
+        self.st.frame_on_screen = Some((generation, frame));
+    }
+
     /// Open a file or folder (dropped on the window, for example).
     pub fn open(&mut self, path: PathBuf, now: Duration) {
         self.st.open_path(path, now, false);
@@ -788,13 +831,17 @@ impl App {
             }
             Action::SaveAs => st.save_as_dialog(&mut self.ui, now),
             Action::CopyPath => st.copy_path(&mut self.ui, now),
-            Action::CopyText(text) => match st.clipboard.set_text(&text) {
-                Ok(()) => Handled::Done,
-                Err(_) => {
-                    self.ui.toast("Could not copy", now);
-                    Handled::Done
+            Action::CopyImage => st.copy_image(&mut self.ui, now),
+            Action::CopyText(text) => {
+                st.drop_image_copy();
+                match st.clipboard.set_text(&text) {
+                    Ok(()) => Handled::Done,
+                    Err(_) => {
+                        self.ui.toast("Could not copy", now);
+                        Handled::Done
+                    }
                 }
-            },
+            }
             Action::RequestPaste => match st.clipboard.get_text() {
                 Ok(text) if !text.is_empty() => Handled::Paste(text),
                 _ => Handled::Ignored,
@@ -848,7 +895,6 @@ impl App {
                 }
                 None => Handled::Ignored,
             },
-            Action::CancelLoad => st.cancel_load(),
             Action::Undo => st.undo(),
             Action::FitToWindow => {
                 st.view.set_fit();
@@ -1076,6 +1122,9 @@ impl App {
         if let Some(run) = &st.bulk {
             run.cancel.cancel();
         }
+        // A copy that has not reached the clipboard stops there; one in the
+        // middle of the hand-over ends with the process.
+        st.drop_image_copy();
         st.text.cancel_job();
         let mut report = ShutdownReport {
             settings_saved: None,
@@ -1107,6 +1156,9 @@ impl App {
             if let Some(save) = self.st.pending_save.take() {
                 self.st.request_save(save, &mut self.ui, now);
             }
+        }
+        if self.st.copy_wanted.is_some() {
+            self.st.start_copy(&mut self.ui, now);
         }
         let st = &mut self.st;
         let cursor = self.ui.cursor();
@@ -1211,6 +1263,23 @@ impl App {
                     .is_some_and(|f| same_path(f, &destination))
                 {
                     st.library.refresh();
+                }
+            }
+            Msg::Copied { id, outcome } => {
+                let Some(run) = st.copying.take_if(|r| r.id == id) else {
+                    return;
+                };
+                // A copy replaced by a newer one (or by a text copy) says
+                // nothing; the newer one reports.
+                if run.cancel.is_cancelled() {
+                    return;
+                }
+                match outcome {
+                    Copied::Done => self.ui.toast("Image copied", now),
+                    Copied::Cancelled => {}
+                    Copied::Failed(why) => self
+                        .ui
+                        .toast(format!("Could not copy the image: {why}"), now),
                 }
             }
             Msg::TextDone {
@@ -1354,7 +1423,9 @@ impl State {
         if let Some(save) = &self.saving {
             self.busy_text = format!("Saving {}", save.name);
         } else if let Some(shown) = &self.shown {
-            let waiting = shown.edits.is_busy() || self.pending_save.is_some();
+            let waiting = shown.edits.is_busy()
+                || self.pending_save.is_some()
+                || self.copy_wanted == Some(shown.id);
             if shown.standin.is_some() && waiting {
                 self.busy_text = "Loading full resolution".into();
             } else if self.pending_save.is_some() {
@@ -1743,45 +1814,6 @@ impl State {
             self.push_content(None);
         }
         self.notice = Some(format!("Cannot open {}: {err}", file_name(path)));
-    }
-
-    fn cancel_load(&mut self) -> Handled {
-        let Some(load) = self.loading.take() else {
-            return Handled::Ignored;
-        };
-        if load.startup && self.shown.is_none() {
-            // Escape on the first screen: the user changed their mind about
-            // opening this file at all.
-            self.exit = true;
-            return Handled::Done;
-        }
-        self.library.cancel_current();
-        if let Some(shown) = self.shown.as_mut().filter(|s| s.standin.is_some()) {
-            // The full image will not come: what waited for it is dropped,
-            // the stand-in stays on screen.
-            shown.edits = EditStack::new();
-            self.pending_save = None;
-        }
-        match &self.shown {
-            Some(shown) => {
-                let path = shown.path.clone();
-                match self.index_of(&path) {
-                    Some(index) => {
-                        self.library.set_current(index);
-                        self.target = Some(Target { path, index });
-                    }
-                    None => {
-                        // The cancelled file came from another folder: go
-                        // back to the folder of the image on screen.
-                        self.folder = path.parent().map(Path::to_path_buf);
-                        self.library.open(path.clone());
-                        self.target = Some(Target { path, index: 0 });
-                    }
-                }
-            }
-            None => self.target = None,
-        }
-        Handled::Done
     }
 
     fn on_library_event(&mut self, event: Event) {
@@ -2329,7 +2361,101 @@ impl State {
 
     // ----- clipboard and bulk ----------------------------------------------------
 
+    /// Stop the image copy that waits or runs, when the clipboard gets
+    /// something else: the last copy wins.
+    fn drop_image_copy(&mut self) {
+        self.copy_wanted = None;
+        if let Some(run) = &self.copying {
+            run.cancel.cancel();
+        }
+    }
+
+    /// Ctrl+C: copy the image on screen once it is ready (full resolution,
+    /// edits applied). A second request while one runs never starts a
+    /// second job: for the same picture it is dropped, for another one it
+    /// waits until the running copy ends.
+    fn copy_image(&mut self, ui: &mut Ui, now: Duration) -> Handled {
+        let Some(shown) = &self.shown else {
+            ui.toast("Open an image first", now);
+            return Handled::Ignored;
+        };
+        let id = shown.id;
+        let waits_for_full = shown.standin.is_some();
+        if let Some(run) = &self.copying {
+            if run.image == id && run.picture == self.content_gen && !run.cancel.is_cancelled() {
+                ui.toast("Still copying the image", now);
+                return Handled::Ignored;
+            }
+            // The picture changed: the running copy is out of date. It ends
+            // soon; this one starts then.
+            run.cancel.cancel();
+        }
+        self.copy_wanted = Some(id);
+        if waits_for_full {
+            ui.toast("Copying when the full image has loaded", now);
+        }
+        self.start_copy(ui, now);
+        Handled::Done
+    }
+
+    /// Start the image copy that waits, when nothing holds it back. A copy
+    /// for an image no longer on screen is dropped.
+    fn start_copy(&mut self, ui: &mut Ui, now: Duration) {
+        let Some(wanted) = self.copy_wanted else {
+            return;
+        };
+        let Some(shown) = self.shown.as_ref().filter(|s| s.id == wanted) else {
+            self.copy_wanted = None;
+            return;
+        };
+        if self.copying.is_some() || shown.standin.is_some() || shown.edits.is_busy() {
+            return;
+        }
+        let image = self.copy_source(shown);
+        self.copy_wanted = None;
+        let pixels = u64::from(image.width()) * u64::from(image.height());
+        let slow = pixels >= COPY_NOTICE_PIXELS || image.format() != PixelFormat::Rgba8;
+        let run = CopyRun {
+            id: self.next_id(),
+            image: wanted,
+            picture: self.content_gen,
+            cancel: CancelToken::new(),
+        };
+        let job = CopyJob {
+            id: run.id,
+            image,
+            writer: self.clipboard.image_writer(),
+            cancel: run.cancel.clone(),
+        };
+        match jobs::copy_image(self.out.clone(), job) {
+            Ok(()) => {
+                self.copying = Some(run);
+                if slow {
+                    ui.toast("Copying image...", now);
+                }
+            }
+            Err(_) => ui.toast("Could not start copying the image", now),
+        }
+    }
+
+    /// The pixels an image copy takes: what Save As would write (the
+    /// current picture with its edits), or for an unedited animation the
+    /// frame on screen.
+    fn copy_source(&self, shown: &Shown) -> ImageBuf {
+        if let (true, Content::Animation(anim)) = (shown.edits.is_empty(), &*shown.content) {
+            let frame = self
+                .frame_on_screen
+                .filter(|(generation, _)| shown.full_gen.is_some_and(|g| *generation >= g))
+                .map_or(0, |(_, frame)| frame);
+            if let Some(f) = anim.frames().get(frame) {
+                return f.image.clone();
+            }
+        }
+        shown.current().clone()
+    }
+
     fn copy_path(&mut self, ui: &mut Ui, now: Duration) -> Handled {
+        self.drop_image_copy();
         let path = match (&self.shown, &self.target) {
             (Some(s), _) => s.path.clone(),
             (None, Some(t)) => t.path.clone(),

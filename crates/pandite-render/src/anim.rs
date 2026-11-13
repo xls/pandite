@@ -156,6 +156,10 @@ impl ContentRenderer for AnimationRenderer {
         next
     }
 
+    fn frame_index(&self) -> usize {
+        self.current
+    }
+
     fn prepare(&mut self, ctx: &mut FrameContext<'_>) -> Result<()> {
         let gpu = ctx.gpu;
         self.load(gpu, self.current)?;

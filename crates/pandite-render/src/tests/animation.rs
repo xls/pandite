@@ -60,6 +60,7 @@ fn animation_advances_frames() {
             r.update(ms(step));
             let (index, _) = anim.frame_at(elapsed);
             seen[index] = true;
+            assert_eq!(r.content_frame(), Some(index), "the frame on screen");
             assert_eq!(
                 shown(&mut r),
                 COLORS[index],

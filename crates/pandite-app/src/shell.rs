@@ -705,6 +705,10 @@ impl Shell {
         let advanced = self.anim_deadline.is_some_and(|d| t >= d);
         self.last_frame = Some(t);
         self.anim_deadline = renderer.update(dt).map(|d| t + d);
+        if let Some(frame) = renderer.content_frame() {
+            // An image copy of an animation takes the frame on screen.
+            app.frame_on_screen(self.uploads.shown, frame);
+        }
         app.sync_textures(now, renderer);
         self.list.clear();
         let out = app.frame(now, measurer, &mut self.list);

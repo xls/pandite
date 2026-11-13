@@ -28,3 +28,5 @@ pub mod platform;
 pub mod register;
 pub mod settings;
 pub mod shell;
+#[cfg(test)]
+mod winres;

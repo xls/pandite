@@ -17,7 +17,7 @@ License, Version 1.1. The full license is in the section "Fira Sans" below.
 
 ## Components
 
-248 crates. "All" means every release target.
+250 crates. "All" means every release target.
 
 | Crate | Version | License | Systems |
 |---|---|---|---|
@@ -97,6 +97,7 @@ License, Version 1.1. The full license is in the section "Fira Sans" below.
 | hashbrown | 0.15.5 | MIT OR Apache-2.0 | Linux |
 | hashbrown | 0.16.1 | MIT OR Apache-2.0 | All |
 | hashbrown | 0.17.1 | MIT OR Apache-2.0 | All |
+| image | 0.25.10 | MIT OR Apache-2.0 | All |
 | image-webp | 0.2.4 | MIT OR Apache-2.0 | All |
 | imagesize | 0.15.0 | MIT | All |
 | indexmap | 2.14.2 | Apache-2.0 OR MIT | All |
@@ -119,6 +120,7 @@ License, Version 1.1. The full license is in the section "Fira Sans" below.
 | memmap2 | 0.9.12 | MIT OR Apache-2.0 | All |
 | miniz_oxide | 0.8.9 | MIT OR Zlib OR Apache-2.0 | All |
 | miniz_oxide | 0.9.1 | MIT OR Zlib OR Apache-2.0 | All |
+| moxcms | 0.8.1 | BSD-3-Clause OR Apache-2.0 | All |
 | moxcms | 0.9.2 | BSD-3-Clause OR Apache-2.0 | All |
 | multiversion | 0.8.1 | MIT OR Apache-2.0 | All |
 | naga | 30.0.1 | MIT OR Apache-2.0 | All |
@@ -376,7 +378,7 @@ Each text below is printed once, with every crate that ships it.
 
 ### Text 1
 
-Used by: ab_glyph 0.2.32 (LICENSE), ab_glyph_rasterizer 0.1.10 (LICENSE), allocator-api2 0.2.21 (LICENSE-APACHE), arboard 3.7.0 (LICENSE-APACHE.txt), fdeflate 0.3.7 (LICENSE-APACHE), fontdue 0.9.5 (LICENSE-APACHE), half 2.7.1 (LICENSE-APACHE), image-webp 0.2.4 (LICENSE-APACHE), libc 0.2.191 (LICENSE-APACHE), miniz_oxide 0.8.9 (LICENSE-APACHE.md), miniz_oxide 0.9.1 (LICENSE-APACHE.md), naga 30.0.1 (LICENSE.APACHE), naga-types 30.0.1 (LICENSE.APACHE), owned_ttf_parser 0.25.1 (LICENSE), pin-project-lite 0.2.17 (LICENSE-APACHE), range-alloc 0.1.5 (LICENSE.APACHE), raw-window-handle 0.6.2 (LICENSE-APACHE.md), resvg 0.50.0 (LICENSE-APACHE), serde 1.0.229 (LICENSE-APACHE), serde_core 1.0.229 (LICENSE-APACHE), texture2ddecoder 0.1.2 (LICENSE-APACHE), thiserror 1.0.69 (LICENSE-APACHE), thiserror 2.0.21 (LICENSE-APACHE), unicode-ident 1.0.27 (LICENSE-APACHE), usvg 0.50.0 (LICENSE-APACHE), wgpu 30.0.1 (LICENSE.APACHE), wgpu-core 30.0.1 (LICENSE.APACHE), wgpu-core-deps-apple 30.0.1 (LICENSE.APACHE), wgpu-core-deps-windows-linux-android 30.0.1 (LICENSE.APACHE), wgpu-hal 30.0.1 (LICENSE.APACHE), wgpu-naga-bridge 30.0.1 (LICENSE.APACHE), wgpu-types 30.0.1 (LICENSE.APACHE).
+Used by: ab_glyph 0.2.32 (LICENSE), ab_glyph_rasterizer 0.1.10 (LICENSE), allocator-api2 0.2.21 (LICENSE-APACHE), arboard 3.7.0 (LICENSE-APACHE.txt), fdeflate 0.3.7 (LICENSE-APACHE), fontdue 0.9.5 (LICENSE-APACHE), half 2.7.1 (LICENSE-APACHE), image 0.25.10 (LICENSE-APACHE), image-webp 0.2.4 (LICENSE-APACHE), libc 0.2.191 (LICENSE-APACHE), miniz_oxide 0.8.9 (LICENSE-APACHE.md), miniz_oxide 0.9.1 (LICENSE-APACHE.md), naga 30.0.1 (LICENSE.APACHE), naga-types 30.0.1 (LICENSE.APACHE), owned_ttf_parser 0.25.1 (LICENSE), pin-project-lite 0.2.17 (LICENSE-APACHE), range-alloc 0.1.5 (LICENSE.APACHE), raw-window-handle 0.6.2 (LICENSE-APACHE.md), resvg 0.50.0 (LICENSE-APACHE), serde 1.0.229 (LICENSE-APACHE), serde_core 1.0.229 (LICENSE-APACHE), texture2ddecoder 0.1.2 (LICENSE-APACHE), thiserror 1.0.69 (LICENSE-APACHE), thiserror 2.0.21 (LICENSE-APACHE), unicode-ident 1.0.27 (LICENSE-APACHE), usvg 0.50.0 (LICENSE-APACHE), wgpu 30.0.1 (LICENSE.APACHE), wgpu-core 30.0.1 (LICENSE.APACHE), wgpu-core-deps-apple 30.0.1 (LICENSE.APACHE), wgpu-core-deps-windows-linux-android 30.0.1 (LICENSE.APACHE), wgpu-hal 30.0.1 (LICENSE.APACHE), wgpu-naga-bridge 30.0.1 (LICENSE.APACHE), wgpu-types 30.0.1 (LICENSE.APACHE).
 
 ```text
 Apache License
@@ -2876,7 +2878,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ### Text 50
 
-Used by: fdeflate 0.3.7 (LICENSE-MIT), half 2.7.1 (LICENSE-MIT), image-webp 0.2.4 (LICENSE-MIT).
+Used by: fdeflate 0.3.7 (LICENSE-MIT), half 2.7.1 (LICENSE-MIT), image 0.25.10 (LICENSE-MIT), image-webp 0.2.4 (LICENSE-MIT).
 
 ```text
 MIT License
@@ -5248,7 +5250,7 @@ Permission is granted to anyone to use this software for any purpose, including 
 
 ### Text 89
 
-Used by: moxcms 0.9.2 (LICENSE-APACHE.md), pxfm 0.1.30 (LICENSE-APACHE.md).
+Used by: moxcms 0.8.1 (LICENSE-APACHE.md), moxcms 0.9.2 (LICENSE-APACHE.md), pxfm 0.1.30 (LICENSE-APACHE.md).
 
 ```text
 Apache License
@@ -5456,7 +5458,7 @@ Apache License
 
 ### Text 90
 
-Used by: moxcms 0.9.2 (LICENSE.md), pxfm 0.1.30 (LICENSE.md).
+Used by: moxcms 0.8.1 (LICENSE.md), moxcms 0.9.2 (LICENSE.md), pxfm 0.1.30 (LICENSE.md).
 
 ```text
 Copyright (c) Radzivon Bartoshyk. All rights reserved.
