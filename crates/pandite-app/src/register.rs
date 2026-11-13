@@ -79,11 +79,16 @@ impl Registration {
         format!("{}.image", self.name)
     }
 
+    /// The program file name. The registration text is Windows data on
+    /// every host, so the path splits at both `/` and `\`.
     fn exe_name(&self) -> String {
-        self.exe
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "pandite.exe".into())
+        let path = self.exe.to_string_lossy();
+        let name = path.rsplit(['/', '\\']).next().unwrap_or_default();
+        if name.is_empty() {
+            "pandite.exe".into()
+        } else {
+            name.to_string()
+        }
     }
 
     fn capabilities(&self) -> String {
@@ -370,6 +375,22 @@ mod tests {
         assert!(text.contains("\"ApplicationName\"=\"Pandite\""));
         assert!(text.contains("@=\"Pandite image\""));
         assert!(text.is_ascii());
+    }
+
+    #[test]
+    fn exe_name_splits_at_either_separator() {
+        let name = |exe: &str| {
+            Registration {
+                exe: PathBuf::from(exe),
+                ..sample()
+            }
+            .exe_name()
+        };
+        assert_eq!(name(r"C:\Tools\pan dite\pandite.exe"), "pandite.exe");
+        assert_eq!(name("/opt/pandite/viewer.exe"), "viewer.exe");
+        assert_eq!(name(r"D:/mixed\dir/p.exe"), "p.exe");
+        assert_eq!(name(r"C:\Tools\"), "pandite.exe");
+        assert_eq!(name(""), "pandite.exe");
     }
 
     #[test]
