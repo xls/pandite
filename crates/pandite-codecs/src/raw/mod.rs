@@ -37,6 +37,36 @@ const EXTENSIONS: &[&str] = &[
     "dng", "cr2", "cr3", "nef", "arw", "raf", "orf", "rw2", "pef", "srw",
 ];
 
+/// Width, height and orientation of an image.
+type Probed = (u32, u32, Orientation);
+
+/// A RAW format that its own module develops from sensor data. The
+/// functions return `None` (or `Ok(None)`) when the data are not a
+/// container the module reads; the provider then uses its generic preview
+/// search.
+pub(crate) struct Developer {
+    /// The format's display name, for example "Sony ARW".
+    #[cfg_attr(not(test), allow(dead_code))]
+    name: &'static str,
+    /// True when the module reads the data: by their structure, or by the
+    /// lowercase file extension when one is given.
+    detect: fn(&[u8], Option<&str>) -> bool,
+    /// True when the file carries an embedded preview.
+    has_preview: fn(&[u8]) -> bool,
+    /// Width, height and orientation of the image `decode` delivers at
+    /// full size.
+    probe: fn(&[u8]) -> Result<Option<Probed>>,
+    /// The upright image.
+    decode: fn(&[u8], &DecodeOptions) -> Result<Option<ImageBuf>>,
+    /// Header facts.
+    facts: fn(&[u8]) -> Option<ImageFacts>,
+}
+
+/// The formats developed from sensor data, tried in order. To add a
+/// format, declare its module (`mod <fmt>;`) and add `&<fmt>::DEVELOPER`
+/// to this table; nothing else in this file changes.
+const DEVELOPERS: &[&Developer] = &[&arw::DEVELOPER];
+
 /// Decodes camera RAW files (DNG from sensor data, other formats through
 /// their embedded preview).
 #[derive(Clone, Copy, Debug, Default)]
@@ -64,7 +94,7 @@ pub(crate) fn is_camera_raw(source: &Source) -> bool {
         return true;
     }
     let d = source.bytes();
-    if distinctive_signature(d) || arw::is_arw(d, None) {
+    if distinctive_signature(d) || DEVELOPERS.iter().any(|dev| (dev.detect)(d, None)) {
         return true;
     }
     let Some(t) = Tiff::new(d) else {
@@ -105,8 +135,8 @@ impl DecoderProvider for RawDecoder {
         // Reduced images come from embedded previews; a file without one
         // would be developed in full.
         let d = source.bytes();
-        if use_arw(source) {
-            return arw::has_preview(d);
+        if let Some(dev) = developer(source) {
+            return (dev.has_preview)(d);
         }
         !previews(d).is_empty()
     }
@@ -114,8 +144,8 @@ impl DecoderProvider for RawDecoder {
     fn probe(&self, source: &Source) -> Result<ImageMeta> {
         guard(FORMAT, || {
             let d = source.bytes();
-            if use_arw(source) {
-                if let Some((w, h, orientation)) = arw::probe(d)? {
+            if let Some(dev) = developer(source) {
+                if let Some((w, h, orientation)) = (dev.probe)(d)? {
                     return Ok(ImageMeta {
                         width: w,
                         height: h,
@@ -154,8 +184,8 @@ impl DecoderProvider for RawDecoder {
     fn decode(&self, source: &Source, options: &DecodeOptions) -> Result<Content> {
         options.cancel.check()?;
         guard(FORMAT, || {
-            if use_arw(source) {
-                if let Some(img) = arw::decode(source.bytes(), options)? {
+            if let Some(dev) = developer(source) {
+                if let Some(img) = (dev.decode)(source.bytes(), options)? {
                     return Ok(img);
                 }
             }
@@ -166,8 +196,8 @@ impl DecoderProvider for RawDecoder {
 
     fn facts(&self, source: &Source) -> Result<ImageFacts> {
         guard(FORMAT, || {
-            if use_arw(source) {
-                if let Some(f) = arw::facts(source.bytes()) {
+            if let Some(dev) = developer(source) {
+                if let Some(f) = (dev.facts)(source.bytes()) {
                     return Ok(f);
                 }
             }
@@ -264,14 +294,20 @@ fn other_facts(source: &Source) -> ImageFacts {
     f
 }
 
-/// True when the ARW decoder handles the source: not a DNG, and either the
-/// `.arw` extension or a Sony TIFF structure.
-fn use_arw(source: &Source) -> bool {
+/// The developer that handles the source: the first entry of
+/// [`DEVELOPERS`] whose detect function accepts the data and extension.
+/// None for a DNG (a DNG version tag in IFD0), which the DNG path develops.
+fn developer(source: &Source) -> Option<&'static Developer> {
     let d = source.bytes();
-    arw::is_arw(d, source.extension().as_deref())
-        && !Tiff::new(d)
-            .and_then(|t| t.ifd(t.first_ifd()?))
-            .is_some_and(|(ifd0, _)| ifd0.iter().any(|e| e.tag == tag::DNG_VERSION))
+    let extension = source.extension();
+    let found = DEVELOPERS
+        .iter()
+        .copied()
+        .find(|dev| (dev.detect)(d, extension.as_deref()))?;
+    let dng = Tiff::new(d)
+        .and_then(|t| t.ifd(t.first_ifd()?))
+        .is_some_and(|(ifd0, _)| ifd0.iter().any(|e| e.tag == tag::DNG_VERSION));
+    (!dng).then_some(found)
 }
 
 /// One embedded JPEG preview.
@@ -983,6 +1019,18 @@ fn develop(d: &[u8], i: &Dng, cancel: &CancelToken, eight_bit: bool) -> Result<I
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn developer_names_are_distinct() {
+        for (i, dev) in DEVELOPERS.iter().enumerate() {
+            assert!(!dev.name.is_empty());
+            assert!(
+                DEVELOPERS[..i].iter().all(|other| other.name != dev.name),
+                "{} is in the table twice",
+                dev.name
+            );
+        }
+    }
 
     #[test]
     fn unpack_bit_streams() {

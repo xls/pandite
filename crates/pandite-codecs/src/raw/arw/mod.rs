@@ -103,6 +103,16 @@ pub(crate) struct Developed {
     pub info: Option<Info>,
 }
 
+/// This format's entry in the developer table of [`crate::raw`].
+pub(crate) const DEVELOPER: crate::raw::Developer = crate::raw::Developer {
+    name: "Sony ARW",
+    detect: is_arw,
+    has_preview,
+    probe,
+    decode,
+    facts,
+};
+
 /// True when this provider should treat the data as ARW: the `.arw`
 /// extension, or a little-endian TIFF whose IFD0 has Make "SONY", SubIFDs
 /// and SR2Private (all measured ARW and SR2 files, M1; a TIFF exported by
