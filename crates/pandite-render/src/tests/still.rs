@@ -395,3 +395,99 @@ fn renderer_follows_resize() {
         crate::FrameStatus::Drawn
     );
 }
+
+/// Leaf 1.6: a reduced stand-in is drawn exactly where its full image
+/// will be. Four flat quadrants at 64 x 48 and the same quadrants at
+/// 16 x 12 (the stand-in, told the full size) cover the same screen
+/// rectangle with the same colors, at fit and at a 3x zoom with a pan;
+/// their natural size is the logical one, so view math sees no change.
+#[test]
+fn reduced_stand_in_draws_at_full_size() {
+    let gpu = gpu_or_skip!();
+    let quadrant = |x: u32, y: u32, w: u32, h: u32| match (x * 2 / w, y * 2 / h) {
+        (0, 0) => [220, 30, 30, 255],
+        (1, 0) => [30, 200, 40, 255],
+        (0, _) => [30, 50, 220, 255],
+        _ => [230, 230, 40, 255],
+    };
+    let full = rgba8(64, 48, |x, y| quadrant(x, y, 64, 48));
+    let small = rgba8(16, 12, |x, y| quadrant(x, y, 16, 12));
+    let background = Color::rgb(0, 0, 0);
+    let size = Size::new(64.0, 48.0);
+    let mut views = vec![ViewState::default()];
+    let mut zoomed = ViewState::default();
+    let viewport = Rect::new(0.0, 0.0, 200.0, 150.0);
+    zoomed.zoom_to(3.0, size, viewport, Point::new(80.0, 60.0));
+    zoomed.pan_by(-11.0, 7.0, size, viewport.size());
+    views.push(zoomed);
+    for view in views {
+        let mut a = offscreen(&gpu, 200, 150, plain(background));
+        a.set_content(Content::Still(full.clone())).expect("full");
+        let mut b = offscreen(&gpu, 200, 150, plain(background));
+        b.set_input(&crate::RenderInput::Reduced {
+            content: Content::Still(small.clone()),
+            size,
+        })
+        .expect("stand-in");
+        assert_eq!(b.content_size(), Some(size), "logical size");
+        let pa = a.placement(&view, viewport).unwrap();
+        let pb = b.placement(&view, viewport).unwrap();
+        assert_eq!(pa.image_rect, pb.image_rect, "same screen rectangle");
+        let fa = frame_in(&mut a, &view, viewport, &DrawList::new());
+        let fb = frame_in(&mut b, &view, viewport, &DrawList::new());
+        let rect = pa.image_rect;
+        let mut checked = 0;
+        for y in 0..150 {
+            for x in 0..200 {
+                let inside = covers(rect, x, y);
+                // Away from the quadrant borders and the image edge the
+                // two agree (the stand-in is smooth, the full image crisp).
+                let ix = (x as f32 + 0.5 - rect.x) / rect.w * 64.0;
+                let iy = (y as f32 + 0.5 - rect.y) / rect.h * 48.0;
+                let near_edge = (ix - 32.0).abs() < 6.0
+                    || (iy - 24.0).abs() < 6.0
+                    || !(4.0..60.0).contains(&ix)
+                    || !(4.0..44.0).contains(&iy);
+                if !inside {
+                    assert_rgb(&fb, x, y, [0, 0, 0], 0);
+                } else if !near_edge {
+                    assert_rgb(&fb, x, y, fa.rgb(x, y), 2);
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 100, "{checked} pixels compared");
+    }
+}
+
+/// Leaf 1.6: large uploads go through the reusable staging buffers and
+/// still land exactly; a stand-in with another aspect ratio is
+/// letterboxed inside the logical rectangle instead of stretched.
+#[test]
+fn pooled_upload_and_letterboxed_stand_in() {
+    let gpu = gpu_or_skip!();
+    // 1100 x 400 RGBA8 = 1.7 MB per strip: the pooled path.
+    let (w, h) = (1100u32, 400u32);
+    let color = |x: u32, y: u32| [(x % 256) as u8, (y % 256) as u8, ((x + y) % 256) as u8, 255];
+    let image = rgba8(w, h, color);
+    let mut r = offscreen(&gpu, w, h, plain(Color::rgb(0, 0, 0)));
+    r.set_content(Content::Still(image)).expect("upload");
+    let px = frame(&mut r, &one_to_one(), &DrawList::new());
+    for (x, y) in [(0, 0), (1099, 399), (517, 211), (256, 255), (1023, 3)] {
+        let [cr, cg, cb, _] = color(x, y);
+        assert_rgb(&px, x, y, [cr, cg, cb], 1);
+    }
+    // A square stand-in for a 2:1 image: drawn as a centered square.
+    let square = rgba8(10, 10, |_, _| [255, 255, 255, 255]);
+    let mut r = offscreen(&gpu, 200, 100, plain(Color::rgb(0, 0, 0)));
+    r.set_input(&crate::RenderInput::Reduced {
+        content: Content::Still(square),
+        size: Size::new(200.0, 100.0),
+    })
+    .expect("stand-in");
+    let px = frame(&mut r, &ViewState::default(), &DrawList::new());
+    assert_rgb(&px, 100, 50, [255, 255, 255], 0);
+    assert_rgb(&px, 10, 50, [0, 0, 0], 0);
+    assert_rgb(&px, 190, 50, [0, 0, 0], 0);
+    assert_rgb(&px, 60, 50, [255, 255, 255], 0);
+}

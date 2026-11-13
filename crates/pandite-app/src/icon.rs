@@ -243,7 +243,7 @@ mod tests {
         // The 256 entry stores 0 as its size byte.
         assert_eq!(ico[6 + 3 * 16], 0);
         let png = &images[3].1;
-        let source = Source::from_bytes(png.clone(), None);
+        let source = Source::from_vec(png.clone(), None);
         let decoded = pandite_codecs::PngDecoder
             .decode(&source, &DecodeOptions::default())
             .unwrap();

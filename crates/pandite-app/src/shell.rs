@@ -12,6 +12,7 @@
 mod input;
 mod native;
 mod smoke;
+mod timing;
 
 use crate::app::{App, ContentUpdate, Platform, Startup, WindowState};
 use crate::cli::Cli;
@@ -56,6 +57,8 @@ pub enum UserEvent {
         epoch: u64,
         /// The content generation it belongs to.
         generation: u64,
+        /// True when the content is the full resolution image.
+        full: bool,
         /// The GPU content, or why it failed.
         result: Result<PreparedContent, String>,
     },
@@ -132,6 +135,8 @@ fn start_gpu(proxy: &EventLoopProxy<UserEvent>) -> bool {
                     let view = pandite_core::ViewState::default();
                     let _ = warm.render(&view, warm.full_viewport(), &DrawList::new());
                 }
+                // Staging memory for the first image's upload, paged in now.
+                gpu.prepare_uploads();
             });
             let _ = proxy.send_event(UserEvent::GpuReady(result.map_err(|e| e.to_string())));
         })
@@ -148,6 +153,8 @@ struct Uploads {
     queued: Option<ContentUpdate>,
     latest: u64,
     shown: u64,
+    /// The shown generation is the image at full resolution.
+    shown_full: bool,
 }
 
 struct Shell {
@@ -184,6 +191,8 @@ struct Shell {
     exit_code: i32,
     smoke: Option<smoke::Smoke>,
     stall: Option<Arc<smoke::StallDisk>>,
+    timing: Option<timing::Timing>,
+    timing_printed: bool,
 }
 
 fn theme_kind(theme: Theme) -> ThemeKind {
@@ -213,6 +222,11 @@ impl Shell {
         let stall = cli
             .smoke_stall
             .then(|| Arc::new(smoke::StallDisk::default()));
+        let timing = cli
+            .timing
+            .then(|| cli.smoke.clone().or_else(|| cli.path.clone()))
+            .flatten()
+            .map(timing::Timing::new);
         Self {
             cli,
             start,
@@ -247,6 +261,8 @@ impl Shell {
             exit_code: 0,
             smoke,
             stall,
+            timing,
+            timing_printed: false,
         }
     }
 
@@ -439,6 +455,9 @@ impl Shell {
             return;
         };
         self.trace("renderer ready");
+        if self.timing.is_some() {
+            renderer.gpu().set_measure_uploads(true);
+        }
         self.measurer = Some(renderer.text_measurer());
         self.renderer = Some(renderer);
         if let Some(smoke) = &mut self.smoke {
@@ -515,6 +534,7 @@ impl Shell {
                     }
                     self.content = None;
                     self.uploads.shown = update.generation;
+                    self.uploads.shown_full = false;
                     self.uploads.queued = None;
                 }
                 Some(_) => {
@@ -533,19 +553,26 @@ impl Shell {
             return;
         };
         let generation = update.generation;
+        let full = update.full_resolution;
         let epoch = self.uploads.epoch;
         let factory = renderer.content_factory();
         let proxy = self.proxy.clone();
-        let job_content = content.clone();
+        // A reduced stand-in is drawn at the full image's size.
+        let input = match update.logical {
+            Some((w, h)) => RenderInput::Reduced {
+                content: content.clone(),
+                size: Size::new(w as f32, h as f32),
+            },
+            None => RenderInput::Content(content.clone()),
+        };
         let spawned = std::thread::Builder::new()
             .name("pandite-upload".into())
             .spawn(move || {
-                let result = factory
-                    .create(&RenderInput::Content(job_content))
-                    .map_err(|e| e.to_string());
+                let result = factory.create(&input).map_err(|e| e.to_string());
                 let _ = proxy.send_event(UserEvent::Prepared {
                     epoch,
                     generation,
+                    full,
                     result,
                 });
             });
@@ -555,9 +582,11 @@ impl Shell {
                 self.content = Some(content);
             }
             Err(_) => {
-                // No thread: upload here instead.
-                if renderer.set_content(content.clone()).is_ok() {
+                // No thread: upload here instead (full resolution only; a
+                // stand-in is skipped, its full image follows).
+                if update.logical.is_none() && renderer.set_content(content.clone()).is_ok() {
                     self.uploads.shown = generation;
+                    self.uploads.shown_full = full;
                     self.content = Some(content);
                     self.last_frame = None;
                 }
@@ -565,7 +594,13 @@ impl Shell {
         }
     }
 
-    fn prepared(&mut self, epoch: u64, generation: u64, result: Result<PreparedContent, String>) {
+    fn prepared(
+        &mut self,
+        epoch: u64,
+        generation: u64,
+        full: bool,
+        result: Result<PreparedContent, String>,
+    ) {
         if epoch != self.uploads.epoch {
             // Made for a renderer that no longer exists.
             return;
@@ -582,8 +617,12 @@ impl Shell {
         match result {
             Ok(prepared) => {
                 if let Some(renderer) = self.renderer.as_mut() {
+                    if let Some(timing) = &mut self.timing {
+                        timing.prepared(generation, full, prepared.upload_timings());
+                    }
                     renderer.set_prepared(prepared);
                     self.uploads.shown = generation;
+                    self.uploads.shown_full = full;
                     self.last_frame = None;
                     if !self.image_on_screen {
                         self.image_on_screen = true;
@@ -677,13 +716,20 @@ impl Shell {
         let lost = renderer.gpu().is_lost();
         match status {
             Ok(status) => {
+                let current = self.uploads.shown == self.uploads.latest && self.uploads.latest > 0;
+                if let (Some(timing), true) = (&mut self.timing, status == FrameStatus::Drawn) {
+                    if current {
+                        let start = self.start;
+                        timing.presented(self.uploads.shown, renderer, app, || start.elapsed());
+                    }
+                }
                 if let Some(smoke) = &mut self.smoke {
                     smoke.frame(
                         status == FrameStatus::Drawn,
                         advanced,
                         app,
                         renderer,
-                        self.uploads.shown == self.uploads.latest && self.uploads.latest > 0,
+                        current && self.uploads.shown_full,
                     );
                 }
             }
@@ -702,6 +748,12 @@ impl Shell {
                     self.last_recreate = Some(Instant::now());
                     self.recreate_renderer();
                 }
+            }
+        }
+        if self.smoke.is_none() && !self.timing_printed {
+            if let Some(line) = self.timing.as_ref().and_then(timing::Timing::line) {
+                console::out(line);
+                self.timing_printed = true;
             }
         }
         if !self.first_frame && self.visible {
@@ -751,6 +803,11 @@ impl Shell {
         }
         if let Some(smoke) = self.smoke.take() {
             let (line, code) = smoke.report(self.exit_code);
+            if let Some(timing) = self.timing.as_ref().and_then(timing::Timing::line) {
+                if code == 0 {
+                    console::out(timing);
+                }
+            }
             if code == 0 {
                 console::out(&line);
             } else {
@@ -818,8 +875,9 @@ impl ApplicationHandler<UserEvent> for Shell {
             UserEvent::Prepared {
                 epoch,
                 generation,
+                full,
                 result,
-            } => self.prepared(epoch, generation, result),
+            } => self.prepared(epoch, generation, full, result),
         }
         self.check_exit(event_loop);
     }
@@ -961,7 +1019,10 @@ impl ApplicationHandler<UserEvent> for Shell {
         if let (Some(smoke), Some(app)) = (self.smoke.as_mut(), self.app.as_mut()) {
             smoke.tick(app, self.stall.as_deref(), now);
         }
-        if let (Some(smoke), Some(renderer)) = (self.smoke.as_mut(), self.renderer.as_ref()) {
+        let timed = self.timing.as_ref().is_none_or(|t| t.line().is_some());
+        if let (Some(smoke), Some(renderer), true) =
+            (self.smoke.as_mut(), self.renderer.as_ref(), timed)
+        {
             smoke.verify(renderer, self.content.as_ref());
         }
         self.flush_content();

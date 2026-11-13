@@ -111,7 +111,7 @@ pub(crate) fn probe(
     spawn("pandite-probe", move || {
         let meta = guarded("probing", || {
             let bytes = disk.read_head(&path, PROBE_BYTES)?;
-            let source = Source::from_bytes(bytes, Some(path.clone()));
+            let source = Source::from_vec(bytes, Some(path.clone()));
             registry.probe(&source)
         });
         if let Ok(meta) = meta {

@@ -36,8 +36,11 @@ pub struct LibraryConfig {
     pub read_ahead: usize,
     /// Read-ahead wraps from the last image to the first (default false).
     pub wrap_around: bool,
-    /// Byte budget for full decodes (default 512 MiB). The current image is
-    /// kept even when it alone is larger.
+    /// Byte budget for decoded images (default 512 MiB): the pixel bytes of
+    /// every full-resolution and screen-resolution image the library
+    /// holds. With a screen size set, a quarter of it is kept for screen
+    /// images and the rest for full images. The current image's full and
+    /// screen images are kept even when they alone are larger.
     pub full_budget: usize,
     /// Byte budget for thumbnails (default 64 MiB). Thumbnails in the
     /// visible gallery range are kept even above the budget.
@@ -55,6 +58,13 @@ pub struct LibraryConfig {
     /// inside a file system call (default 250 ms). Workers still running
     /// after that, and workers stuck in a read, are detached.
     pub shutdown_grace: Duration,
+    /// The screen size for staged loading (default `None`). When set, the
+    /// current image first shows a quick reduced decode (an embedded
+    /// preview or a scaled decode covering half this size) and then its
+    /// full resolution; read-ahead neighbors are decoded to cover this
+    /// size only, and full resolution is decoded for the current image
+    /// only. When `None`, read-ahead decodes neighbors at full resolution.
+    pub screen_size: Option<(u32, u32)>,
     /// The thumbnail downscaler. Default: [`box_downscale`].
     pub downscale: DownscaleFn,
     /// File system access. Default: [`StdFiles`].
@@ -74,6 +84,7 @@ impl Default for LibraryConfig {
             thumb_size: 256,
             thumb_margin: 32,
             background_thumbnails: true,
+            screen_size: None,
             shutdown_grace: Duration::from_millis(250),
             downscale: Arc::new(box_downscale),
             files: Arc::new(StdFiles),
@@ -93,9 +104,22 @@ impl fmt::Debug for LibraryConfig {
             .field("thumb_size", &self.thumb_size)
             .field("thumb_margin", &self.thumb_margin)
             .field("background_thumbnails", &self.background_thumbnails)
+            .field("screen_size", &self.screen_size)
             .field("shutdown_grace", &self.shutdown_grace)
             .finish_non_exhaustive()
     }
+}
+
+/// A screen-resolution decode standing in for a larger image: an embedded
+/// preview or a scaled decode, upright like every decode.
+#[derive(Clone, Debug)]
+pub struct Reduced {
+    /// The reduced image.
+    pub image: ImageBuf,
+    /// Width of the full image (after orientation).
+    pub width: u32,
+    /// Height of the full image (after orientation).
+    pub height: u32,
 }
 
 /// The state of a requested image or thumbnail.
@@ -149,6 +173,15 @@ pub enum Event {
         /// Index of the current image in the new list.
         current: Option<usize>,
     },
+    /// A screen-resolution image is cached; [`Library::reduced`] returns
+    /// it. For the current image it comes before [`Event::Ready`], and
+    /// never after it.
+    Reduced {
+        /// Folder index.
+        index: usize,
+        /// File path.
+        path: PathBuf,
+    },
     /// A full decode is cached; [`Library::get`] returns it.
     Ready {
         /// Folder index.
@@ -198,6 +231,18 @@ pub enum Event {
     },
 }
 
+/// How long the stages of one image load took, for diagnostics and the
+/// application's timing report. A stage that did not run is `None`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LoadTimings {
+    /// Reading the file (all reads of the load together).
+    pub read: Option<Duration>,
+    /// Decoding the reduced (screen size) image.
+    pub decode_reduced: Option<Duration>,
+    /// Decoding the full resolution image.
+    pub decode_full: Option<Duration>,
+}
+
 /// Cache and thread figures, for tests and a debug overlay.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
@@ -207,6 +252,12 @@ pub struct Stats {
     pub full_entries: usize,
     /// Byte budget for full decodes.
     pub full_budget: usize,
+    /// Bytes held by screen-resolution images.
+    pub screen_bytes: usize,
+    /// Number of cached screen-resolution images.
+    pub screen_entries: usize,
+    /// Byte budget for screen-resolution images.
+    pub screen_budget: usize,
     /// Bytes held by thumbnails.
     pub thumb_bytes: usize,
     /// Number of cached thumbnails.
@@ -242,6 +293,18 @@ impl Shared {
         self.work_cv
             .wait(guard)
             .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Wait for work, at most `limit`.
+    pub fn wait_work_for<'a>(
+        &self,
+        guard: MutexGuard<'a, State>,
+        limit: Duration,
+    ) -> MutexGuard<'a, State> {
+        self.work_cv
+            .wait_timeout(guard, limit)
+            .unwrap_or_else(PoisonError::into_inner)
+            .0
     }
 
     pub fn notify_work(&self) {
@@ -293,6 +356,7 @@ impl Library {
             thumb_size: config.thumb_size.max(1),
             full_budget: config.full_budget,
             thumb_budget: config.thumb_budget,
+            screen: config.screen_size.map(|(w, h)| (w.max(1), h.max(1))),
         };
         let shared = Arc::new(Shared {
             state: Mutex::new(State::new(settings)),
@@ -420,6 +484,18 @@ impl Library {
         self.shared.lock().get(index)
     }
 
+    /// The screen-resolution image of `index`, when one is cached. Show it
+    /// while [`Library::get`] is still pending.
+    pub fn reduced(&self, index: usize) -> Option<Reduced> {
+        self.shared.lock().reduced(index)
+    }
+
+    /// Change the screen size of staged loading (the window was resized).
+    /// No effect when the library was made without a screen size.
+    pub fn set_screen_size(&self, width: u32, height: u32) {
+        self.shared.lock().set_screen((width, height));
+    }
+
     /// The thumbnail of image `index`.
     pub fn thumbnail(&self, index: usize) -> Fetch<ImageBuf> {
         self.shared.lock().thumbnail(index)
@@ -429,6 +505,12 @@ impl Library {
     /// events accumulate until polled.
     pub fn poll_events(&self) -> Vec<Event> {
         self.shared.lock().drain_events()
+    }
+
+    /// Stage durations of the most recent load of `path`, once its full
+    /// decode finished.
+    pub fn timings(&self, path: &Path) -> Option<LoadTimings> {
+        self.shared.lock().timings(path)
     }
 
     /// Cache and thread figures.

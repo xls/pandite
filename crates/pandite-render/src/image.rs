@@ -3,7 +3,10 @@
 //! Upload path, all on the GPU after one copy of the pixels:
 //! 1. Rows are written in strips of at most [`STRIP_BYTES`] into a small
 //!    staging texture in the source encoding (rgba8 sRGB, rgba16 unsigned
-//!    or rgba32 float). Each strip is converted by a render pass into the
+//!    or rgba32 float). Large strips are copied into the GPU's reusable
+//!    mapped staging buffers (two, so the CPU fills one while the GPU
+//!    copies the other) and from there into the staging texture; small
+//!    ones go through the queue. Each strip is converted by a render pass into the
 //!    storage texture as premultiplied linear color: `Rgba8UnormSrgb` for
 //!    8-bit content, `Rgba16Float` for 16-bit and floating point content.
 //!    Strips bound the temporary memory and no CPU pixel loop runs.
@@ -29,6 +32,18 @@ use crate::pipelines::{
 use crate::provider::{DrawContext, FrameContext, Placement};
 use crate::settings::RenderSettings;
 use pandite_core::{Error, ImageBuf, PixelFormat, Rect, Result, Size};
+use std::time::{Duration, Instant};
+
+/// How long one content upload took on the GPU, recorded when
+/// [`Gpu::set_measure_uploads`] is on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UploadTimings {
+    /// Staging copies and conversion into level 0, until the GPU finished.
+    pub upload: Duration,
+    /// Mip generation (and the overview of tiled images), until the GPU
+    /// finished.
+    pub mips: Duration,
+}
 
 /// Smallest overlap between neighboring tiles, in pixels.
 pub(crate) const MIN_GUTTER: u32 = 16;
@@ -37,6 +52,8 @@ pub(crate) const MIN_GUTTER: u32 = 16;
 const TILE_ALIGN: u32 = 64;
 /// Largest staging strip uploaded at once, in bytes.
 pub(crate) const STRIP_BYTES: u64 = 32 << 20;
+/// Strips at least this large use the GPU's reusable staging buffers.
+const POOL_MIN_BYTES: u64 = 1 << 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Span {
@@ -83,6 +100,11 @@ pub struct GpuImage {
     overview: Option<(Tile, u32)>,
     /// Indices into `tiles` drawn this frame; `usize::MAX` is the overview.
     visible: Vec<usize>,
+    /// Durations of the last fill, when measured.
+    timings: Option<UploadTimings>,
+    /// The size the image stands in for (a reduced decode of a larger
+    /// image), when set.
+    logical: Option<Size>,
 }
 
 impl std::fmt::Debug for GpuImage {
@@ -478,6 +500,8 @@ impl GpuImage {
             tiles,
             overview,
             visible: Vec::new(),
+            timings: None,
+            logical: None,
         })
     }
 
@@ -485,6 +509,8 @@ impl GpuImage {
         if self.tiles.is_empty() {
             return self.fill_reduced(gpu, image);
         }
+        let measure = gpu.measuring();
+        let start = Instant::now();
         match self.storage {
             Storage::Color(_) => {
                 for tile in &self.tiles {
@@ -496,6 +522,10 @@ impl GpuImage {
                 write_mask(gpu, image, tile)?;
             }
         }
+        if measure {
+            gpu.wait_idle()?;
+        }
+        let converted = Instant::now();
         let mut encoder = gpu
             .device()
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -510,6 +540,13 @@ impl GpuImage {
             encode_mips(gpu, &mut encoder, &overview.texture);
         }
         gpu.queue().submit([encoder.finish()]);
+        if measure {
+            gpu.wait_idle()?;
+            self.timings = Some(UploadTimings {
+                upload: converted - start,
+                mips: converted.elapsed(),
+            });
+        }
         Ok(())
     }
 
@@ -628,9 +665,41 @@ impl GpuImage {
         self.height
     }
 
-    /// Size in pixels.
+    /// Size in pixels: the logical size when one is set (see
+    /// [`GpuImage::set_logical_size`]), else the texture size.
     pub fn size(&self) -> Size {
-        Size::new(self.width as f32, self.height as f32)
+        self.logical
+            .unwrap_or_else(|| Size::new(self.width as f32, self.height as f32))
+    }
+
+    /// Draw the image as if it had `size` pixels: a reduced decode standing
+    /// in for the full image until it arrives. Fit, zoom and placement use
+    /// `size`, so swapping in the full image later moves nothing; the
+    /// texture is stretched over that rectangle (letterboxed when the
+    /// aspect ratios differ by more than 1 percent) and always sampled
+    /// smoothly, because its texels are not image pixels. `None` restores
+    /// the texture size.
+    pub fn set_logical_size(&mut self, size: Option<Size>) {
+        self.logical =
+            size.filter(|s| s.w > 0.0 && s.h > 0.0 && s.w.is_finite() && s.h.is_finite());
+    }
+
+    /// The texture's rectangle inside the logical rectangle `r`: `r` itself
+    /// when the aspect ratios agree within 1 percent, else the largest
+    /// centered rectangle with the texture's aspect ratio.
+    fn stand_in_rect(&self, r: Rect) -> Rect {
+        let natural = self.width as f32 / self.height as f32;
+        let logical = r.w / r.h;
+        if !logical.is_finite() || (natural / logical - 1.0).abs() <= 0.01 {
+            return r;
+        }
+        if natural > logical {
+            let h = r.w / natural;
+            Rect::new(r.x, r.y + (r.h - h) * 0.5, r.w, h)
+        } else {
+            let w = r.h * natural;
+            Rect::new(r.x + (r.w - w) * 0.5, r.y, w, r.h)
+        }
     }
 
     /// True for floating point content, which is tone mapped on display.
@@ -692,12 +761,34 @@ impl GpuImage {
         settings: &RenderSettings,
     ) {
         self.visible.clear();
-        let rect = placement.image_rect;
-        let scale = placement.scale;
+        let placed = placement.image_rect;
+        if placement.scale.is_nan() || placement.scale <= 0.0 || placed.is_empty() {
+            return;
+        }
+        // Screen pixels per texel along each axis. Equal to the placement
+        // scale for an image drawn at its own size; a stand-in for a
+        // larger image is stretched over the logical rectangle.
+        let (rect, sx, sy, crisp_from) = match self.logical {
+            None => (
+                placed,
+                placement.scale,
+                placement.scale,
+                settings.crisp_zoom.max(1.0),
+            ),
+            Some(_) => {
+                let r = self.stand_in_rect(placed);
+                (
+                    r,
+                    r.w / self.width as f32,
+                    r.h / self.height as f32,
+                    f32::INFINITY,
+                )
+            }
+        };
+        let scale = sx.min(sy);
         if scale.is_nan() || scale <= 0.0 || rect.is_empty() {
             return;
         }
-        let crisp_from = settings.crisp_zoom.max(1.0);
         let hdr = self.is_hdr();
         if let Some((overview, _)) = &self.overview {
             let overview_scale = overview.region.w as f32 / self.width as f32;
@@ -721,10 +812,10 @@ impl GpuImage {
             let i = tile.interior;
             // Both edges use the same expression, so neighbors share edges
             // bit for bit and no crack opens between tiles.
-            let x0 = rect.x + i.x as f32 * scale;
-            let y0 = rect.y + i.y as f32 * scale;
-            let x1 = rect.x + (i.x + i.w) as f32 * scale;
-            let y1 = rect.y + (i.y + i.h) as f32 * scale;
+            let x0 = rect.x + i.x as f32 * sx;
+            let y0 = rect.y + i.y as f32 * sy;
+            let x1 = rect.x + (i.x + i.w) as f32 * sx;
+            let y1 = rect.y + (i.y + i.h) as f32 * sy;
             let dst = Rect::new(x0, y0, x1 - x0, y1 - y0);
             if dst.intersect(clip).is_none() {
                 continue;
@@ -778,6 +869,12 @@ impl GpuImage {
             Some((overview, _)) => &overview.bind_group,
             None => &self.tiles[0].bind_group,
         }
+    }
+
+    /// Durations of the last upload, when [`Gpu::set_measure_uploads`]
+    /// was on.
+    pub fn upload_timings(&self) -> Option<UploadTimings> {
+        self.timings
     }
 
     /// The storage texture of tile `index`, for tests.
@@ -870,8 +967,12 @@ fn convert_into(gpu: &Gpu, image: &ImageBuf, tile: &Tile) -> Result<()> {
     };
     let bpp = image.format().bytes_per_pixel() as u64;
     let region = tile.region;
-    let rows_per_strip =
-        (STRIP_BYTES / (u64::from(region.w) * bpp)).clamp(1, u64::from(region.h)) as u32;
+    // Rows are padded to the copy alignment in the staging buffers, so a
+    // strip fits the pooled buffers exactly.
+    let aligned_row = (u64::from(region.w) * bpp)
+        .div_ceil(u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT))
+        * u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+    let rows_per_strip = (STRIP_BYTES / aligned_row).clamp(1, u64::from(region.h)) as u32;
     let device = gpu.device();
     let queue = gpu.queue();
     let staging = device.create_texture(&wgpu::TextureDescriptor {
@@ -915,34 +1016,76 @@ fn convert_into(gpu: &Gpu, image: &ImageBuf, tile: &Tile) -> Result<()> {
         width: image.width(),
         height: image.height(),
     })?;
+    let row_bytes = u64::from(region.w) * bpp;
+    // Large strips go through the GPU's reusable staging buffers: one
+    // memcpy into memory that is already mapped and paged in. Small ones
+    // (interface textures, thumbnails) use the queue's own staging.
+    let pooled = row_bytes * u64::from(rows_per_strip.min(region.h)) >= POOL_MIN_BYTES;
     let mut y = 0;
     while y < region.h {
         let rows = rows_per_strip.min(region.h - y);
         let offset = (u64::from(region.y + y) * stride + u64::from(region.x) * bpp) as usize;
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &staging,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &image.data()[offset..],
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(bytes_per_row),
-                rows_per_image: Some(rows),
-            },
-            wgpu::Extent3d {
-                width: region.w,
-                height: rows,
-                depth_or_array_layers: 1,
-            },
-        );
-        let origin: [i32; 4] = [0, y as i32, 0, 0];
-        queue.write_buffer(&params, 0, bytemuck::cast_slice(&origin));
+        let destination = wgpu::TexelCopyTextureInfo {
+            texture: &staging,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        };
+        let extent = wgpu::Extent3d {
+            width: region.w,
+            height: rows,
+            depth_or_array_layers: 1,
+        };
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("convert strip"),
         });
+        let lease = if pooled {
+            let aligned = row_bytes.div_ceil(u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT))
+                * u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+            let lease = gpu.staging().take(gpu, aligned * u64::from(rows))?;
+            {
+                let mut view = lease
+                    .buffer()
+                    .slice(..aligned * u64::from(rows))
+                    .get_mapped_range_mut()
+                    .map_err(|e| Error::Backend(format!("staging buffer: {e}")))?;
+                let src = image.data();
+                for r in 0..rows as usize {
+                    let from = offset + r * stride as usize;
+                    let to = r * aligned as usize;
+                    view.slice(to..to + row_bytes as usize)
+                        .copy_from_slice(&src[from..from + row_bytes as usize]);
+                }
+            }
+            lease.buffer().unmap();
+            encoder.copy_buffer_to_texture(
+                wgpu::TexelCopyBufferInfo {
+                    buffer: lease.buffer(),
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(aligned as u32),
+                        rows_per_image: Some(rows),
+                    },
+                },
+                destination,
+                extent,
+            );
+            Some(lease)
+        } else {
+            queue.write_texture(
+                destination,
+                &image.data()[offset..],
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: Some(rows),
+                },
+                extent,
+            );
+            None
+        };
+        let origin: [i32; 4] = [0, y as i32, 0, 0];
+        queue.write_buffer(&params, 0, bytemuck::cast_slice(&origin));
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("convert strip"),
@@ -963,9 +1106,12 @@ fn convert_into(gpu: &Gpu, image: &ImageBuf, tile: &Tile) -> Result<()> {
             pass.set_bind_group(0, &bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
-        // One submission per strip: the next strip's staging write is
+        // One submission per strip: the next strip's staging copy is
         // ordered after this one's conversion.
-        queue.submit([encoder.finish()]);
+        let index = queue.submit([encoder.finish()]);
+        if let Some(lease) = lease {
+            gpu.staging().give_back(lease, index);
+        }
         y += rows;
     }
     Ok(())

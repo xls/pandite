@@ -50,11 +50,77 @@ fn gif_bytes(frames: usize, w: u16, h: u16) -> Vec<u8> {
 }
 
 /// One valid sample file per base format, named by extension.
+/// `main` with an APP2 Multi-Picture Format index pointing at `preview`,
+/// appended after it (CIPA DC-007: MPEntry with size and offset from the
+/// MP header).
+fn mpf_jpeg(main: &[u8], preview: &[u8]) -> Vec<u8> {
+    let ifd_len = 8 + 2 + 24 + 4;
+    let app2_len = 2 + 4 + ifd_len + 32;
+    let total_main = main.len() + 2 + app2_len;
+    let rel = (total_main - 10) as u32;
+    let mut seg = vec![0xFF, 0xE2];
+    seg.extend_from_slice(&(app2_len as u16).to_be_bytes());
+    seg.extend_from_slice(b"MPF\0II*\0");
+    seg.extend_from_slice(&8u32.to_le_bytes());
+    seg.extend_from_slice(&2u16.to_le_bytes());
+    for (tag, count, value) in [
+        (0xB000u16, 4u32, u32::from_le_bytes(*b"0100")),
+        (0xB002, 32, ifd_len as u32),
+    ] {
+        seg.extend_from_slice(&tag.to_le_bytes());
+        seg.extend_from_slice(&7u16.to_le_bytes());
+        seg.extend_from_slice(&count.to_le_bytes());
+        seg.extend_from_slice(&value.to_le_bytes());
+    }
+    seg.extend_from_slice(&0u32.to_le_bytes());
+    for (size, offset) in [(total_main as u32, 0u32), (preview.len() as u32, rel)] {
+        seg.extend_from_slice(&0x0002_0000u32.to_le_bytes());
+        seg.extend_from_slice(&size.to_le_bytes());
+        seg.extend_from_slice(&offset.to_le_bytes());
+        seg.extend_from_slice(&[0; 4]);
+    }
+    let mut out = main[..2].to_vec();
+    out.extend_from_slice(&seg);
+    out.extend_from_slice(&main[2..]);
+    out.extend_from_slice(preview);
+    out
+}
+
+/// A JPEG with the standard Huffman tables of T.81 Annex K (the SIMD
+/// decoder's path).
+fn standard_jpeg() -> Vec<u8> {
+    let rgb: Vec<u8> = noise(48, 48, 9)
+        .chunks_exact(4)
+        .flat_map(|p| [p[0], p[1], p[2]])
+        .collect();
+    let mut standard = Vec::new();
+    jpeg_encoder::Encoder::new(&mut standard, 90)
+        .encode(&rgb, 48, 48, jpeg_encoder::ColorType::Rgb)
+        .unwrap();
+    standard
+}
+
+/// A JPEG with a Multi-Picture Format preview after it (the reduced
+/// decode's path). Not a truncation sample: cutting into the preview
+/// leaves the main image whole.
+fn preview_jpeg() -> Vec<u8> {
+    let rgb: Vec<u8> = noise(24, 24, 11)
+        .chunks_exact(4)
+        .flat_map(|p| [p[0], p[1], p[2]])
+        .collect();
+    let mut preview = Vec::new();
+    jpeg_encoder::Encoder::new(&mut preview, 80)
+        .encode(&rgb, 24, 24, jpeg_encoder::ColorType::Rgb)
+        .unwrap();
+    mpf_jpeg(&standard_jpeg(), &preview)
+}
+
 fn base_samples() -> Vec<(&'static str, Vec<u8>)> {
     let img = rgba8(48, 48, noise(48, 48, 7));
     let mut v = vec![
         ("png", encode("png", &img, &EncodeOptions::default())),
         ("jpg", encode("jpeg", &img, &EncodeOptions::default())),
+        ("jpg", standard_jpeg()),
         ("bmp", encode("bmp", &img, &EncodeOptions::default())),
         ("webp", encode("webp", &img, &EncodeOptions::default())),
         ("gif", gif_bytes(3, 32, 32)),
@@ -131,7 +197,9 @@ fn corrupt_input_never_panics() {
         seed ^= seed << 5;
         seed
     };
-    for (ext, file) in base_samples() {
+    let mut samples = base_samples();
+    samples.push(("jpg", preview_jpeg()));
+    for (ext, file) in samples {
         for round in 0..150 {
             let mut bad = file.clone();
             let flips = 1 + (next() % 8) as usize;
@@ -149,6 +217,14 @@ fn corrupt_input_never_panics() {
             let r = catch_unwind(AssertUnwindSafe(|| {
                 let _ = reg().probe(&src);
                 let _ = reg().decode(&src, &DecodeOptions::default());
+                // The reduced path (previews, DCT scaling) and the display
+                // path get the same damage.
+                let small = DecodeOptions {
+                    target_size: Some((12, 12)),
+                    prefer_8bit: true,
+                    ..DecodeOptions::default()
+                };
+                let _ = reg().decode(&src, &small);
             }));
             assert!(r.is_ok(), "{ext} mutation round {round} panicked");
         }

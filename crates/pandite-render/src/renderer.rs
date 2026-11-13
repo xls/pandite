@@ -73,6 +73,12 @@ impl PreparedContent {
     pub fn size(&self) -> Size {
         self.renderer.size()
     }
+
+    /// How long the upload took, when the GPU measured it (see
+    /// [`Gpu::set_measure_uploads`]).
+    pub fn upload_timings(&self) -> Option<crate::UploadTimings> {
+        self.renderer.upload_timings()
+    }
 }
 
 /// Creates content renderers away from the render thread, so decoding

@@ -53,14 +53,7 @@ fn cfa_values(data: &[u8]) -> (usize, usize, Vec<u16>) {
 /// Render a plan to linear sRGB values (R-ARW-53), oriented and cropped.
 fn linear_with(data: &[u8], plan: &Plan) -> (usize, usize, Vec<[f32; 3]>) {
     let sensor = sensor_of(data, plan);
-    let bytes = render::render::<12, _>(plan, &sensor, &CancelToken::new(), |rgb| {
-        let mut b = [0u8; 12];
-        for k in 0..3 {
-            b[4 * k..4 * k + 4].copy_from_slice(&rgb[k].to_ne_bytes());
-        }
-        b
-    })
-    .expect("render");
+    let bytes = render::render(plan, &sensor, &CancelToken::new(), &LinearF32).expect("render");
     let (w, h) = render::output_size(plan.crop, plan.orientation);
     let px = bytes
         .chunks_exact(12)
@@ -71,6 +64,24 @@ fn linear_with(data: &[u8], plan: &Plan) -> (usize, usize, Vec<[f32; 3]>) {
         })
         .collect();
     (w, h, px)
+}
+
+/// Delivers the linear sRGB values themselves, 12 bytes per pixel.
+struct LinearF32;
+
+impl render::RowEncoder for LinearF32 {
+    fn pixel_bytes(&self) -> usize {
+        12
+    }
+
+    fn encode(&self, m: &[[f32; 3]; 3], cam: [&[f32]; 3], out: &mut [u8]) {
+        for (k, b) in out.chunks_exact_mut(12).enumerate() {
+            let v = render::to_srgb(m, [cam[0][k], cam[1][k], cam[2][k]]);
+            for k in 0..3 {
+                b[4 * k..4 * k + 4].copy_from_slice(&v[k].to_ne_bytes());
+            }
+        }
+    }
 }
 
 fn linear(data: &[u8]) -> (usize, usize, Vec<[f32; 3]>) {
@@ -2248,7 +2259,10 @@ const RANK_MIN: f64 = 0.90;
 /// Gate G4: every `.ARW` file in the folder named by `PANDITE_ARW_SAMPLES`
 /// (relative to the workspace root) decodes through the sensor-data path
 /// when its variant is in scope, at the full crop size, and agrees with the
-/// file's own largest embedded JPEG on an 8 x 8 grid of cell means.
+/// file's own largest embedded JPEG on an 8 x 8 grid of cell means. Since
+/// leaf 1.6 the image compared is the default display rendering (tone
+/// curve on luminance with every channel scaled alike), so the test also
+/// shows that the rendering keeps the developed colors.
 ///
 /// The camera JPEG has its own tone curve and picture style, so values are
 /// not compared directly. Overall exposure is matched by one gain on
@@ -2298,7 +2312,15 @@ fn arw_real_samples_match_embedded_preview() {
             .as_ref()
             .and_then(|r| Some((r.uint(0x0100).ok()??, r.uint(0x0101).ok()??)));
         let start = Instant::now();
-        let dev = report(&data);
+        // The default display rendering, as the viewer shows it: the tone
+        // curve must keep the colors of the colorimetric development.
+        let display = DecodeOptions {
+            prefer_8bit: true,
+            ..DecodeOptions::default()
+        };
+        let dev = decode_with(&data, &display, Rendering::Display)
+            .expect("decode")
+            .expect("ARW path");
         let took = start.elapsed();
         let Class::Sensor(variant) = class else {
             assert_eq!(dev.origin, Origin::Preview, "{name}");
@@ -2460,5 +2482,248 @@ fn arw_real_samples_match_embedded_preview() {
         }
         println!("{line}{line_start}");
     }
+    assert!(failures.is_empty(), "outside tolerance: {failures:#?}");
+}
+
+// ---------------------------------------------------------------------------
+// Default display rendering (leaf 1.6, gate G3)
+// ---------------------------------------------------------------------------
+
+/// Rec. 709 luminance of linear sRGB.
+fn luminance(c: [f64; 3]) -> f64 {
+    0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+}
+
+/// CIE lightness L* of a relative luminance.
+fn lightness(y: f64) -> f64 {
+    if y > 0.008_856 {
+        116.0 * y.cbrt() - 16.0
+    } else {
+        903.3 * y
+    }
+}
+
+/// Linear luminance of every `step`-th pixel of an sRGB image (8 or 16
+/// bits), sorted.
+fn luminances(img: &ImageBuf, step: usize) -> Vec<f64> {
+    let lin8: Vec<f64> = (0..256)
+        .map(|v| f64::from(crate::util::srgb_to_linear(v as f32 / 255.0)))
+        .collect();
+    let d = img.data();
+    let n = img.width() as usize * img.height() as usize;
+    let mut out: Vec<f64> = (0..n)
+        .step_by(step)
+        .map(|i| match img.format() {
+            PixelFormat::Rgba16 => luminance([0, 1, 2].map(|k| {
+                let v = u16::from_ne_bytes([d[i * 8 + 2 * k], d[i * 8 + 2 * k + 1]]);
+                f64::from(crate::util::srgb_to_linear(f32::from(v) / 65535.0))
+            })),
+            _ => luminance([0, 1, 2].map(|k| lin8[usize::from(d[i * 4 + k])])),
+        })
+        .collect();
+    out.sort_by(f64::total_cmp);
+    out
+}
+
+/// Brightness and mid-tone contrast of a picture: mean luminance, mean
+/// lightness, and the interquartile range of lightness.
+#[derive(Clone, Copy, Debug)]
+struct Tone3 {
+    mean_y: f64,
+    mean_l: f64,
+    iqr_l: f64,
+}
+
+fn tone_stats(sorted: &[f64]) -> Tone3 {
+    let n = sorted.len().max(1);
+    let pct = |p: f64| sorted[((sorted.len() - 1) as f64 * p) as usize];
+    Tone3 {
+        mean_y: sorted.iter().sum::<f64>() / n as f64,
+        mean_l: sorted.iter().map(|&y| lightness(y)).sum::<f64>() / n as f64,
+        iqr_l: lightness(pct(0.75)) - lightness(pct(0.25)),
+    }
+}
+
+/// Tolerances of the default rendering against the camera's own JPEG:
+/// mean luminance within a third of a stop, mean lightness within 5 L*
+/// units, and mid-tone contrast (the L* interquartile range) within -20
+/// to +25 percent. The camera adds scene-dependent processing (its
+/// dynamic range optimizer, picture style), which one fixed curve cannot
+/// follow exactly; these bounds still separate the default rendering from
+/// the flat colorimetric image, which misses by 0.6 EV with three quarters
+/// of the contrast on the owner's samples and by 1.1 to 1.4 EV with half
+/// the contrast on the public samples.
+const BRIGHTNESS_EV: f64 = 0.35;
+const LIGHTNESS: f64 = 5.0;
+const CONTRAST: (f64, f64) = (0.8, 1.25);
+
+/// Gate G3: the default display rendering of developed RAW data lands
+/// within the stated brightness tolerance of the camera's embedded
+/// preview.
+///
+/// Synthetic: a uniform gray scene whose sensor values sit at the curve's
+/// exposure anchor (3.7 EV below clipping, where a camera meters mid-gray)
+/// develops to display mid-gray, the value a camera JPEG gives a metered
+/// gray card (sRGB 118); its preview holds that gray. A ramp from black to
+/// clipping develops to a rising curve from 0 to 255.
+///
+/// Real: every `.ARW` in `PANDITE_ARW_SAMPLES` with sensor data in scope
+/// is developed with the default rendering and compared with its largest
+/// embedded JPEG (decoded at about 1600 pixels) on mean luminance, mean
+/// lightness and lightness interquartile range. One parameter set serves
+/// every file; nothing is fitted per file.
+#[test]
+fn raw_default_rendering_matches_preview_brightness() {
+    use crate::raw::tone;
+    // --- synthetic gray card ---
+    let (w, h) = (32u32, 16u32);
+    let probe = v1_file(w, h, &vec![1000u16; (w * h) as usize], vec![], 1);
+    let plan = plan_of(&probe);
+    let anchor = 0.075f64;
+    let mut vals = Vec::with_capacity((w * h) as usize);
+    for y in 0..h as usize {
+        for x in 0..w as usize {
+            let p = 2 * (y & 1) + (x & 1);
+            let color = usize::from(plan.cfa[p]).min(2);
+            let b = f64::from(plan.black[p]);
+            let span = f64::from(plan.white) - b;
+            // R-ARW-47 inverted: the raw value that normalizes to `anchor`.
+            vals.push((b + anchor * span / plan.wb[color]).round() as u16);
+        }
+    }
+    let gray = 118u8;
+    let file = with_previews(
+        strip_raw(w, h, 14, 1, h),
+        vals.iter().flat_map(|v| v.to_le_bytes()).collect(),
+        [jpeg(16, 8, [gray; 3]), jpeg(32, 16, [gray; 3])],
+        1,
+        "ILCE-7M4",
+    );
+    let options = DecodeOptions {
+        prefer_8bit: true,
+        ..DecodeOptions::default()
+    };
+    let dev = decode_with(&file, &options, Rendering::Display)
+        .unwrap()
+        .unwrap();
+    assert_eq!(dev.origin, Origin::Sensor(Variant::V1));
+    assert_eq!(dev.image.format(), PixelFormat::Rgba8);
+    let ours = tone_stats(&luminances(&dev.image, 1));
+    let preview =
+        preview::decode(&file, &preview::collect(&container(&file))[0], 1, &options).unwrap();
+    let theirs = tone_stats(&luminances(&preview, 1));
+    let ev = (ours.mean_y / theirs.mean_y).log2();
+    assert!(ev.abs() <= 0.1, "gray card: {ev:+.3} EV");
+    assert!(
+        (ours.mean_l - theirs.mean_l).abs() <= 1.5,
+        "{ours:?} {theirs:?}"
+    );
+    // The colorimetric rendering of the same data is the dark one.
+    let flat = report(&file);
+    let flat = tone_stats(&luminances(&flat.image, 1));
+    assert!((flat.mean_y / theirs.mean_y).log2() < -1.0, "{flat:?}");
+    // --- synthetic ramp: black to clipping, rising, ends at white ---
+    let (w, h) = (64u32, 2u32);
+    let ramp: Vec<u16> = (0..h)
+        .flat_map(|_| (0..w).map(move |x| (512 + (16_383 - 512) * x / (w - 1)) as u16))
+        .collect();
+    let file = v1_file(
+        w,
+        h,
+        &ramp,
+        vec![(0x7313, Val::SShort(vec![1024, 1024, 1024, 1024]))],
+        1,
+    );
+    let dev = decode_with(&file, &options, Rendering::Display)
+        .unwrap()
+        .unwrap();
+    let row: Vec<u8> = dev
+        .image
+        .data()
+        .chunks_exact(4)
+        .take(w as usize)
+        .map(|p| p[1])
+        .collect();
+    // Black (its demosaiced neighbors are barely above black) stays dark.
+    assert!(row[0] <= 12, "{row:?}");
+    assert!(row.windows(2).all(|p| p[1] >= p[0]), "{row:?}");
+    assert!(
+        row[w as usize - 2] >= 250,
+        "highlights roll off into white: {row:?}"
+    );
+    // The anchor of the curve itself.
+    assert!((tone::curve(anchor, 1.0) - 0.18).abs() < 0.005);
+
+    // --- real camera files ---
+    let Ok(dir) = std::env::var("PANDITE_ARW_SAMPLES") else {
+        println!("skip real samples: PANDITE_ARW_SAMPLES is not set");
+        return;
+    };
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+    let folder = if Path::new(&dir).is_absolute() {
+        PathBuf::from(&dir)
+    } else {
+        root.join(&dir)
+    };
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&folder)
+        .unwrap_or_else(|e| panic!("read {}: {e}", folder.display()))
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("arw"))
+        })
+        .collect();
+    files.sort();
+    assert!(!files.is_empty(), "no .ARW files in {}", folder.display());
+    let mut failures = Vec::new();
+    let mut compared = 0;
+    for path in &files {
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let data = std::fs::read(path).unwrap();
+        let c = container(&data);
+        if !matches!(meta::classify(&c), Ok(Class::Sensor(_))) {
+            println!("{name}: out of scope, previews only");
+            continue;
+        }
+        let dev = decode_with(&data, &options, Rendering::Display)
+            .unwrap()
+            .unwrap();
+        let info = dev.info.clone().expect("developed");
+        let best = preview::collect(&c).into_iter().next().expect("a preview");
+        let small = DecodeOptions {
+            target_size: Some((1600, 1600)),
+            ..DecodeOptions::default()
+        };
+        let prev = preview::decode(&data, &best, info.orientation, &small).unwrap();
+        let ours = tone_stats(&luminances(&dev.image, 7));
+        let theirs = tone_stats(&luminances(&prev, 1));
+        let flat = report(&data);
+        let flat = tone_stats(&luminances(&flat.image, 7));
+        let ev = (ours.mean_y / theirs.mean_y).log2();
+        let dl = ours.mean_l - theirs.mean_l;
+        let ratio = ours.iqr_l / theirs.iqr_l;
+        let line = format!(
+            "{name}: mean luminance {:+.2} EV, mean L* {:.1} vs {:.1} ({dl:+.1}), L* IQR {:.1} vs {:.1} (x{ratio:.2}) | colorimetric: {:+.2} EV, L* {:.1}, IQR x{:.2}",
+            ev,
+            ours.mean_l,
+            theirs.mean_l,
+            ours.iqr_l,
+            theirs.iqr_l,
+            (flat.mean_y / theirs.mean_y).log2(),
+            flat.mean_l,
+            flat.iqr_l / theirs.iqr_l,
+        );
+        println!("{line}");
+        if ev.abs() > BRIGHTNESS_EV
+            || dl.abs() > LIGHTNESS
+            || ratio < CONTRAST.0
+            || ratio > CONTRAST.1
+        {
+            failures.push(line);
+        }
+        compared += 1;
+    }
+    assert!(compared > 0, "no file in scope");
     assert!(failures.is_empty(), "outside tolerance: {failures:#?}");
 }

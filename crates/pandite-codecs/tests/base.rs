@@ -681,3 +681,193 @@ fn first_frame_only_returns_still() {
         other => panic!("apng: {:?}", other.kind()),
     }
 }
+
+/// A smooth test picture: gradients plus a few soft features.
+fn smooth(w: u32, h: u32) -> Vec<u8> {
+    let mut rgb = Vec::with_capacity((w * h * 3) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let fx = x as f32 / w as f32;
+            let fy = y as f32 / h as f32;
+            let wave = ((fx * 9.0).sin() * (fy * 7.0).cos() * 0.5 + 0.5) * 255.0;
+            rgb.extend_from_slice(&[(fx * 255.0) as u8, wave as u8, (fy * 255.0) as u8]);
+        }
+    }
+    rgb
+}
+
+/// Average `img` over `f x f` blocks (an exact box downscale).
+fn box_down(img: &pandite_core::ImageBuf, f: u32) -> Vec<[f64; 3]> {
+    let (w, h) = (img.width() / f, img.height() / f);
+    let mut out = Vec::with_capacity((w * h) as usize);
+    for by in 0..h {
+        for bx in 0..w {
+            let mut s = [0f64; 3];
+            for y in by * f..(by + 1) * f {
+                for x in bx * f..(bx + 1) * f {
+                    let p = px(img, x, y);
+                    for c in 0..3 {
+                        s[c] += f64::from(p[c]);
+                    }
+                }
+            }
+            out.push(s.map(|v| v / f64::from(f * f)));
+        }
+    }
+    out
+}
+
+/// Mean and largest per-channel difference between a reduced decode and
+/// the box-downscaled full decode.
+fn reduced_error(reduced: &pandite_core::ImageBuf, reference: &[[f64; 3]]) -> (f64, f64) {
+    let (mut sum, mut max) = (0f64, 0f64);
+    let w = reduced.width();
+    for (i, r) in reference.iter().enumerate() {
+        let p = px(reduced, i as u32 % w, i as u32 / w);
+        for c in 0..3 {
+            let d = (f64::from(p[c]) - r[c]).abs();
+            sum += d;
+            max = max.max(d);
+        }
+    }
+    (sum / (reference.len() * 3) as f64, max)
+}
+
+/// A JPEG with a Multi-Picture Format index (CIPA DC-007) in APP2 that
+/// points to `preview`, appended after the main image.
+fn with_mpf_preview(main: &[u8], preview: &[u8]) -> Vec<u8> {
+    let entries = 2u32;
+    // TIFF header (8), IFD count (2), two entries (24), next IFD (4).
+    let ifd_len = 8 + 2 + 24 + 4;
+    let mp_len = ifd_len + 16 * entries as usize;
+    let app2_len = 2 + 4 + mp_len;
+    let mp_header_at = 2 + 2 + 2 + 4;
+    let total_main = main.len() + 2 + app2_len;
+    let preview_rel = (total_main - mp_header_at) as u32;
+    let mut seg = Vec::new();
+    seg.extend_from_slice(&[0xFF, 0xE2]);
+    seg.extend_from_slice(&(app2_len as u16).to_be_bytes());
+    seg.extend_from_slice(b"MPF\0");
+    seg.extend_from_slice(b"II*\0");
+    seg.extend_from_slice(&8u32.to_le_bytes());
+    seg.extend_from_slice(&2u16.to_le_bytes());
+    // MPFVersion, UNDEFINED x 4, "0100".
+    seg.extend_from_slice(&0xB000u16.to_le_bytes());
+    seg.extend_from_slice(&7u16.to_le_bytes());
+    seg.extend_from_slice(&4u32.to_le_bytes());
+    seg.extend_from_slice(b"0100");
+    // MPEntry, UNDEFINED x 32, stored after the IFD.
+    seg.extend_from_slice(&0xB002u16.to_le_bytes());
+    seg.extend_from_slice(&7u16.to_le_bytes());
+    seg.extend_from_slice(&(16 * entries).to_le_bytes());
+    seg.extend_from_slice(&(ifd_len as u32).to_le_bytes());
+    seg.extend_from_slice(&0u32.to_le_bytes());
+    // Entry 0: the primary image (offset 0). Entry 1: the preview.
+    for (size, offset) in [
+        (total_main as u32, 0u32),
+        (preview.len() as u32, preview_rel),
+    ] {
+        seg.extend_from_slice(&0x0002_0000u32.to_le_bytes());
+        seg.extend_from_slice(&size.to_le_bytes());
+        seg.extend_from_slice(&offset.to_le_bytes());
+        seg.extend_from_slice(&[0; 4]);
+    }
+    let mut out = main[..2].to_vec();
+    out.extend_from_slice(&seg);
+    out.extend_from_slice(&main[2..]);
+    assert_eq!(out.len(), total_main);
+    out.extend_from_slice(preview);
+    out
+}
+
+/// Gate G3: the reduced JPEG decode matches the full decode scaled down.
+/// A target size decodes with DCT scaling to the strongest power-of-two
+/// reduction whose result still reaches the target on one axis (the
+/// decoder contract: never smaller on both); an embedded Multi-Picture Format
+/// preview that covers the target is used instead (and one with another
+/// aspect ratio is not). Both match the full decode averaged over the
+/// same pixel blocks within the error of the 8 x 8 DCT approximation.
+#[test]
+fn jpeg_reduced_decode_matches_full_downscale() {
+    let (w, h) = (512u32, 384u32);
+    let rgb = smooth(w, h);
+    let main = jpeg(w as u16, h as u16, &rgb, jpeg_encoder::ColorType::Rgb, 95);
+    let full = still(&main, "full.jpg");
+    assert_eq!((full.width(), full.height()), (w, h));
+    for (target, factor) in [
+        ((256, 192), 2),
+        ((128, 96), 4),
+        ((64, 48), 8),
+        ((100, 10), 8),
+    ] {
+        let options = DecodeOptions {
+            target_size: Some(target),
+            ..DecodeOptions::default()
+        };
+        let reduced = decode_with(&main, "r.jpg", &options);
+        let reduced = reduced.first_image();
+        assert_eq!(
+            (reduced.width(), reduced.height()),
+            (w / factor, h / factor),
+            "target {target:?}"
+        );
+        let (mean, max) = reduced_error(reduced, &box_down(&full, factor));
+        assert!(
+            mean <= 2.5 && max <= 24.0,
+            "DCT scale 1/{factor}: mean {mean:.2} max {max:.1}"
+        );
+    }
+
+    // An embedded preview at half size, same picture.
+    let (pw, ph) = (w / 2, h / 2);
+    let mut small = Vec::with_capacity((pw * ph * 3) as usize);
+    for y in 0..ph {
+        for x in 0..pw {
+            let i = ((y * 2 * w + x * 2) * 3) as usize;
+            small.extend_from_slice(&rgb[i..i + 3]);
+        }
+    }
+    let preview = jpeg(
+        pw as u16,
+        ph as u16,
+        &small,
+        jpeg_encoder::ColorType::Rgb,
+        95,
+    );
+    let file = with_mpf_preview(&main, &preview);
+    // The main image decodes as before.
+    let whole = still(&file, "mpf.jpg");
+    assert_eq!((whole.width(), whole.height()), (w, h));
+    let options = DecodeOptions {
+        target_size: Some((200, 150)),
+        ..DecodeOptions::default()
+    };
+    let reduced = decode_with(&file, "mpf.jpg", &options);
+    let reduced = reduced.first_image();
+    assert_eq!((reduced.width(), reduced.height()), (pw, ph), "the preview");
+    let (mean, max) = reduced_error(reduced, &box_down(&full, 2));
+    assert!(
+        mean <= 6.0 && max <= 60.0,
+        "preview: mean {mean:.2} max {max:.1}"
+    );
+    // A target larger than the preview is decoded from the main image.
+    let options = DecodeOptions {
+        target_size: Some((400, 300)),
+        ..DecodeOptions::default()
+    };
+    let big = decode_with(&file, "mpf.jpg", &options);
+    assert_eq!(big.dimensions(), (w, h));
+    // A preview of another aspect ratio stands in for nothing.
+    let odd = jpeg(200, 50, &smooth(200, 50), jpeg_encoder::ColorType::Rgb, 90);
+    let file = with_mpf_preview(&main, &odd);
+    let options = DecodeOptions {
+        target_size: Some((100, 25)),
+        ..DecodeOptions::default()
+    };
+    let reduced = decode_with(&file, "odd.jpg", &options);
+    assert_eq!(
+        reduced.dimensions(),
+        (w / 8, h / 8),
+        "DCT scaling, not the odd preview"
+    );
+}

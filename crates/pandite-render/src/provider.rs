@@ -33,6 +33,16 @@ use std::time::Duration;
 pub enum RenderInput {
     /// Content from a decoder provider. Dispatched by [`Content::kind`].
     Content(Content),
+    /// A reduced decode standing in for a larger image until the full
+    /// resolution arrives: drawn as if it had `size` pixels, so the view
+    /// does not move when the full image replaces it. Dispatched by
+    /// [`Content::kind`]; the still provider supports it.
+    Reduced {
+        /// The reduced image.
+        content: Content,
+        /// The full image's size in pixels.
+        size: Size,
+    },
     /// Data for a provider registered by the application, dispatched by
     /// `kind`. This carries content that `pandite_core::Content` cannot
     /// express yet, for example a 3D scene before core grows a variant.
@@ -50,7 +60,7 @@ impl RenderInput {
     /// The kind the provider registry dispatches on.
     pub fn kind(&self) -> ContentKind {
         match self {
-            RenderInput::Content(content) => content.kind(),
+            RenderInput::Content(content) | RenderInput::Reduced { content, .. } => content.kind(),
             RenderInput::Custom { kind, .. } => *kind,
         }
     }
@@ -63,6 +73,12 @@ impl std::fmt::Debug for RenderInput {
                 .debug_struct("Content")
                 .field("kind", &content.kind())
                 .field("dimensions", &content.dimensions())
+                .finish(),
+            RenderInput::Reduced { content, size } => f
+                .debug_struct("Reduced")
+                .field("kind", &content.kind())
+                .field("dimensions", &content.dimensions())
+                .field("size", size)
                 .finish(),
             RenderInput::Custom { kind, size, .. } => f
                 .debug_struct("Custom")
@@ -179,6 +195,12 @@ pub trait ContentRenderer: Send {
     /// Record draw calls into the content pass. The scissor is already set
     /// to the viewport.
     fn draw(&self, pass: &mut wgpu::RenderPass<'_>, ctx: &DrawContext<'_>);
+
+    /// How long the upload took, when the GPU measured it (see
+    /// [`crate::Gpu::set_measure_uploads`]). `None` by default.
+    fn upload_timings(&self) -> Option<crate::UploadTimings> {
+        None
+    }
 }
 
 /// Builds a [`ContentRenderer`] for one kind of content.

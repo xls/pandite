@@ -817,6 +817,29 @@ mod raw_files {
     pub const LEFT: [f64; 3] = [0.6, 0.1, 0.05];
     pub const RIGHT: [f64; 3] = [0.05, 0.2, 0.5];
 
+    /// The documented default display rendering of developed RAW data
+    /// (crate `raw::tone`), computed independently: the Hill curve
+    /// `y = (1 + K^n) x^n / (x^n + K^n)` with n = 1.8, K = 0.18 on Rec. 709
+    /// luminance, every channel scaled alike, out-of-gamut colors pulled
+    /// toward the gray of their luminance until the largest channel is 1.
+    pub fn display(lin: [f64; 3]) -> [f64; 3] {
+        let (n, k) = (1.8f64, 0.18f64);
+        let kn = k.powf(n);
+        let l = 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2];
+        if l <= 0.0 {
+            return [0.0; 3];
+        }
+        let y = (1.0 + kn) * l.powf(n) / (l.powf(n) + kn);
+        let s = y / l;
+        let mut out = lin.map(|v| v * s);
+        let max = out[0].max(out[1]).max(out[2]);
+        if max > 1.0 {
+            let t = (1.0 - y) / (max - y);
+            out = out.map(|v| y + (v - y) * t);
+        }
+        out
+    }
+
     /// A 16 x 8 RGGB DNG: left half LEFT, right half RIGHT.
     pub fn dng(compression: u16, sensor: Vec<u8>, extra: Ifd, orientation: u16) -> Vec<u8> {
         let preview = green_preview();
@@ -891,17 +914,32 @@ fn decode_raw() {
     use common::dng::*;
     use raw_files::*;
 
-    // Uncompressed DNG: developed from sensor data, 16-bit sRGB.
+    // Uncompressed DNG: developed from sensor data with the default
+    // display rendering, 16-bit sRGB.
     let bytes: Vec<u8> = sensor().iter().flat_map(|v| v.to_le_bytes()).collect();
     let file = dng(1, bytes, vec![], 1);
     let img = still(&file, "a.dng");
     assert_eq!((img.width(), img.height()), (16, 8));
     assert_eq!(img.format(), PixelFormat::Rgba16);
     for (x, y) in [(2, 3), (4, 4), (5, 2)] {
-        assert_color(px16(&img, x, y), LEFT, "left half");
+        assert_color(px16(&img, x, y), display(LEFT), "left half");
     }
     for (x, y) in [(10, 3), (12, 5), (13, 2)] {
-        assert_color(px16(&img, x, y), RIGHT, "right half");
+        assert_color(px16(&img, x, y), display(RIGHT), "right half");
+    }
+    // The display path asks for 8 bits and gets the same rendering.
+    let options = DecodeOptions {
+        prefer_8bit: true,
+        ..DecodeOptions::default()
+    };
+    let eight = decode_with(&file, "a.dng", &options);
+    let eight = eight.first_image();
+    assert_eq!(eight.format(), PixelFormat::Rgba8);
+    let p = px(eight, 4, 4);
+    let wide = px16(&img, 4, 4);
+    for c in 0..3 {
+        let from16 = (f64::from(wide[c]) / 257.0).round() as u8;
+        assert!(p[c].abs_diff(from16) <= 2, "8-bit {p:?} vs 16-bit {wide:?}");
     }
     let meta = reg().probe(&source(&file, "a.dng")).unwrap();
     assert_eq!((meta.width, meta.height, meta.format), (16, 8, "raw"));
@@ -913,8 +951,8 @@ fn decode_raw() {
     let file = dng(7, lj, crop, 6);
     let img = still(&file, "b.dng");
     assert_eq!((img.width(), img.height()), (4, 12), "cropped and rotated");
-    assert_color(px16(&img, 1, 2), LEFT, "rotated left part");
-    assert_color(px16(&img, 2, 10), RIGHT, "rotated right part");
+    assert_color(px16(&img, 1, 2), display(LEFT), "rotated left part");
+    assert_color(px16(&img, 2, 10), display(RIGHT), "rotated right part");
 
     // A small target uses the embedded preview.
     let options = DecodeOptions {

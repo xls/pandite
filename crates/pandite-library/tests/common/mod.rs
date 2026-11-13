@@ -16,7 +16,7 @@ use pandite_library::{Event, FileAccess, FileInfo, Library, LibraryConfig, StdFi
 use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
@@ -151,6 +151,8 @@ pub enum End {
 #[derive(Default)]
 struct DecState {
     starts: Vec<Call>,
+    /// Every decode in start order with its target size.
+    targets: Vec<(String, Option<(u32, u32)>)>,
     ends: Vec<(Call, End)>,
     holds: HashSet<Call>,
     failing: HashSet<String>,
@@ -163,6 +165,8 @@ struct DecState {
 pub struct FakeDecoder {
     state: Mutex<DecState>,
     cv: Condvar,
+    /// Decode reduced images cheaply for a target size (staged loading).
+    reduced: AtomicBool,
 }
 
 impl FakeDecoder {
@@ -194,6 +198,17 @@ impl FakeDecoder {
 
     pub fn fail(&self, name: &str) {
         lock(&self.state).failing.insert(name.into());
+    }
+
+    /// Report cheap reduced decodes: a target size then yields an image
+    /// that just covers it.
+    pub fn enable_reduced(&self) {
+        self.reduced.store(true, Ordering::SeqCst);
+    }
+
+    /// Every decode so far with its target size, in start order.
+    pub fn targets(&self) -> Vec<(String, Option<(u32, u32)>)> {
+        lock(&self.state).targets.clone()
     }
 
     pub fn starts(&self) -> Vec<Call> {
@@ -289,6 +304,10 @@ impl DecoderProvider for FakeDecoder {
         })
     }
 
+    fn reduced_decode(&self, _source: &Source) -> bool {
+        self.reduced.load(Ordering::SeqCst)
+    }
+
     fn decode(&self, source: &Source, options: &DecodeOptions) -> Result<Content> {
         let call = Call {
             name: source.path().map(name_of).unwrap_or_default(),
@@ -296,6 +315,7 @@ impl DecoderProvider for FakeDecoder {
         };
         let mut g = lock(&self.state);
         g.starts.push(call.clone());
+        g.targets.push((call.name.clone(), options.target_size));
         self.cv.notify_all();
         // A held decode waits on the latch. The cancel token is a plain
         // flag with no notification, so it is checked every millisecond;
@@ -316,7 +336,15 @@ impl DecoderProvider for FakeDecoder {
             return Err(Error::Corrupt("fake failure".into()));
         }
         drop(g);
-        let (w, h) = parse(source)?;
+        let (mut w, mut h) = parse(source)?;
+        if let (Some((tw, th)), true) = (options.target_size, self.reduced.load(Ordering::SeqCst)) {
+            // Just cover the target, never enlarge.
+            let s = (f64::from(tw) / f64::from(w))
+                .max(f64::from(th) / f64::from(h))
+                .min(1.0);
+            w = ((f64::from(w) * s).ceil() as u32).max(1);
+            h = ((f64::from(h) * s).ceil() as u32).max(1);
+        }
         let shade = call.name.bytes().fold(0u8, |a, b| a.wrapping_add(b));
         let image = ImageBuf::solid_rgba8(w, h, [shade, 255 - shade, 128, 255])?;
         self.finish(lock(&self.state), call, End::Ok);

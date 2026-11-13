@@ -10,7 +10,7 @@ mod sched;
 use crate::cache::{Cache, Rank, NO_INDEX};
 use crate::folder::FolderList;
 use crate::fs::Stamp;
-use crate::{Event, Fetch, Stats};
+use crate::{Event, Fetch, LoadTimings, Reduced, Stats};
 use pandite_core::{CancelToken, Content, Error, ImageBuf, Result};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::Range;
@@ -29,11 +29,33 @@ pub(crate) struct Settings {
     pub thumb_size: u32,
     pub full_budget: usize,
     pub thumb_budget: usize,
+    /// Screen size for reduced decodes; `None` decodes read-ahead at full
+    /// resolution and shows no reduced stage.
+    pub screen: Option<(u32, u32)>,
+}
+
+impl Settings {
+    /// The part of the image budget kept for screen-resolution images.
+    pub fn screen_budget(&self) -> usize {
+        if self.screen.is_some() {
+            self.full_budget / 4
+        } else {
+            0
+        }
+    }
+
+    /// Target of the quick first stage of the current image: half the
+    /// screen, so an embedded preview of about that size qualifies.
+    pub fn quick_target(&self) -> Option<(u32, u32)> {
+        self.screen.map(|(w, h)| ((w / 2).max(1), (h / 2).max(1)))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind {
     Full,
+    /// A screen-resolution decode of a read-ahead neighbor.
+    Screen,
     Thumb,
 }
 
@@ -46,8 +68,15 @@ pub(crate) struct Task {
 
 pub(crate) enum Work {
     /// Decode the whole file. `explicit` is set for the current image: it
-    /// is read even when its data is not stored locally.
-    Full { path: PathBuf, explicit: bool },
+    /// is read even when its data is not stored locally. `quick` is the
+    /// target of a reduced first stage decoded beside the full decode.
+    Full {
+        path: PathBuf,
+        explicit: bool,
+        quick: Option<(u32, u32)>,
+    },
+    /// Decode a read-ahead neighbor to cover `target` (screen size).
+    Screen { path: PathBuf, target: (u32, u32) },
     /// Make a thumbnail, from a cached full decode when `from` is set.
     Thumb {
         path: PathBuf,
@@ -60,6 +89,9 @@ pub(crate) enum Work {
 /// What a worker reports back.
 pub(crate) enum Outcome {
     Full(Result<Content>, Option<Stamp>),
+    /// A screen-resolution decode, or the full decode of an image no
+    /// larger than the screen (then cached as full).
+    Screen(Result<Staged>, Option<Stamp>),
     Thumb(Result<ImageBuf>, Option<Stamp>),
     /// The file is not stored locally and the job was not explicit.
     NotLocal,
@@ -70,6 +102,14 @@ pub(crate) enum Outcome {
     Listed(Option<FolderList>),
 }
 
+/// What a screen task produced.
+pub(crate) enum Staged {
+    /// A reduced image standing in for a larger one.
+    Reduced(Reduced),
+    /// The image itself: it is no larger than the screen.
+    Full(Content),
+}
+
 /// A job in flight.
 struct Running {
     id: u64,
@@ -78,6 +118,11 @@ struct Running {
     plan_gen: u64,
     plan_pos: Option<usize>,
     downloading: bool,
+    /// The file is local and being read (or was read): a full job of the
+    /// current image in this state holds other jobs back.
+    local_read: bool,
+    /// When the job started.
+    started: std::time::Instant,
     /// The file changed: drop the result and run the job again.
     discard: bool,
 }
@@ -188,6 +233,8 @@ pub(crate) struct State {
     current: Option<usize>,
     visible: Option<(usize, usize)>,
     full: Cache<Arc<Content>>,
+    /// Screen-resolution images (read-ahead and quick first stages).
+    screen: Cache<Reduced>,
     thumbs: Cache<ImageBuf>,
     full_errors: HashMap<PathBuf, ErrorEntry>,
     thumb_errors: HashMap<PathBuf, ErrorEntry>,
@@ -197,7 +244,11 @@ pub(crate) struct State {
     user_cancelled: HashSet<PathBuf>,
     plan: Plan,
     running_full: HashMap<PathBuf, Running>,
+    running_screen: HashMap<PathBuf, Running>,
     running_thumb: HashMap<PathBuf, Running>,
+    /// Screen decodes that failed; the full decode runs when the image
+    /// becomes current and reports any error.
+    screen_failed: HashSet<PathBuf>,
     list_pending: Option<(u64, PathBuf)>,
     list_running: Option<ListRunning>,
     list_gen: u64,
@@ -205,6 +256,8 @@ pub(crate) struct State {
     events: VecDeque<Event>,
     next_id: u64,
     threads: HashMap<u64, ThreadSlot>,
+    /// Stage durations of recent loads, by path.
+    timings: HashMap<PathBuf, LoadTimings>,
     /// Set by `replan`; workers clear it and wake their peers.
     pub replanned: bool,
     /// Workers asleep on the work condition variable.
@@ -214,7 +267,9 @@ pub(crate) struct State {
 
 impl State {
     pub fn new(cfg: Settings) -> Self {
-        let (full_budget, thumb_budget) = (cfg.full_budget, cfg.thumb_budget);
+        let screen_budget = cfg.screen_budget();
+        let full_budget = cfg.full_budget - screen_budget;
+        let thumb_budget = cfg.thumb_budget;
         Self {
             cfg,
             items: Vec::new(),
@@ -222,6 +277,7 @@ impl State {
             current: None,
             visible: None,
             full: Cache::new(full_budget),
+            screen: Cache::new(screen_budget),
             thumbs: Cache::new(thumb_budget),
             full_errors: HashMap::new(),
             thumb_errors: HashMap::new(),
@@ -230,7 +286,9 @@ impl State {
             user_cancelled: HashSet::new(),
             plan: Plan::default(),
             running_full: HashMap::new(),
+            running_screen: HashMap::new(),
             running_thumb: HashMap::new(),
+            screen_failed: HashSet::new(),
             list_pending: None,
             list_running: None,
             list_gen: 0,
@@ -238,6 +296,7 @@ impl State {
             events: VecDeque::new(),
             next_id: 1,
             threads: HashMap::new(),
+            timings: HashMap::new(),
             replanned: false,
             waiting: 0,
             shutdown: false,
@@ -264,6 +323,20 @@ impl State {
 
     fn in_window(&self, index: usize) -> bool {
         self.current.is_some() && self.full_ranker().rank(index).0 <= self.cfg.read_ahead
+    }
+
+    /// True when full resolution is decoded for the current image only
+    /// and read-ahead holds screen-resolution images.
+    fn staged(&self) -> bool {
+        self.cfg.screen.is_some()
+    }
+
+    /// Change the screen size of reduced decodes. Cached screen images
+    /// stay; they are stand-ins until the full image arrives.
+    pub fn set_screen(&mut self, size: (u32, u32)) {
+        if self.cfg.screen.is_some() {
+            self.cfg.screen = Some((size.0.max(1), size.1.max(1)));
+        }
     }
 
     fn thumb_wanted(&self, index: usize) -> bool {
@@ -376,17 +449,16 @@ impl State {
 
     pub fn invalidate(&mut self, path: &Path) {
         self.full.remove(path);
+        self.screen.remove(path);
+        self.screen_failed.remove(path);
         self.thumbs.remove(path);
         self.full_errors.remove(path);
         self.thumb_errors.remove(path);
         self.full_sizes.remove(path);
         self.non_local.remove(path);
         self.user_cancelled.remove(path);
-        for kind in [Kind::Full, Kind::Thumb] {
-            let map = match kind {
-                Kind::Full => &mut self.running_full,
-                Kind::Thumb => &mut self.running_thumb,
-            };
+        for kind in [Kind::Full, Kind::Screen, Kind::Thumb] {
+            let map = self.running_mut(kind);
             if let Some(running) = map.get_mut(path) {
                 running.discard = true;
             }
@@ -420,6 +492,12 @@ impl State {
         Fetch::Pending
     }
 
+    /// The screen-resolution image of `index`, when cached.
+    pub fn reduced(&self, index: usize) -> Option<Reduced> {
+        let path = self.items.get(index)?;
+        self.screen.get(path).map(|e| e.value.clone())
+    }
+
     pub fn thumbnail(&self, index: usize) -> Fetch<ImageBuf> {
         let Some(path) = self.items.get(index) else {
             return out_of_range(index);
@@ -433,10 +511,37 @@ impl State {
         if self.user_cancelled.contains(path) {
             return Fetch::Cancelled;
         }
-        if self.non_local.contains(path) && !self.full.contains(path) {
+        if self.non_local.contains(path) && !self.full.contains(path) && !self.screen.contains(path)
+        {
             return Fetch::NotLocal;
         }
         Fetch::Pending
+    }
+
+    pub fn timings(&self, path: &Path) -> Option<LoadTimings> {
+        self.timings.get(path).copied()
+    }
+
+    /// Remember the stage durations of a load. Only the paths in the list
+    /// are kept, so the map stays as small as the folder. A reduced stage
+    /// recorded earlier for the same load stays.
+    pub fn note_timings(&mut self, path: &Path, timings: LoadTimings) {
+        if self.index_of.contains_key(path) {
+            let entry = self.timings.entry(path.to_path_buf()).or_default();
+            entry.read = timings.read;
+            entry.decode_full = timings.decode_full;
+            if timings.decode_reduced.is_some() {
+                entry.decode_reduced = timings.decode_reduced;
+            }
+        }
+    }
+
+    /// Remember how long the quick stage of a load took.
+    pub fn note_reduced_time(&mut self, path: &Path, took: std::time::Duration) {
+        if self.index_of.contains_key(path) {
+            let entry = self.timings.entry(path.to_path_buf()).or_default();
+            entry.decode_reduced = Some(took);
+        }
     }
 
     pub fn drain_events(&mut self) -> Vec<Event> {
@@ -449,10 +554,14 @@ impl State {
             full_bytes: self.full.used(),
             full_entries: self.full.len(),
             full_budget: self.full.budget(),
+            screen_bytes: self.screen.used(),
+            screen_entries: self.screen.len(),
+            screen_budget: self.screen.budget(),
             thumb_bytes: self.thumbs.used(),
             thumb_entries: self.thumbs.len(),
             thumb_budget: self.thumbs.budget(),
             running: self.running_full.len()
+                + self.running_screen.len()
                 + self.running_thumb.len()
                 + usize::from(self.list_running.is_some()),
             threads,
@@ -464,6 +573,7 @@ impl State {
     /// still stuck.
     pub fn is_idle(&mut self) -> bool {
         self.running_full.is_empty()
+            && self.running_screen.is_empty()
             && self.running_thumb.is_empty()
             && self.list_running.is_none()
             && self.list_pending.is_none()
@@ -483,12 +593,15 @@ impl State {
         self.items = paths;
         let index_of = &self.index_of;
         self.full.remap(|p| index_of.get(p).copied(), drop_missing);
+        self.screen
+            .remap(|p| index_of.get(p).copied(), drop_missing);
         self.thumbs
             .remap(|p| index_of.get(p).copied(), drop_missing);
         if drop_missing {
             self.full_errors.retain(|p, _| index_of.contains_key(p));
             self.thumb_errors.retain(|p, _| index_of.contains_key(p));
             self.full_sizes.retain(|p, _| index_of.contains_key(p));
+            self.screen_failed.retain(|p| index_of.contains_key(p));
             self.non_local.retain(|p| index_of.contains_key(p));
             self.user_cancelled.retain(|p| index_of.contains_key(p));
         }
@@ -519,6 +632,7 @@ impl State {
                 None => true,
             };
             self.full.retain(|p, e| unchanged(p, e.stamp));
+            self.screen.retain(|p, e| unchanged(p, e.stamp));
             self.thumbs.retain(|p, e| unchanged(p, e.stamp));
             self.full_errors.retain(|p, e| unchanged(p, e.stamp));
             self.thumb_errors.retain(|p, e| unchanged(p, e.stamp));
@@ -646,6 +760,7 @@ impl State {
         for running in self
             .running_full
             .values()
+            .chain(self.running_screen.values())
             .chain(self.running_thumb.values())
         {
             running.cancel.cancel();

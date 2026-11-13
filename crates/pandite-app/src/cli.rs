@@ -7,6 +7,8 @@
 //!                        print "SMOKE OK" and exit (release self test)
 //!   --smoke-stall        with --smoke: reads never finish; the smoke run
 //!                        presses Escape on the loading screen and must exit
+//!   --timing             print one TIMING line with the load stages of the
+//!                        startup image once it shows at full resolution
 //!   --config-dir <dir>   keep settings in this folder instead of the
 //!                        per-user configuration folder
 //!   --help, -h           print usage
@@ -26,6 +28,7 @@ Usage: pandite [options] [--] [<image>]
 Options:
   --smoke <image>     open the image, render a few frames, print SMOKE OK, exit
   --smoke-stall       with --smoke: simulate a file that never finishes loading
+  --timing            print how long the startup image took to appear
   --config-dir <dir>  keep settings in this folder
   -h, --help          show this help
   -V, --version       show the version
@@ -41,6 +44,8 @@ pub struct Cli {
     /// In smoke mode, make every read stall and escape from the loading
     /// screen.
     pub smoke_stall: bool,
+    /// Print a `TIMING` line for the startup image.
+    pub timing: bool,
     /// Settings folder override.
     pub config_dir: Option<PathBuf>,
     /// Print usage and exit.
@@ -117,6 +122,7 @@ where
                 cli.smoke = Some(absolutize(Path::new(&v), cwd));
             }
             "--smoke-stall" => cli.smoke_stall = true,
+            "--timing" => cli.timing = true,
             "--config-dir" => {
                 let v = value("--config-dir")?;
                 cli.config_dir = Some(absolutize(Path::new(&v), cwd));
@@ -192,6 +198,9 @@ mod tests {
 
         let cli = parse(["--smoke", "s.png", "--smoke-stall"], &cwd()).unwrap();
         assert!(cli.smoke_stall);
+        assert!(!cli.timing);
+        let cli = parse(["--smoke", "s.png", "--timing"], &cwd()).unwrap();
+        assert!(cli.timing && cli.smoke.is_some());
         assert!(parse(["--smoke-stall"], &cwd()).is_err());
 
         assert!(parse(["-h"], &cwd()).unwrap().help);

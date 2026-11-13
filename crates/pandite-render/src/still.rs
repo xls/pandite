@@ -27,6 +27,11 @@ impl RenderProvider for StillProvider {
             RenderInput::Content(content) => Ok(Box::new(StillRenderer {
                 image: GpuImage::upload(ctx.gpu, content.first_image())?,
             })),
+            RenderInput::Reduced { content, size } => {
+                let mut image = GpuImage::upload(ctx.gpu, content.first_image())?;
+                image.set_logical_size(Some(*size));
+                Ok(Box::new(StillRenderer { image }))
+            }
             other => Err(Error::Unsupported(format!(
                 "the still provider draws decoded images, not {:?} data",
                 other.kind()
@@ -55,5 +60,9 @@ impl ContentRenderer for StillRenderer {
 
     fn draw(&self, pass: &mut wgpu::RenderPass<'_>, ctx: &DrawContext<'_>) {
         self.image.draw(pass, ctx);
+    }
+
+    fn upload_timings(&self) -> Option<crate::UploadTimings> {
+        self.image.upload_timings()
     }
 }

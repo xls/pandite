@@ -23,7 +23,7 @@ use pandite_core::{
     CancelToken, Color, Content, DrawList, EncodeOptions, Error, ImageBuf, Point, Rect, Registry,
     Size, TextMeasure, TextureSink, ViewState,
 };
-use pandite_library::{Event, Fetch, FileAccess, Library, LibraryConfig};
+use pandite_library::{Event, Fetch, FileAccess, Library, LibraryConfig, Reduced};
 use pandite_ui::{
     Action, ConfirmRequest, CursorShape, EncoderInfo, ImageInfo, InputEvent, Loading, Progress,
     ThemeKind, ThumbState, Ui, UiContext, ZOOM_STEP,
@@ -76,6 +76,13 @@ pub struct ContentUpdate {
     pub generation: u64,
     /// The new content, or `None` to show nothing.
     pub content: Option<Content>,
+    /// True when the content is the image at full resolution; false for a
+    /// reduced stage shown while the full image decodes.
+    pub full_resolution: bool,
+    /// For a reduced stage: the full image's size. The renderer draws the
+    /// reduced content as if it had this size, so the full image replaces
+    /// it without moving the view.
+    pub logical: Option<(u32, u32)>,
 }
 
 /// What the shell needs to draw one frame besides the draw list.
@@ -192,11 +199,15 @@ struct LoadState {
 struct Shown {
     path: PathBuf,
     name: String,
+    /// What the renderer shows: the full decode, or a reduced stand-in.
     content: Arc<Content>,
     base: ImageBuf,
     edits: EditStack,
     id: u64,
     told_first_frame: bool,
+    /// The full image's size while `content` is a reduced stand-in. Edits
+    /// and saves wait until the full image replaces it.
+    standin: Option<(u32, u32)>,
 }
 
 impl Shown {
@@ -206,6 +217,27 @@ impl Shown {
 
     fn current(&self) -> &ImageBuf {
         self.edits.current(&self.base)
+    }
+
+    /// The size the view works with: the full image's, also while a
+    /// reduced stand-in is on screen.
+    fn display_dims(&self) -> (u32, u32) {
+        match self.standin {
+            Some(dims) => dims,
+            None => {
+                let image = self.current();
+                (image.width(), image.height())
+            }
+        }
+    }
+
+    /// The update that puts this image on screen.
+    fn update(&self) -> (Content, Option<(u32, u32)>) {
+        if self.edits.is_empty() || self.standin.is_some() {
+            ((*self.content).clone(), self.standin)
+        } else {
+            (Content::Still(self.current().clone()), None)
+        }
     }
 }
 
@@ -291,6 +323,12 @@ struct State {
     startup_path: Option<PathBuf>,
     pending_open: Option<PathBuf>,
     started: bool,
+    /// The path handed to the library last and the clock time it was.
+    load_started: Option<(PathBuf, Duration)>,
+    /// The full image replaced its stand-in: start the edits that waited.
+    resume_edits: bool,
+    /// The full image replaced its stand-in: start the save that waited.
+    resume_save: bool,
 
     target: Option<Target>,
     count: usize,
@@ -385,6 +423,9 @@ impl App {
                 pandite_ops::to_rgba8(&small).unwrap_or(small)
             }),
             files: Arc::clone(&platform.disk) as Arc<dyn FileAccess>,
+            // Staged loading: a quick reduced image first, full resolution
+            // for the image on screen only, read-ahead at window size.
+            screen_size: Some(screen_size(window.size)),
             ..LibraryConfig::default()
         };
         let library = Library::new(Arc::clone(&registry), config, Arc::clone(&platform.waker))?;
@@ -427,6 +468,9 @@ impl App {
             startup_path: open.clone(),
             pending_open: open.clone(),
             started: false,
+            load_started: None,
+            resume_edits: false,
+            resume_save: false,
             target: None,
             count: 0,
             folder: open
@@ -506,7 +550,20 @@ impl App {
         self.st.shown.as_ref().map(|s| s.path.as_path())
     }
 
+    /// True while the image on screen is a reduced stand-in and its full
+    /// resolution is still decoding.
+    pub fn shows_reduced(&self) -> bool {
+        self.st.shown.as_ref().is_some_and(|s| s.standin.is_some())
+    }
+
+    /// The size of the image on screen as the view sees it: the full
+    /// image's size, also while a reduced stand-in is shown.
+    pub fn display_dims(&self) -> Option<(u32, u32)> {
+        self.st.shown.as_ref().map(Shown::display_dims)
+    }
+
     /// The image on screen after edits (the first frame of an animation).
+    /// While a reduced stand-in is shown, the stand-in.
     pub fn shown_image(&self) -> Option<&ImageBuf> {
         self.st.shown.as_ref().map(Shown::current)
     }
@@ -541,6 +598,16 @@ impl App {
     /// Number of images in the folder.
     pub fn count(&self) -> usize {
         self.st.count
+    }
+
+    /// When the library was asked for `path` last, on the clock passed to
+    /// the core (the start of the load the timing report measures).
+    pub fn load_started_at(&self, path: &Path) -> Option<Duration> {
+        self.st
+            .load_started
+            .as_ref()
+            .filter(|(p, _)| p == path)
+            .map(|(_, at)| *at)
     }
 
     /// The file being loaded, when a load runs.
@@ -805,6 +872,10 @@ impl App {
         let st = &mut self.st;
         st.window_size = Size::new(width as f32, height as f32);
         st.maximized = maximized;
+        if width > 0 && height > 0 {
+            let (w, h) = screen_size(st.window_size);
+            st.library.set_screen_size(w, h);
+        }
         if width > 0 && height > 0 && !maximized && !st.fullscreen {
             let mut normal = st.normal.unwrap_or_default();
             normal.w = width as f32;
@@ -907,12 +978,8 @@ impl App {
         self.ui.invalidate_textures();
         self.st.thumbs.invalidate();
         if let Some(shown) = &self.st.shown {
-            let content = if shown.edits.is_empty() {
-                (*shown.content).clone()
-            } else {
-                Content::Still(shown.current().clone())
-            };
-            self.st.push_content(Some(content));
+            let (content, logical) = shown.update();
+            self.st.push_staged(Some(content), logical);
         }
         self.st.dirty = true;
     }
@@ -953,6 +1020,15 @@ impl App {
     // ----- internals --------------------------------------------------------
 
     fn after_change(&mut self) {
+        let now = self.st.clock;
+        if std::mem::take(&mut self.st.resume_edits) {
+            self.st.start_edit_job(&mut self.ui, now);
+        }
+        if std::mem::take(&mut self.st.resume_save) {
+            if let Some(save) = self.st.pending_save.take() {
+                self.st.request_save(save, &mut self.ui, now);
+            }
+        }
         let st = &mut self.st;
         let cursor = self.ui.cursor();
         if st.cursor != Some(cursor) {
@@ -1062,6 +1138,19 @@ impl App {
     }
 }
 
+/// The screen size for staged loading: the window's client area in
+/// physical pixels (at least 1 x 1).
+fn screen_size(window: Size) -> (u32, u32) {
+    let side = |v: f32| {
+        if v.is_finite() {
+            v.round().clamp(1.0, 65_535.0) as u32
+        } else {
+            1
+        }
+    };
+    (side(window.w), side(window.h))
+}
+
 /// "PNG image" becomes "PNG" for the format list.
 fn short_format_name(name: &'static str) -> &'static str {
     name.strip_suffix(" image").unwrap_or(name)
@@ -1104,12 +1193,12 @@ fn context<'a>(st: &'a State, ui: &Ui, now: Duration) -> UiContext<'a> {
     };
     if let Some(shown) = &st.shown {
         let content = ui.content_rect(&ctx);
-        let image = shown.current();
-        let size = Size::new(image.width() as f32, image.height() as f32);
+        let (width, height) = shown.display_dims();
+        let size = Size::new(width as f32, height as f32);
         ctx.image = Some(ImageInfo {
             file_name: &shown.name,
-            width: image.width(),
-            height: image.height(),
+            width,
+            height,
             view: st.view,
             zoom_percent: st.view.scale(size, content.size()) * 100.0,
             screen_rect: st.view.image_rect(size, content),
@@ -1164,12 +1253,17 @@ impl State {
         self.busy_text.clear();
         if let Some(save) = &self.saving {
             self.busy_text = format!("Saving {}", save.name);
-        } else if self.pending_save.is_some() {
-            self.busy_text = "Preparing to save".into();
         } else if let Some(shown) = &self.shown {
-            if shown.edits.is_busy() {
+            let waiting = shown.edits.is_busy() || self.pending_save.is_some();
+            if shown.standin.is_some() && waiting {
+                self.busy_text = "Loading full resolution".into();
+            } else if self.pending_save.is_some() {
+                self.busy_text = "Preparing to save".into();
+            } else if shown.edits.is_busy() {
                 self.busy_text = "Applying edits".into();
             }
+        } else if self.pending_save.is_some() {
+            self.busy_text = "Preparing to save".into();
         }
         self.bulk_text.clear();
         if let Some(run) = &self.bulk {
@@ -1222,8 +1316,8 @@ impl State {
     }
 
     fn display_size(&self) -> Option<Size> {
-        let image = self.shown.as_ref()?.current();
-        Some(Size::new(image.width() as f32, image.height() as f32))
+        let (w, h) = self.shown.as_ref()?.display_dims();
+        Some(Size::new(w as f32, h as f32))
     }
 
     fn zoom(&mut self, factor: f32, anchor: Option<Point>) -> Handled {
@@ -1237,10 +1331,18 @@ impl State {
     }
 
     fn push_content(&mut self, content: Option<Content>) {
+        self.push_staged(content, None);
+    }
+
+    /// Hand content to the shell; `logical` marks a reduced stand-in and
+    /// carries the full image's size.
+    fn push_staged(&mut self, content: Option<Content>, logical: Option<(u32, u32)>) {
         self.content_gen += 1;
         self.content_out = Some(ContentUpdate {
             generation: self.content_gen,
             content,
+            full_resolution: logical.is_none(),
+            logical,
         });
         self.dirty = true;
     }
@@ -1302,6 +1404,7 @@ impl State {
             index: 0,
         });
         self.folder = path.parent().map(Path::to_path_buf);
+        self.load_started = Some((path.clone(), now));
         self.library.open(path.clone());
         // A file decoded earlier is served from the cache without an event.
         self.check_target();
@@ -1322,7 +1425,11 @@ impl State {
         let Some(target) = self.target.clone() else {
             return false;
         };
-        if self.loading.is_none() || self.shown.as_ref().is_some_and(|s| s.path == target.path) {
+        let full_shown = self
+            .shown
+            .as_ref()
+            .is_some_and(|s| s.path == target.path && s.standin.is_none());
+        if self.loading.is_none() || full_shown {
             return false;
         }
         if self.library.path(target.index).as_deref() != Some(target.path.as_path()) {
@@ -1343,7 +1450,16 @@ impl State {
                 }
                 false
             }
-            Fetch::Pending | Fetch::NotLocal | Fetch::Cancelled => false,
+            Fetch::Pending | Fetch::NotLocal | Fetch::Cancelled => {
+                let standing_in = self.shown.as_ref().is_some_and(|s| s.path == target.path);
+                match self.library.reduced(target.index) {
+                    Some(reduced) if !standing_in => {
+                        self.show_reduced(target.path, reduced);
+                        true
+                    }
+                    _ => false,
+                }
+            }
         }
     }
 
@@ -1379,10 +1495,15 @@ impl State {
             index,
         });
         self.notice = None;
-        if self.shown.as_ref().is_some_and(|s| s.path == path) {
+        if self
+            .shown
+            .as_ref()
+            .is_some_and(|s| s.path == path && s.standin.is_none())
+        {
             self.loading = None;
             return;
         }
+        self.load_started = Some((path.clone(), now));
         match self.library.get(index) {
             Fetch::Ready(content) => self.show(path, content),
             Fetch::Failed(err) => self.fail(&path, &err),
@@ -1391,22 +1512,44 @@ impl State {
                 let keep_since = self.loading.as_ref().map(|l| l.since);
                 self.loading = Some(LoadState {
                     name: file_name(&path),
-                    path,
+                    path: path.clone(),
                     // Holding a key through several files keeps one timer,
                     // so the overlay does not restart on every step.
                     since: keep_since.unwrap_or(now),
                     cloud,
                     startup: false,
                 });
+                // A read-ahead neighbor shows at screen resolution at once.
+                if let Some(reduced) = self.library.reduced(index) {
+                    if !self.shown.as_ref().is_some_and(|s| s.path == path) {
+                        self.show_reduced(path, reduced);
+                    }
+                }
             }
         }
     }
 
     fn show(&mut self, path: PathBuf, content: Arc<Content>) {
-        let id = self.next_image_id;
-        self.next_image_id += 1;
         let base = content.first_image().clone();
         let dims = (base.width(), base.height());
+        self.loading = None;
+        self.notice = None;
+        // The full image replaces its reduced stand-in: same view, and the
+        // edits and the save that waited for it start now.
+        if let Some(shown) = self
+            .shown
+            .as_mut()
+            .filter(|s| s.path == path && s.standin.is_some())
+        {
+            shown.content = Arc::clone(&content);
+            shown.base = base;
+            shown.standin = None;
+            self.push_content(Some((*content).clone()));
+            self.resume_waiting_work();
+            return;
+        }
+        let id = self.next_image_id;
+        self.next_image_id += 1;
         self.shown = Some(Shown {
             name: file_name(&path),
             path: path.clone(),
@@ -1415,10 +1558,9 @@ impl State {
             edits: EditStack::new(),
             id,
             told_first_frame: false,
+            standin: None,
         });
         self.view = ViewState::default();
-        self.loading = None;
-        self.notice = None;
         self.pending_save = None;
         self.push_content(Some((*content).clone()));
         if self.startup_path.as_deref() == Some(path.as_path()) {
@@ -1426,8 +1568,59 @@ impl State {
         }
     }
 
+    /// Show a reduced stand-in for `path` while its full resolution
+    /// decodes. The view is set up for the full image's size, so the swap
+    /// later changes nothing on screen but the sharpness.
+    fn show_reduced(&mut self, path: PathBuf, reduced: Reduced) {
+        let dims = (reduced.width, reduced.height);
+        let content = Arc::new(Content::Still(reduced.image));
+        if let Some(shown) = self.shown.as_mut().filter(|s| s.path == path) {
+            if shown.standin.is_some() {
+                // A better stand-in for the same image: keep the view.
+                shown.base = content.first_image().clone();
+                shown.content = Arc::clone(&content);
+                shown.standin = Some(dims);
+                self.push_staged(Some((*content).clone()), Some(dims));
+            }
+            return;
+        }
+        let id = self.next_image_id;
+        self.next_image_id += 1;
+        self.shown = Some(Shown {
+            name: file_name(&path),
+            path: path.clone(),
+            base: content.first_image().clone(),
+            content: Arc::clone(&content),
+            edits: EditStack::new(),
+            id,
+            told_first_frame: false,
+            standin: Some(dims),
+        });
+        self.view = ViewState::default();
+        self.notice = None;
+        self.pending_save = None;
+        self.push_staged(Some((*content).clone()), Some(dims));
+        if self.startup_path.as_deref() == Some(path.as_path()) {
+            self.auto_size_to(dims);
+        }
+    }
+
+    /// Edits and a save that waited for the full image start.
+    fn resume_waiting_work(&mut self) {
+        let Some(shown) = &self.shown else {
+            return;
+        };
+        if shown.edits.is_busy() {
+            self.resume_edits = true;
+        } else if self.pending_save.is_some() {
+            self.resume_save = true;
+        }
+    }
+
     fn fail(&mut self, path: &Path, err: &Error) {
         self.loading = None;
+        // Edits or a save waiting for this image cannot run.
+        self.pending_save = None;
         if self.shown.take().is_some() {
             self.push_content(None);
         }
@@ -1445,6 +1638,12 @@ impl State {
             return Handled::Done;
         }
         self.library.cancel_current();
+        if let Some(shown) = self.shown.as_mut().filter(|s| s.standin.is_some()) {
+            // The full image will not come: what waited for it is dropped,
+            // the stand-in stays on screen.
+            shown.edits = EditStack::new();
+            self.pending_save = None;
+        }
         match &self.shown {
             Some(shown) => {
                 let path = shown.path.clone();
@@ -1486,11 +1685,31 @@ impl State {
                     }
                 }
             }
-            Event::Ready { path, .. } => {
+            Event::Reduced { path, .. } => {
                 let Some(target) = self.target.clone() else {
                     return;
                 };
                 if target.path != path || self.shown.as_ref().is_some_and(|s| s.path == path) {
+                    return;
+                }
+                let index = if self.library.path(target.index).as_deref() == Some(path.as_path()) {
+                    Some(target.index)
+                } else {
+                    self.index_of(&path)
+                };
+                if let Some(reduced) = index.and_then(|i| self.library.reduced(i)) {
+                    self.show_reduced(path, reduced);
+                }
+            }
+            Event::Ready { path, .. } => {
+                let Some(target) = self.target.clone() else {
+                    return;
+                };
+                let full_shown = self
+                    .shown
+                    .as_ref()
+                    .is_some_and(|s| s.path == path && s.standin.is_none());
+                if target.path != path || full_shown {
                     return;
                 }
                 let index = if self.library.path(target.index).as_deref() == Some(path.as_path()) {
@@ -1588,6 +1807,10 @@ impl State {
         let Some(shown) = &mut self.shown else {
             return;
         };
+        if shown.standin.is_some() {
+            // Edits run on full-resolution data: they wait for it.
+            return;
+        }
         let Some((edit, input)) = shown.edits.next_job(&shown.base) else {
             return;
         };
@@ -1639,13 +1862,9 @@ impl State {
             Undo::Nothing => Handled::Ignored,
             Undo::Dequeued | Undo::DroppedRunning => Handled::Done,
             Undo::Reverted => {
-                let content = if shown.edits.is_empty() {
-                    (*shown.content).clone()
-                } else {
-                    Content::Still(shown.current().clone())
-                };
+                let (content, logical) = shown.update();
                 self.view.pan = Point::default();
-                self.push_content(Some(content));
+                self.push_staged(Some(content), logical);
                 Handled::Done
             }
         }
@@ -1751,7 +1970,11 @@ impl State {
     }
 
     fn request_save(&mut self, save: PendingSave, ui: &mut Ui, now: Duration) {
-        if self.shown.as_ref().is_some_and(|s| s.edits.is_busy()) {
+        if self
+            .shown
+            .as_ref()
+            .is_some_and(|s| s.edits.is_busy() || s.standin.is_some())
+        {
             self.pending_save = Some(save);
         } else {
             self.start_save(save, ui, now);

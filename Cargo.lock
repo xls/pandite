@@ -1731,6 +1731,8 @@ dependencies = [
  "tiff",
  "weezl",
  "windows",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]

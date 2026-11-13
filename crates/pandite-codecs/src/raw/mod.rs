@@ -4,11 +4,14 @@
 //! tiles and strips, CFA (any repeat pattern) or linear RGB, linearization
 //! table, black and white levels, active area and default crop, as-shot
 //! white balance, the color matrix to sRGB, baseline exposure and the
-//! orientation tag. The result is a 16-bit sRGB image.
+//! orientation tag. The developed image gets pandite's default display
+//! rendering ([`tone`]: exposure normalization and a hue-preserving filmic
+//! curve) and is delivered as 16-bit sRGB, or as 8-bit sRGB when the
+//! caller prefers 8 bits (display).
 //!
 //! Sony ARW files are developed from sensor data by the [`arw`] module,
 //! written from the clean-room specification `specs/raw/arw.md`, with the
-//! same 16-bit sRGB output. Its out-of-scope variants show their preview.
+//! same rendering and output. Its out-of-scope variants show their preview.
 //!
 //! The other proprietary formats (CR2, CR3, NEF, RAF, ORF, RW2, PEF, SRW)
 //! show the camera's embedded JPEG preview, the largest one in the file
@@ -19,6 +22,7 @@
 //! covers the target is used, which makes thumbnails fast.
 
 mod arw;
+pub(crate) mod tone;
 
 use crate::exif::{tag, Entry, Tiff};
 use crate::util::{self, check_size, corrupt, guard, unsupported};
@@ -95,6 +99,16 @@ impl DecoderProvider for RawDecoder {
             return true;
         }
         distinctive_signature(header)
+    }
+
+    fn reduced_decode(&self, source: &Source) -> bool {
+        // Reduced images come from embedded previews; a file without one
+        // would be developed in full.
+        let d = source.bytes();
+        if use_arw(source) {
+            return arw::has_preview(d);
+        }
+        !previews(d).is_empty()
     }
 
     fn probe(&self, source: &Source) -> Result<ImageMeta> {
@@ -269,7 +283,7 @@ fn decode(d: &[u8], options: &DecodeOptions) -> Result<ImageBuf> {
         }
     }
     if let Some(info) = dng {
-        match develop(d, &info, &options.cancel) {
+        match develop(d, &info, &options.cancel, options.prefer_8bit) {
             Ok(img) => return orient::apply(img, orientation),
             Err(Error::Cancelled) => return Err(Error::Cancelled),
             Err(e @ Error::TooLarge { .. }) => return Err(e),
@@ -324,6 +338,7 @@ fn preview_image(
     let opts = DecodeOptions {
         target_size: target,
         first_frame_only: true,
+        prefer_8bit: true,
         cancel: options.cancel.clone(),
     };
     let img = jpeg::decode_image(stream, &opts)?;
@@ -718,14 +733,21 @@ fn camera_to_srgb(xyz_to_cam: [f64; 9]) -> Option<[f64; 9]> {
     invert(cam_rgb)
 }
 
-/// Develop the DNG sensor image to 16-bit sRGB in one pass over the
-/// output area: normalize, demosaic, white balance, color matrix, exposure
-/// and sRGB encoding per pixel, so only the sensor data and the result are
-/// held in memory.
-fn develop(d: &[u8], i: &Dng, cancel: &CancelToken) -> Result<ImageBuf> {
+/// Develop the DNG sensor image in one pass over the output area:
+/// normalize, demosaic, white balance, color matrix, then the default
+/// display rendering ([`tone`], with the file's baseline exposure as its
+/// exposure gain) and sRGB encoding per pixel, so only the sensor data and
+/// the result are held in memory. `eight_bit` delivers `Rgba8`, else
+/// `Rgba16`.
+fn develop(d: &[u8], i: &Dng, cancel: &CancelToken, eight_bit: bool) -> Result<ImageBuf> {
+    let format = if eight_bit {
+        PixelFormat::Rgba8
+    } else {
+        PixelFormat::Rgba16
+    };
     check_size(i.width, i.height, PixelFormat::Rgba16)?;
     let (ow, oh) = i.output_size();
-    check_size(ow, oh, PixelFormat::Rgba16)?;
+    check_size(ow, oh, format)?;
     let raw = read_sensor(d, i, cancel)?;
     let (w, spp) = (i.width as usize, i.spp);
     let (top, left, bottom, right) = (
@@ -799,11 +821,20 @@ fn develop(d: &[u8], i: &Dng, cancel: &CancelToken) -> Result<ImageBuf> {
         .color_matrix
         .and_then(camera_to_srgb)
         .map(|m| m.map(|v| v as f32));
-    let gain = 2f32.powf(i.baseline_exposure as f32);
+    // BaselineExposure moves the exposure: the tone curve maps clipping
+    // times this gain to white.
+    let gain = 2f64.powf(i.baseline_exposure.clamp(-10.0, 10.0));
+    let rendering = tone::Tone::new(gain);
     // Linear 0..1 (16-bit steps) to 16-bit sRGB codes.
-    let encode: Vec<u16> = (0..=u16::MAX)
-        .map(|v| (util::linear_to_srgb(f32::from(v) / 65535.0) * 65535.0 + 0.5) as u16)
-        .collect();
+    let encode: Vec<u16> = if eight_bit {
+        Vec::new()
+    } else {
+        (0..=u16::MAX)
+            .map(|v| (util::linear_to_srgb(f32::from(v) / 65535.0) * 65535.0 + 0.5) as u16)
+            .collect()
+    };
+    let srgb8 = tone::srgb8_table();
+    let bpp = format.bytes_per_pixel();
     let (cx, cy, cw, ch) = match i.crop {
         Some((x, y, _, _)) => (
             (x.round().max(0.0) as usize).min(aw - 1),
@@ -814,14 +845,14 @@ fn develop(d: &[u8], i: &Dng, cancel: &CancelToken) -> Result<ImageBuf> {
         None => (0, 0, aw, ah),
     };
     let (cw, ch) = (cw.min(aw - cx), ch.min(ah - cy));
-    let len = check_size(cw as u32, ch as u32, PixelFormat::Rgba16)?;
+    let len = check_size(cw as u32, ch as u32, format)?;
     let mut out = util::alloc(len, cw as u32, ch as u32)?;
     for (row, y) in (cy..cy + ch).enumerate() {
         if row % 128 == 0 {
             cancel.check()?;
         }
-        let line = &mut out[row * cw * 8..(row + 1) * cw * 8];
-        for (px, x) in line.chunks_exact_mut(8).zip(cx..cx + cw) {
+        let line = &mut out[row * cw * bpp..(row + 1) * cw * bpp];
+        for (px, x) in line.chunks_exact_mut(bpp).zip(cx..cx + cw) {
             let p = camera(y, x);
             // Clip after white balance so highlights stay neutral.
             let c = [0, 1, 2].map(|k| (p[k] * wb[k]).min(1.0));
@@ -831,14 +862,23 @@ fn develop(d: &[u8], i: &Dng, cancel: &CancelToken) -> Result<ImageBuf> {
                 }
                 None => c,
             };
-            for (k, v) in rgb.into_iter().enumerate() {
-                let code = encode[((v * gain).clamp(0.0, 1.0) * 65535.0 + 0.5) as usize];
-                px[2 * k..2 * k + 2].copy_from_slice(&code.to_ne_bytes());
+            let lin = rgb.map(|v| v.clamp(0.0, 1.0));
+            let shown = rendering.apply(lin);
+            if eight_bit {
+                for k in 0..3 {
+                    px[k] = srgb8[tone::srgb8_index(shown[k])];
+                }
+                px[3] = 255;
+            } else {
+                for (k, v) in shown.into_iter().enumerate() {
+                    let code = encode[(v.clamp(0.0, 1.0) * 65535.0 + 0.5) as usize];
+                    px[2 * k..2 * k + 2].copy_from_slice(&code.to_ne_bytes());
+                }
+                px[6..8].copy_from_slice(&u16::MAX.to_ne_bytes());
             }
-            px[6..8].copy_from_slice(&u16::MAX.to_ne_bytes());
         }
     }
-    ImageBuf::new(cw as u32, ch as u32, PixelFormat::Rgba16, out)
+    ImageBuf::new(cw as u32, ch as u32, format, out)
 }
 
 #[cfg(test)]

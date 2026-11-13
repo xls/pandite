@@ -84,6 +84,10 @@ impl DecoderProvider for SvgDecoder {
         looks_like_svg(header)
     }
 
+    fn reduced_decode(&self, _source: &Source) -> bool {
+        true
+    }
+
     fn probe(&self, source: &Source) -> Result<ImageMeta> {
         let tree = guard(FORMAT, || parse(source))?;
         let (w, h) = intrinsic(&tree);

@@ -3,8 +3,13 @@
 //! Component on Windows (needs the HEIF and HEVC extensions from the
 //! Microsoft Store) and ImageIO on macOS. Linux has no provider.
 //!
-//! This is the only module with `unsafe` code: COM and CoreFoundation calls.
-//! Each block states why it is sound.
+//! With `DecodeOptions::target_size` on Windows, the thumbnail the file
+//! carries (Sony stores 1616 x 1080) is decoded instead of the image when
+//! it covers the target and has the image's aspect ratio: about 60 to 110
+//! ms instead of a second for a 60 megapixel file.
+//!
+//! This is the only module with `unsafe` code besides the SIMD kernels:
+//! COM and CoreFoundation calls. Each block states why it is sound.
 
 #![allow(unsafe_code)]
 
@@ -66,12 +71,33 @@ impl DecoderProvider for HeicDecoder {
         })
     }
 
+    fn reduced_decode(&self, _source: &Source) -> bool {
+        // Windows Imaging Component hands out the file's thumbnail.
+        cfg!(windows)
+    }
+
     fn decode(&self, source: &Source, options: &DecodeOptions) -> Result<Content> {
         options.cancel.check()?;
-        let (image, orientation) =
-            util::guard(FORMAT, || os::decode(source.bytes(), &options.cancel))?;
+        let (image, orientation) = util::guard(FORMAT, || {
+            os::decode(source.bytes(), options.target_size, &options.cancel)
+        })?;
         Ok(Content::Still(orient::apply(image, orientation)?))
     }
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+/// True when a thumbnail of `thumb` pixels stands in for an image of
+/// `full` pixels at `target` (stored axes): smaller than the image, the
+/// same aspect ratio within 2 percent, and reaching the target on one
+/// axis.
+fn thumbnail_fits(thumb: (u32, u32), full: (u32, u32), target: (u32, u32)) -> bool {
+    let (tw, th) = thumb;
+    if tw == 0 || th == 0 || full.0 == 0 || full.1 == 0 {
+        return false;
+    }
+    let smaller = u64::from(tw) * u64::from(th) < u64::from(full.0) * u64::from(full.1);
+    let aspect = (f64::from(tw) / f64::from(th)) / (f64::from(full.0) / f64::from(full.1));
+    smaller && (aspect - 1.0).abs() <= 0.02 && (tw >= target.0 || th >= target.1)
 }
 
 /// Finish a decoded RGBA8 buffer: color management, then the image.
@@ -87,8 +113,8 @@ mod os {
     use windows::core::w;
     use windows::Win32::Graphics::Imaging::{
         CLSID_WICImagingFactory, GUID_WICPixelFormat32bppRGBA, IWICBitmapFrameDecode,
-        IWICColorContext, IWICImagingFactory, WICBitmapDitherTypeNone, WICBitmapPaletteTypeCustom,
-        WICColorContextProfile, WICDecodeMetadataCacheOnDemand,
+        IWICBitmapSource, IWICColorContext, IWICImagingFactory, WICBitmapDitherTypeNone,
+        WICBitmapPaletteTypeCustom, WICColorContextProfile, WICDecodeMetadataCacheOnDemand,
     };
     use windows::Win32::System::Com::StructuredStorage::{
         PropVariantClear, PropVariantToUInt16, PROPVARIANT,
@@ -240,14 +266,23 @@ mod os {
         }
     }
 
-    pub(super) fn decode(data: &[u8], cancel: &CancelToken) -> Result<(ImageBuf, Orientation)> {
-        let _com = ComScope::enter();
-        let (factory, frame) = open(data)?;
-        let (w, h) = size(&frame)?;
+    /// The size of a bitmap source.
+    fn source_size(source: &IWICBitmapSource) -> Result<(u32, u32)> {
+        let (mut w, mut h) = (0u32, 0u32);
+        // SAFETY: GetSize writes two u32 values through valid pointers.
+        unsafe { source.GetSize(&mut w, &mut h) }.map_err(|e| corrupt(FORMAT, e))?;
+        Ok((w, h))
+    }
+
+    /// Convert `source` to RGBA8 in a buffer of its size.
+    fn pixels(
+        factory: &IWICImagingFactory,
+        source: &IWICBitmapSource,
+    ) -> Result<(u32, u32, Vec<u8>)> {
+        let (w, h) = source_size(source)?;
         let len = check_size(w, h, PixelFormat::Rgba8)?;
-        cancel.check()?;
-        let mut rgba = util::alloc(len, w, h)?;
-        // SAFETY: the converter reads from the frame we own and writes
+        let mut rgba = util::alloc_touched(len, w, h)?;
+        // SAFETY: the converter reads from a source we own and writes
         // exactly `stride * h` bytes into `rgba`, which has that length.
         unsafe {
             let converter = factory
@@ -255,7 +290,7 @@ mod os {
                 .map_err(|e| backend("converter", e))?;
             converter
                 .Initialize(
-                    &frame,
+                    source,
                     &GUID_WICPixelFormat32bppRGBA,
                     WICBitmapDitherTypeNone,
                     None,
@@ -267,8 +302,39 @@ mod os {
                 .CopyPixels(std::ptr::null(), w * 4, &mut rgba)
                 .map_err(|e| corrupt(FORMAT, e))?;
         }
-        let icc = profile(&factory, &frame);
+        Ok((w, h, rgba))
+    }
+
+    /// Decode the image, or its thumbnail when `target` (display axes)
+    /// asks for a smaller image and the thumbnail covers it.
+    pub(super) fn decode(
+        data: &[u8],
+        target: Option<(u32, u32)>,
+        cancel: &CancelToken,
+    ) -> Result<(ImageBuf, Orientation)> {
+        let _com = ComScope::enter();
+        let (factory, frame) = open(data)?;
+        let full = size(&frame)?;
         let orientation = orientation(&frame);
+        cancel.check()?;
+        let icc = profile(&factory, &frame);
+        if let Some((tw, th)) = target {
+            // The thumbnail is stored like the image: compare on stored axes.
+            let stored = jpeg::oriented(tw, th, orientation);
+            // SAFETY: a plain COM call on the frame we own.
+            let thumb = unsafe { frame.GetThumbnail() };
+            if let Ok(thumb) = thumb {
+                let fits = source_size(&thumb).is_ok_and(|t| thumbnail_fits(t, full, stored));
+                if fits {
+                    if let Ok((w, h, rgba)) = pixels(&factory, &thumb) {
+                        return Ok((finish(w, h, rgba, icc.as_deref())?, orientation));
+                    }
+                }
+            }
+        }
+        let source: IWICBitmapSource =
+            windows::core::Interface::cast(&frame).map_err(|e| backend("bitmap source", e))?;
+        let (w, h, rgba) = pixels(&factory, &source)?;
         Ok((finish(w, h, rgba, icc.as_deref())?, orientation))
     }
 }
@@ -444,7 +510,13 @@ mod os {
         }
     }
 
-    pub(super) fn decode(data: &[u8], cancel: &CancelToken) -> Result<(ImageBuf, Orientation)> {
+    /// Decode the image. ImageIO's thumbnails are not used: `_target` is
+    /// ignored and the full image is decoded.
+    pub(super) fn decode(
+        data: &[u8],
+        _target: Option<(u32, u32)>,
+        cancel: &CancelToken,
+    ) -> Result<(ImageBuf, Orientation)> {
         let (src, _data) = source(data)?;
         let (_, _, orientation) = properties(&src);
         // SAFETY: every Create result is checked for null and owned by a
@@ -509,6 +581,25 @@ mod os {
             // ImageIO already converted to sRGB while drawing.
             Ok((finish(w32, h32, rgba, None)?, orientation))
         }
+    }
+}
+
+#[cfg(test)]
+mod fit_tests {
+    use super::*;
+
+    #[test]
+    fn thumbnail_fits_only_as_a_true_stand_in() {
+        let full = (9504, 6336);
+        assert!(thumbnail_fits((1616, 1080), full, (1280, 720)));
+        assert!(thumbnail_fits((1616, 1080), full, (2000, 1080)));
+        assert!(
+            !thumbnail_fits((1616, 1080), full, (2000, 1200)),
+            "too small"
+        );
+        assert!(!thumbnail_fits((160, 90), full, (100, 100)), "16:9 for 3:2");
+        assert!(!thumbnail_fits(full, full, (10, 10)), "not smaller");
+        assert!(!thumbnail_fits((0, 0), full, (1, 1)));
     }
 }
 

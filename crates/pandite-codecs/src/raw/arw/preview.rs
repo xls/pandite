@@ -134,6 +134,7 @@ pub(super) fn decode(
     let opts = DecodeOptions {
         target_size: options.target_size.map(|(w, h)| jpeg::oriented(w, h, o)),
         first_frame_only: true,
+        prefer_8bit: true,
         cancel: options.cancel.clone(),
     };
     let img = match jpeg::decode_image(stream, &opts) {

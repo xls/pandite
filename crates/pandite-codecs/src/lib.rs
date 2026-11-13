@@ -16,6 +16,14 @@
 //! and refuse images above the [`pandite_core::ImageBuf`] limits. Hostile
 //! input produces an error, never a panic: third-party decoders run inside
 //! a panic guard (effective when the binary unwinds on panic).
+//!
+//! Parallel decode work (RAW development) runs on one bounded set of
+//! helper threads shared by every decode in the process (`pool`), so
+//! concurrent decodes never start a thread per core each. The hot pixel
+//! loops of RAW development have vector versions (AVX2 on x86_64, NEON on
+//! aarch64) chosen at run time, each checked bit for bit against its
+//! scalar reference (`simd`); that module and the operating system codec
+//! module are the only ones with `unsafe` code.
 
 #![deny(unsafe_code)]
 // Helpers shared with optional formats are unused in reduced builds.
@@ -48,6 +56,9 @@ mod icc;
 mod jpeg;
 mod orient;
 mod png;
+mod pool;
+#[cfg(feature = "raw")]
+mod simd;
 mod util;
 mod webp;
 

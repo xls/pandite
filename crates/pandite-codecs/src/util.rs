@@ -56,17 +56,49 @@ pub(crate) fn check_size(width: u32, height: u32, format: PixelFormat) -> Result
 
 /// A zeroed byte buffer that reports allocation failure instead of aborting.
 pub(crate) fn alloc(len: usize, width: u32, height: u32) -> Result<Vec<u8>> {
-    let mut v = Vec::new();
-    v.try_reserve_exact(len)
+    // Probe that the memory is there (refusing instead of aborting), then
+    // take zeroed pages from the system: no memset over fresh pages, which
+    // for a 60 megapixel image would touch every page on one thread before
+    // the parallel decode writes them.
+    let mut probe: Vec<u8> = Vec::new();
+    probe
+        .try_reserve_exact(len)
         .map_err(|_| Error::TooLarge { width, height })?;
-    v.resize(len, 0);
-    Ok(v)
+    drop(probe);
+    Ok(vec![0u8; len])
 }
 
 /// A zeroed RGBA8 buffer for an image of this size.
 pub(crate) fn alloc_rgba8(width: u32, height: u32) -> Result<Vec<u8>> {
     let len = check_size(width, height, PixelFormat::Rgba8)?;
     alloc(len, width, height)
+}
+
+/// Buffers at least this large are paged in by [`alloc_touched`] on the
+/// shared helper threads.
+const TOUCH_MIN: usize = 16 << 20;
+
+/// A zeroed buffer like [`alloc`], with its pages made present on several
+/// threads at once. For buffers a single-threaded decoder fills: page
+/// faults resolve in parallel (about 5 ms instead of 25 ms for 240 MB)
+/// instead of one at a time inside the decoder.
+pub(crate) fn alloc_touched(len: usize, width: u32, height: u32) -> Result<Vec<u8>> {
+    let mut v = alloc(len, width, height)?;
+    if len >= TOUCH_MIN {
+        const PAGE: usize = 4096;
+        let parts = crate::pool::threads().clamp(1, 16);
+        let chunk = len.div_ceil(parts).next_multiple_of(PAGE);
+        let work: Vec<&mut [u8]> = v.chunks_mut(chunk).collect();
+        // Writing a zero to a zeroed page changes nothing but makes it
+        // present. Cancellation does not apply: this is one short step.
+        crate::pool::run(work, &pandite_core::CancelToken::new(), |part| {
+            for page in part.chunks_mut(PAGE) {
+                page[0] = 0;
+            }
+            Ok(())
+        })?;
+    }
+    Ok(v)
 }
 
 /// Read a big-endian u16 at `pos`.

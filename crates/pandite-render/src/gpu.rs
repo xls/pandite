@@ -212,6 +212,8 @@ pub struct Gpu {
     lost: Arc<AtomicBool>,
     max_texture: u32,
     pipelines: OnceLock<Pipelines>,
+    measure: AtomicBool,
+    staging: StagingPool,
 }
 
 impl std::fmt::Debug for Gpu {
@@ -314,6 +316,8 @@ impl Gpu {
             lost,
             max_texture: limits.max_texture_dimension_2d,
             pipelines: OnceLock::new(),
+            measure: AtomicBool::new(false),
+            staging: StagingPool::default(),
         })
     }
 
@@ -375,8 +379,42 @@ impl Gpu {
             .get_or_init(|| Pipelines::new(&self.device, &self.adapter))
     }
 
-    /// Block until every submitted command finished.
-    pub(crate) fn wait_idle(&self) -> Result<()> {
+    /// The reusable staging buffers of large uploads.
+    pub(crate) fn staging(&self) -> &StagingPool {
+        &self.staging
+    }
+
+    /// Allocate the staging buffers large uploads use and touch their
+    /// memory, so the first image upload does not pay for fresh pages.
+    /// Call it on a worker thread at start-up.
+    pub fn prepare_uploads(&self) {
+        let leases: Vec<StagingLease> = (0..STAGING_KEEP)
+            .filter_map(|_| self.staging.take(self, crate::image::STRIP_BYTES).ok())
+            .collect();
+        for lease in leases {
+            if let Ok(mut view) = lease.buffer.slice(..).get_mapped_range_mut() {
+                view.slice(..).fill(0);
+            }
+            self.staging.put_mapped(lease);
+        }
+    }
+
+    /// Measure content uploads: when on, every upload waits for the GPU
+    /// after the pixel conversion and after mip generation and records
+    /// both durations (see [`crate::PreparedContent::upload_timings`]).
+    /// Off by default; the waits run on the uploading thread only.
+    pub fn set_measure_uploads(&self, on: bool) {
+        self.measure.store(on, Ordering::Relaxed);
+    }
+
+    /// True when uploads are measured.
+    pub(crate) fn measuring(&self) -> bool {
+        self.measure.load(Ordering::Relaxed)
+    }
+
+    /// Block until every submitted command finished. Never call it on an
+    /// interface thread outside of measurements.
+    pub fn wait_idle(&self) -> Result<()> {
         self.device
             .poll(wgpu::PollType::wait_indefinitely())
             .map(|_| ())
@@ -482,6 +520,111 @@ fn instance_descriptor(
 
 /// Drive a future to completion on this thread. wgpu's native futures are
 /// ready almost immediately; the thread parks only while one is pending.
+/// Staging buffers kept for reuse.
+const STAGING_KEEP: usize = 2;
+
+/// A mapped staging buffer on loan to one upload strip.
+pub(crate) struct StagingLease {
+    buffer: wgpu::Buffer,
+    /// Set by the map callback once the buffer is mapped again.
+    mapped: Arc<AtomicBool>,
+}
+
+impl StagingLease {
+    /// The buffer; it is mapped for writing while on loan.
+    pub(crate) fn buffer(&self) -> &wgpu::Buffer {
+        &self.buffer
+    }
+}
+
+/// One buffer waiting in the pool: mapped, or being mapped again after
+/// the copy of `pending` finished.
+struct Pooled {
+    lease: StagingLease,
+    pending: Option<wgpu::SubmissionIndex>,
+}
+
+/// Reusable upload buffers (`MAP_WRITE | COPY_SRC`). A strip takes a
+/// mapped buffer, fills it with one copy of its rows, unmaps it and
+/// records a buffer-to-texture copy; after the submit the buffer goes
+/// back and is mapped again once that copy finished. Two buffers let the
+/// CPU fill one while the GPU copies from the other, and reused memory
+/// is already paged in.
+#[derive(Default)]
+pub(crate) struct StagingPool {
+    free: Mutex<Vec<Pooled>>,
+}
+
+impl StagingPool {
+    /// A mapped buffer of at least `size` bytes. Waits (on this upload
+    /// thread) for a pooled buffer's previous copy when it is still
+    /// running; creates a new buffer when none fits.
+    pub(crate) fn take(&self, gpu: &Gpu, size: u64) -> Result<StagingLease> {
+        let found = {
+            let mut free = self.free.lock().unwrap_or_else(|e| e.into_inner());
+            let pos = free.iter().position(|p| p.lease.buffer.size() >= size);
+            pos.map(|i| free.swap_remove(i))
+        };
+        if let Some(pooled) = found {
+            if !pooled.lease.mapped.load(Ordering::Acquire) {
+                gpu.device
+                    .poll(wgpu::PollType::Wait {
+                        submission_index: pooled.pending,
+                        timeout: None,
+                    })
+                    .map_err(|e| Error::Backend(format!("GPU wait failed: {e}")))?;
+            }
+            if pooled.lease.mapped.load(Ordering::Acquire) {
+                return Ok(pooled.lease);
+            }
+            // The map failed (device lost): drop it and make a new one.
+        }
+        let size = size.max(crate::image::STRIP_BYTES);
+        let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("upload staging"),
+            size,
+            usage: wgpu::BufferUsages::MAP_WRITE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: true,
+        });
+        Ok(StagingLease {
+            buffer,
+            mapped: Arc::new(AtomicBool::new(true)),
+        })
+    }
+
+    /// Return a buffer whose copy was submitted as `index`: it is mapped
+    /// again in the background and reused once mapped. Beyond
+    /// [`STAGING_KEEP`] buffers the extra one is dropped.
+    pub(crate) fn give_back(&self, lease: StagingLease, index: wgpu::SubmissionIndex) {
+        lease.mapped.store(false, Ordering::Release);
+        let flag = Arc::clone(&lease.mapped);
+        lease
+            .buffer
+            .slice(..)
+            .map_async(wgpu::MapMode::Write, move |result| {
+                flag.store(result.is_ok(), Ordering::Release);
+            });
+        let mut free = self.free.lock().unwrap_or_else(|e| e.into_inner());
+        if free.len() < STAGING_KEEP {
+            free.push(Pooled {
+                lease,
+                pending: Some(index),
+            });
+        }
+    }
+
+    /// Return a buffer that is still mapped (never used by the GPU).
+    fn put_mapped(&self, lease: StagingLease) {
+        let mut free = self.free.lock().unwrap_or_else(|e| e.into_inner());
+        if free.len() < STAGING_KEEP {
+            free.push(Pooled {
+                lease,
+                pending: None,
+            });
+        }
+    }
+}
+
 pub(crate) fn block_on<F: Future>(future: F) -> F::Output {
     struct ThreadWaker(std::thread::Thread);
     impl Wake for ThreadWaker {

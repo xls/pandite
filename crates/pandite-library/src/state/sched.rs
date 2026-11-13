@@ -7,12 +7,30 @@
 //! current image outward, then the margin, then the rest. Workers always
 //! take the first job that can start, so a newly current image is next in
 //! line the moment the plan is rebuilt.
+//!
+//! With a screen size set (staged mode), the current image is the only
+//! one decoded at full resolution; its job also delivers a quick reduced
+//! first stage. Read-ahead neighbors are decoded at screen resolution. A
+//! full decode of an image that is no longer current is cancelled.
+//!
+//! While the current image loads (unless its file is being downloaded), no
+//! other job starts except the folder listing: decoders use every core,
+//! and read-ahead or thumbnails would slow the image the user waits for.
+//! Jobs already running finish.
 
-use super::{ErrorEntry, Role};
+use super::{ErrorEntry, Role, Staged};
 use super::{Kind, ListRunning, Outcome, PlanJob, Running, State, Task, Work};
 use crate::cache::Entry;
-use crate::Event;
-use pandite_core::CancelToken;
+use crate::fs::Stamp;
+use crate::{Event, Reduced};
+use pandite_core::{CancelToken, Content};
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
+/// How long the current image's job holds other jobs back before its file
+/// is known to be local: a lookup slower than this (a stalled network
+/// share) lets the rest of the folder go on.
+const LOOKUP_GRACE: Duration = Duration::from_millis(250);
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -34,6 +52,66 @@ enum Class {
 }
 
 impl State {
+    /// The running jobs of one kind.
+    pub(super) fn running_mut(&mut self, kind: Kind) -> &mut HashMap<PathBuf, Running> {
+        match kind {
+            Kind::Full => &mut self.running_full,
+            Kind::Screen => &mut self.running_screen,
+            Kind::Thumb => &mut self.running_thumb,
+        }
+    }
+
+    /// The running jobs of one kind.
+    fn running(&self, kind: Kind) -> &HashMap<PathBuf, Running> {
+        match kind {
+            Kind::Full => &self.running_full,
+            Kind::Screen => &self.running_screen,
+            Kind::Thumb => &self.running_thumb,
+        }
+    }
+
+    /// True while the current image's full job holds other jobs back: from
+    /// its start, while its file is read (once known to be local) and
+    /// while it decodes. A file being downloaded holds nothing up, and a
+    /// lookup of the file's facts that has not answered within
+    /// [`LOOKUP_GRACE`] stops holding, so a stalled lookup or download
+    /// never stops the rest of the folder.
+    fn current_decoding(&self) -> bool {
+        let Some(path) = self.current.and_then(|c| self.items.get(c)) else {
+            return false;
+        };
+        self.running_full.get(path).is_some_and(|r| {
+            let in_io = self.threads.get(&r.thread).is_some_and(|t| t.io);
+            !r.cancel.is_cancelled()
+                && !r.downloading
+                && (r.local_read || !in_io || r.started.elapsed() < LOOKUP_GRACE)
+        })
+    }
+
+    /// Time left until the current image's lookup grace ends, while other
+    /// jobs wait on it; a waiting worker looks again then.
+    pub fn gate_ends(&self) -> Option<Duration> {
+        let path = self.current.and_then(|c| self.items.get(c))?;
+        let r = self.running_full.get(path)?;
+        let in_io = self.threads.get(&r.thread).is_some_and(|t| t.io);
+        if r.cancel.is_cancelled() || r.downloading || r.local_read || !in_io {
+            return None;
+        }
+        LOOKUP_GRACE
+            .checked_sub(r.started.elapsed())
+            .map(|left| left + Duration::from_millis(1))
+    }
+
+    /// A worker found the file of `task` stored locally and starts reading
+    /// it.
+    pub fn mark_local_read(&mut self, task: &Task) {
+        if let Work::Full { path, .. } = &task.work {
+            if let Some(running) = self.running_full.get_mut(path).filter(|r| r.id == task.id) {
+                running.local_read = true;
+            }
+        }
+    }
+
     /// Rebuild the plan from the current image and visible range.
     pub(super) fn replan(&mut self) {
         let n = self.items.len();
@@ -43,6 +121,12 @@ impl State {
                 kind: Kind::Full,
                 index: c,
             });
+            // Staged: neighbors at screen resolution only.
+            let ahead = if self.staged() {
+                Kind::Screen
+            } else {
+                Kind::Full
+            };
             for d in 1..=self.cfg.read_ahead.min(n) {
                 let (next, prev) = if self.cfg.wrap {
                     (Some((c + d) % n), Some((c + n - d) % n))
@@ -51,10 +135,7 @@ impl State {
                 };
                 for index in [next, prev].into_iter().flatten() {
                     if !jobs.iter().any(|j| j.index == index) {
-                        jobs.push(PlanJob {
-                            kind: Kind::Full,
-                            index,
-                        });
+                        jobs.push(PlanJob { kind: ahead, index });
                     }
                 }
             }
@@ -98,13 +179,26 @@ impl State {
 
     /// Cancel running jobs the new plan no longer wants.
     pub(super) fn cancel_stale(&mut self) {
+        let staged = self.staged();
         let stale_full: Vec<PathBuf> = self
             .running_full
             .iter()
             .filter(|(_, r)| !r.cancel.is_cancelled())
             .filter(|(p, r)| match self.index_of.get(p.as_path()) {
                 None => true,
+                // Staged: full resolution is for the current image only.
+                Some(&i) if staged => Some(i) != self.current,
                 Some(&i) => !self.in_window(i) || (r.downloading && Some(i) != self.current),
+            })
+            .map(|(p, _)| p.clone())
+            .collect();
+        let stale_screen: Vec<PathBuf> = self
+            .running_screen
+            .iter()
+            .filter(|(_, r)| !r.cancel.is_cancelled())
+            .filter(|(p, _)| match self.index_of.get(p.as_path()) {
+                None => true,
+                Some(&i) => !self.in_window(i),
             })
             .map(|(p, _)| p.clone())
             .collect();
@@ -121,6 +215,9 @@ impl State {
         for path in stale_full {
             self.cancel_job(Kind::Full, &path);
         }
+        for path in stale_screen {
+            self.cancel_job(Kind::Screen, &path);
+        }
         for path in stale_thumb {
             self.cancel_job(Kind::Thumb, &path);
         }
@@ -130,11 +227,9 @@ impl State {
     /// interrupted, so its thread is written off (a replacement is spawned
     /// by the caller) and the job is forgotten: its result will be dropped.
     pub(super) fn cancel_job(&mut self, kind: Kind, path: &Path) {
-        let map = match kind {
-            Kind::Full => &mut self.running_full,
-            Kind::Thumb => &mut self.running_thumb,
+        let Some(running) = self.running(kind).get(path) else {
+            return;
         };
-        let Some(running) = map.get(path) else { return };
         running.cancel.cancel();
         let tid = running.thread;
         let in_io = self
@@ -142,7 +237,7 @@ impl State {
             .get(&tid)
             .is_some_and(|t| t.io && t.role == Role::Pool);
         if in_io {
-            if let Some(running) = map.remove(path) {
+            if let Some(running) = self.running_mut(kind).remove(path) {
                 self.write_off(tid);
                 self.requeue(&running);
             }
@@ -177,12 +272,13 @@ impl State {
         let Some(current) = self.current else { return };
         let active = |r: &Running| !r.cancel.is_cancelled();
         let busy = self.running_full.values().filter(|r| active(r)).count()
+            + self.running_screen.values().filter(|r| active(r)).count()
             + self.running_thumb.values().filter(|r| active(r)).count()
             + usize::from(self.list_running.is_some());
         let (pool, _) = self.thread_counts();
         let mut free = pool.saturating_sub(busy);
         let full_positions: Vec<usize> = (0..self.plan.jobs.len())
-            .filter(|&p| self.plan.jobs[p].kind == Kind::Full)
+            .filter(|&p| self.plan.jobs[p].kind != Kind::Thumb)
             .collect();
         let pending = full_positions
             .iter()
@@ -213,14 +309,21 @@ impl State {
             let victim = self
                 .running_full
                 .iter()
-                .filter(|(_, r)| active(r))
-                .filter_map(|(p, _)| {
+                .map(|(p, r)| (Kind::Full, p, r))
+                .chain(
+                    self.running_screen
+                        .iter()
+                        .map(|(p, r)| (Kind::Screen, p, r)),
+                )
+                .filter(|(_, _, r)| active(r))
+                .filter_map(|(kind, p, _)| {
                     let index = *self.index_of.get(p.as_path())?;
-                    (index != current).then(|| (ranker.rank(index), p.clone()))
+                    (index != current).then(|| (ranker.rank(index), kind == Kind::Full, p.clone()))
                 })
-                .max();
-            if let Some((_, path)) = victim {
-                self.cancel_job(Kind::Full, &path);
+                .max_by(|a, b| a.0.cmp(&b.0));
+            if let Some((_, full, path)) = victim {
+                let kind = if full { Kind::Full } else { Kind::Screen };
+                self.cancel_job(kind, &path);
             }
         }
     }
@@ -255,6 +358,38 @@ impl State {
                 }
                 Class::Go
             }
+            Kind::Screen => {
+                if self.screen.contains(path)
+                    || self.full.contains(path)
+                    || self.full_errors.contains_key(path)
+                    || self.screen_failed.contains(path)
+                    || self.non_local.contains(path)
+                {
+                    return Class::Done;
+                }
+                if self.running_screen.contains_key(path) {
+                    return Class::Running;
+                }
+                if self
+                    .running_full
+                    .get(path)
+                    .is_some_and(|r| !r.cancel.is_cancelled())
+                {
+                    return Class::Wait;
+                }
+                if let Some((w, h)) = self.cfg.screen {
+                    let ranker = self.full_ranker();
+                    let rank = ranker.rank(job.index);
+                    let estimate = (w as usize).saturating_mul(h as usize).saturating_mul(4);
+                    if !self
+                        .screen
+                        .would_fit(estimate, rank, false, |i| ranker.rank(i))
+                    {
+                        return Class::Done;
+                    }
+                }
+                Class::Go
+            }
             Kind::Thumb => {
                 if self.thumbs.contains(path) || self.thumb_errors.contains_key(path) {
                     return Class::Done;
@@ -262,12 +397,11 @@ impl State {
                 if self.running_thumb.contains_key(path) {
                     return Class::Running;
                 }
-                if !self.full.contains(path) {
-                    if self
-                        .running_full
-                        .get(path)
-                        .is_some_and(|r| !r.cancel.is_cancelled())
-                    {
+                if !self.full.contains(path) && !self.screen.contains(path) {
+                    let decoding = |map: &HashMap<PathBuf, Running>| {
+                        map.get(path).is_some_and(|r| !r.cancel.is_cancelled())
+                    };
+                    if decoding(&self.running_full) || decoding(&self.running_screen) {
                         return Class::Wait;
                     }
                     if self.non_local.contains(path) {
@@ -327,12 +461,10 @@ impl State {
         let Some(path) = self.items.get(job.index) else {
             return;
         };
-        let map = match job.kind {
-            Kind::Full => &mut self.running_full,
-            Kind::Thumb => &mut self.running_thumb,
-        };
-        if let Some(running) = map.get_mut(path) {
-            running.plan_gen = self.plan.gen;
+        let path = path.clone();
+        let gen = self.plan.gen;
+        if let Some(running) = self.running_mut(job.kind).get_mut(&path) {
+            running.plan_gen = gen;
             running.plan_pos = Some(pos);
         }
     }
@@ -362,6 +494,10 @@ impl State {
                 work: Work::List { gen, target },
             });
         }
+        // The current image has the machine to itself while it decodes.
+        if self.current_decoding() {
+            return None;
+        }
         let pos = self.scan(usize::MAX)?;
         Some(self.start(pos, tid))
     }
@@ -369,7 +505,17 @@ impl State {
     /// True when another task could start now. Used to wake one sleeping
     /// peer after a worker took its task.
     pub fn has_work(&mut self) -> bool {
-        !self.shutdown && (self.list_pending.is_some() || self.scan(usize::MAX).is_some())
+        if self.shutdown {
+            return false;
+        }
+        if self.list_pending.is_some() {
+            return true;
+        }
+        let first = usize::from(self.current.is_some());
+        if self.scan(first).is_some() {
+            return true;
+        }
+        !self.current_decoding() && self.scan(usize::MAX).is_some()
     }
 
     fn start(&mut self, pos: usize, tid: u64) -> Task {
@@ -388,22 +534,44 @@ impl State {
             plan_gen: self.plan.gen,
             plan_pos: Some(pos),
             downloading: false,
+            local_read: false,
+            started: Instant::now(),
             discard: false,
         };
         let work = match job.kind {
             Kind::Full => {
+                let explicit = Some(job.index) == self.current;
+                // The quick first stage, when this is the current image and
+                // no screen image of it is cached yet.
+                let quick = if self.staged() && explicit && !self.screen.contains(&path) {
+                    self.cfg.quick_target()
+                } else {
+                    None
+                };
                 self.running_full.insert(path.clone(), running);
                 self.set_io(tid, true);
                 Work::Full {
                     path,
-                    explicit: Some(job.index) == self.current,
+                    explicit,
+                    quick,
                 }
+            }
+            Kind::Screen => {
+                let target = self.cfg.screen.unwrap_or((1, 1));
+                self.running_screen.insert(path.clone(), running);
+                self.set_io(tid, true);
+                Work::Screen { path, target }
             }
             Kind::Thumb => {
                 let from = self
                     .full
                     .get(&path)
-                    .map(|e| (Arc::clone(&e.value), e.stamp));
+                    .map(|e| (Arc::clone(&e.value), e.stamp))
+                    .or_else(|| {
+                        self.screen
+                            .get(&path)
+                            .map(|e| (Arc::new(Content::Still(e.value.image.clone())), e.stamp))
+                    });
                 self.set_io(tid, from.is_none());
                 self.running_thumb.insert(path.clone(), running);
                 Work::Thumb { path, from }
@@ -415,6 +583,10 @@ impl State {
     fn is_mine(&self, task: &Task) -> bool {
         match &task.work {
             Work::Full { path, .. } => self.running_full.get(path).is_some_and(|r| r.id == task.id),
+            Work::Screen { path, .. } => self
+                .running_screen
+                .get(path)
+                .is_some_and(|r| r.id == task.id),
             Work::Thumb { path, .. } => self
                 .running_thumb
                 .get(path)
@@ -472,19 +644,67 @@ impl State {
                 }
             }
             Work::Full { path, .. } if mine => self.settle(Kind::Full, path, outcome),
+            Work::Screen { path, .. } if mine => self.settle(Kind::Screen, path, outcome),
             Work::Thumb { path, .. } if mine => self.settle(Kind::Thumb, path, outcome),
             // Abandoned: the result is dropped.
-            Work::Full { .. } | Work::Thumb { .. } => {}
+            Work::Full { .. } | Work::Screen { .. } | Work::Thumb { .. } => {}
         }
         was_empty && !self.events.is_empty()
     }
 
-    fn settle(&mut self, kind: Kind, path: PathBuf, outcome: Outcome) {
-        let map = match kind {
-            Kind::Full => &mut self.running_full,
-            Kind::Thumb => &mut self.running_thumb,
+    /// The quick first stage of the current image's full job arrived.
+    /// Kept as its screen image unless the job was abandoned or the full
+    /// image is already cached. Returns true when the event queue went
+    /// from empty to non-empty.
+    pub fn deliver_quick(
+        &mut self,
+        path: &Path,
+        id: u64,
+        reduced: Reduced,
+        stamp: Option<Stamp>,
+        took: std::time::Duration,
+    ) -> bool {
+        let mine = self.running_full.get(path).is_some_and(|r| r.id == id);
+        if self.shutdown || !mine || self.full.contains(path) {
+            return false;
+        }
+        self.note_reduced_time(path, took);
+        let Some(index) = self.index_of.get(path).copied() else {
+            return false;
         };
-        let Some(running) = map.remove(&path) else {
+        let was_empty = self.events.is_empty();
+        if self.insert_screen(path.to_path_buf(), index, reduced, stamp) {
+            self.push(Event::Reduced {
+                index,
+                path: path.to_path_buf(),
+            });
+        }
+        was_empty && !self.events.is_empty()
+    }
+
+    /// Cache a screen image at `index`; the current image's is protected.
+    fn insert_screen(
+        &mut self,
+        path: PathBuf,
+        index: usize,
+        reduced: Reduced,
+        stamp: Option<Stamp>,
+    ) -> bool {
+        let ranker = self.full_ranker();
+        let entry = Entry {
+            bytes: reduced.image.byte_size(),
+            value: reduced,
+            index,
+            stamp,
+        };
+        let protected = Some(index) == self.current;
+        let rank = ranker.rank(index);
+        self.screen
+            .insert(path, entry, rank, protected, |i| ranker.rank(i))
+    }
+
+    fn settle(&mut self, kind: Kind, path: PathBuf, outcome: Outcome) {
+        let Some(running) = self.running_mut(kind).remove(&path) else {
             return;
         };
         if self.shutdown {
@@ -517,6 +737,39 @@ impl State {
                 {
                     self.push(Event::Ready { index, path });
                 }
+            }
+            Outcome::Screen(Ok(Staged::Reduced(reduced)), stamp) => {
+                if !self.full.contains(&path)
+                    && self.insert_screen(path.clone(), index, reduced, stamp)
+                {
+                    self.push(Event::Reduced { index, path });
+                }
+            }
+            Outcome::Screen(Ok(Staged::Full(content)), stamp) => {
+                // No larger than the screen: this is the full image.
+                let bytes = content.byte_size();
+                self.full_sizes.insert(path.clone(), (bytes, stamp));
+                let ranker = self.full_ranker();
+                let entry = Entry {
+                    value: Arc::new(content),
+                    bytes,
+                    index,
+                    stamp,
+                };
+                let protected = Some(index) == self.current;
+                let rank = ranker.rank(index);
+                if self
+                    .full
+                    .insert(path.clone(), entry, rank, protected, |i| ranker.rank(i))
+                {
+                    self.push(Event::Ready { index, path });
+                }
+            }
+            Outcome::Screen(Err(_), _) if cancelled => self.requeue(&running),
+            Outcome::Screen(Err(_), _) => {
+                // The full decode runs when the image becomes current and
+                // reports the error then.
+                self.screen_failed.insert(path);
             }
             Outcome::Thumb(Ok(image), stamp) => {
                 let ranker = self.thumb_ranker();

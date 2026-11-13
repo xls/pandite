@@ -56,6 +56,9 @@ gif = { version = "0.14", default-features = false, features = ["std"] }
 image-webp = { version = "0.2", default-features = false }
 jpeg-decoder = { version = "0.3", default-features = false }
 jpeg-encoder = { version = "0.7", default-features = false, features = ["std"] }
+# SIMD (SSE, AVX2, NEON) baseline and progressive decoding for full size.
+zune-core = { version = "0.5", default-features = false, features = ["std"] }
+zune-jpeg = { version = "0.5.15", default-features = false, features = ["std", "x86", "neon"] }
 png = { version = "0.18", default-features = false }
 # Extended formats, each enabled by its feature.
 bcdec_rs = { version = "0.2", default-features = false, optional = true }

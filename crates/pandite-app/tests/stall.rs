@@ -299,13 +299,29 @@ fn no_blocking_fs_on_event_loop_thread() {
     write_png(&sub.join("inner.png"), &numbered(5, 5));
     let cfg = TempDir::new("nofscfg");
     let event_loop = std::thread::current().id();
-    let mut h = Harness::new(Config {
-        open: Some(paths[0].clone()),
-        settings_path: Some(cfg.join("settings.ini")),
-        size_to_image: true,
-        ..Config::default()
-    });
+    // The first image's whole-file read waits until the size probe (a head
+    // read on its own thread, made because the window sizes itself to the
+    // first image) has returned: the probe is then part of every run,
+    // whatever the scheduling. Without the latch a fast decode could show
+    // the image first, and the core rightly skips a probe it no longer
+    // needs.
+    let disk = TestDisk::new();
+    disk.stall_full_read("a.png");
+    let mut h = Harness::with_disk(
+        Config {
+            open: Some(paths[0].clone()),
+            settings_path: Some(cfg.join("settings.ini")),
+            size_to_image: true,
+            ..Config::default()
+        },
+        disk,
+    );
     h.start();
+    assert!(
+        h.disk.wait_returned("read_head", "a.png"),
+        "the size probe read the file head"
+    );
+    h.disk.release_full_read("a.png");
     assert!(h.wait_shown(&paths[0]));
     assert!(h.wait_until(|a| a.count() == 3));
     assert!(h.wait_thumbnails(3), "gallery thumbnails were uploaded");

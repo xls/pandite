@@ -13,9 +13,9 @@ use pandite_app::disk::{Disk, StdDisk};
 use pandite_app::platform::{Clipboard, DialogKind, DialogReply, Dialogs, WindowControl};
 use pandite_app::settings::Settings;
 use pandite_core::{
-    CancelToken, DecodeOptions, DrawCmd, DrawList, EncodeOptions, EncoderProvider, ImageBuf,
-    PixelFormat, Rect, Registry, Result as CoreResult, Size, Source, TextMeasure, TextureId,
-    TextureSink,
+    CancelToken, Content, ContentKind, DecodeOptions, DecoderProvider, DrawCmd, DrawList,
+    EncodeOptions, EncoderProvider, Error, ImageBuf, ImageMeta, Orientation, PixelFormat, Rect,
+    Registry, Result as CoreResult, Size, Source, TextMeasure, TextureId, TextureSink,
 };
 use pandite_library::{FileAccess, FileInfo};
 use pandite_ui::{Action, CursorShape, InputEvent, Key, Modifiers};
@@ -171,6 +171,8 @@ struct DiskState {
     calls: Vec<Call>,
     returned: Vec<(&'static str, String)>,
     stall_read: HashSet<String>,
+    /// Stalls whole-file reads only; head reads go through.
+    stall_full_read: HashSet<String>,
     stall_write: HashSet<String>,
     released: bool,
 }
@@ -203,10 +205,42 @@ impl TestDisk {
         lock(&self.state).stall_write.insert(name.into());
     }
 
+    /// Whole-file reads of `name` block until released; head reads (the
+    /// size probe) go through.
+    pub fn stall_full_read(&self, name: &str) {
+        lock(&self.state).stall_full_read.insert(name.into());
+    }
+
+    pub fn release_full_read(&self, name: &str) {
+        lock(&self.state).stall_full_read.remove(name);
+        self.cv.notify_all();
+    }
+
+    /// Wait until a call `op` on `name` returned.
+    pub fn wait_returned(&self, op: &str, name: &str) -> bool {
+        let deadline = Instant::now() + WAIT;
+        let mut g = lock(&self.state);
+        loop {
+            if g.returned.iter().any(|(o, n)| *o == op && n == name) {
+                return true;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            g = self
+                .cv
+                .wait_timeout(g, deadline - now)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+    }
+
     pub fn release_all(&self) {
         let mut g = lock(&self.state);
         g.released = true;
         g.stall_read.clear();
+        g.stall_full_read.clear();
         g.stall_write.clear();
         drop(g);
         self.cv.notify_all();
@@ -268,7 +302,8 @@ impl TestDisk {
             } else {
                 &g.stall_read
             };
-            if !stall || g.released || !set.contains(&name) {
+            let full = op == "read" && g.stall_full_read.contains(&name);
+            if !stall || g.released || (!set.contains(&name) && !full) {
                 break;
             }
             g = self.cv.wait(g).unwrap_or_else(|e| e.into_inner());
@@ -458,6 +493,8 @@ pub struct Config {
     pub window: WindowState,
     pub size_to_image: bool,
     pub work_area: Option<Rect>,
+    /// Decoders to use instead of the default registry.
+    pub registry: Option<Arc<Registry>>,
 }
 
 impl Default for Config {
@@ -472,8 +509,21 @@ impl Default for Config {
             },
             size_to_image: false,
             work_area: Some(Rect::new(0.0, 0.0, 1920.0, 1040.0)),
+            registry: None,
         }
     }
+}
+
+/// One content update the core handed to the shell.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Update {
+    pub generation: u64,
+    pub full_resolution: bool,
+    pub logical: Option<(u32, u32)>,
+    /// Pixel size of the content, `None` for "show nothing".
+    pub dims: Option<(u32, u32)>,
+    /// The first pixel of the content, to tell images apart.
+    pub first_pixel: Option<[u8; 4]>,
 }
 
 /// The application core with fakes, driven like the shell drives it.
@@ -485,6 +535,8 @@ pub struct Harness {
     pub dialogs: Arc<Mutex<DialogLog>>,
     pub registry: Arc<Registry>,
     pub now: Duration,
+    /// Every content update taken by [`Harness::frame`], oldest first.
+    pub updates: Vec<Update>,
     wake_rx: Receiver<()>,
 }
 
@@ -502,7 +554,10 @@ impl Harness {
         }));
         let clipboard = FakeClipboard::default();
         let dialogs = FakeDialogs::default();
-        let registry = Arc::new(pandite_codecs::default_registry());
+        let registry = config
+            .registry
+            .clone()
+            .unwrap_or_else(|| Arc::new(pandite_codecs::default_registry()));
         let platform = Platform {
             disk: Arc::clone(&disk) as Arc<dyn Disk>,
             clipboard: Box::new(clipboard.clone()),
@@ -529,6 +584,7 @@ impl Harness {
             dialogs: dialogs.0,
             registry,
             now: Duration::from_millis(1),
+            updates: Vec::new(),
             wake_rx,
         }
     }
@@ -549,8 +605,43 @@ impl Harness {
         app.sync_textures(now, &mut sink);
         let mut list = DrawList::new();
         app.frame(now, &Measure, &mut list);
-        while app.take_content().is_some() {}
+        let mut taken = Vec::new();
+        while let Some(update) = app.take_content() {
+            let image = update.content.as_ref().map(|c| c.first_image().clone());
+            taken.push(Update {
+                generation: update.generation,
+                full_resolution: update.full_resolution,
+                logical: update.logical,
+                dims: image.as_ref().map(|i| (i.width(), i.height())),
+                first_pixel: image
+                    .as_ref()
+                    .and_then(|i| i.data().get(..4))
+                    .map(|p| [p[0], p[1], p[2], p[3]]),
+            });
+        }
+        self.updates.extend(taken);
         list
+    }
+
+    /// Pump and draw frames until `pred` holds, sleeping on the wake
+    /// channel in between. Frames collect content updates.
+    pub fn wait_frames(&mut self, mut pred: impl FnMut(&App, &[Update]) -> bool) -> bool {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            self.pump();
+            self.frame();
+            if pred(self.app.as_ref().unwrap(), &self.updates) {
+                return true;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            match self.wake_rx.recv_timeout(deadline - now) {
+                Ok(()) | Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return false,
+            }
+        }
     }
 
     /// The first frame is on screen: the startup image starts loading.
@@ -670,4 +761,234 @@ pub fn folder(tag: &str, names: &[&str], w: u32, h: u32) -> (TempDir, Vec<PathBu
         })
         .collect();
     (dir, paths)
+}
+
+// ----- staged decoder ------------------------------------------------------------
+
+/// The full image of a staged test file: a pattern every pixel of which
+/// differs from its neighbors, so a crop, rotation or downscale shows.
+pub fn staged_pattern(w: u32, h: u32) -> ImageBuf {
+    image(w, h, |x, y| {
+        [
+            (x % 251) as u8,
+            (y % 241) as u8,
+            ((x * 7 + y * 13) % 256) as u8,
+            255,
+        ]
+    })
+}
+
+/// Write a staged test file: "STAGED <w> <h>".
+pub fn write_staged(path: &Path, w: u32, h: u32) {
+    std::fs::write(path, format!("STAGED {w} {h}")).unwrap();
+}
+
+#[derive(Default)]
+struct GateState {
+    hold_full: HashSet<String>,
+    hold_reduced: HashSet<String>,
+    started: Vec<(String, bool)>,
+    cancelled: Vec<String>,
+    finished: Vec<(String, bool)>,
+}
+
+/// Decodes "STAGED <w> <h>" files (extension `stg`): a cheap reduced
+/// decode for a target size and a full decode of [`staged_pattern`], each
+/// of which waits on a latch the test opens. A held decode stops with
+/// `Cancelled` as soon as its token is set, and records that.
+#[derive(Default)]
+pub struct GatedDecoder {
+    state: Mutex<GateState>,
+    cv: Condvar,
+}
+
+impl GatedDecoder {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    /// The default registry plus this decoder.
+    pub fn registry(self: &Arc<Self>) -> Arc<Registry> {
+        let mut reg = pandite_codecs::default_registry();
+        reg.add_decoder(Arc::clone(self) as Arc<dyn DecoderProvider>);
+        Arc::new(reg)
+    }
+
+    pub fn hold_full(&self, name: &str) {
+        lock(&self.state).hold_full.insert(name.into());
+    }
+
+    pub fn release_full(&self, name: &str) {
+        lock(&self.state).hold_full.remove(name);
+        self.cv.notify_all();
+    }
+
+    pub fn hold_reduced(&self, name: &str) {
+        lock(&self.state).hold_reduced.insert(name.into());
+    }
+
+    pub fn release_reduced(&self, name: &str) {
+        lock(&self.state).hold_reduced.remove(name);
+        self.cv.notify_all();
+    }
+
+    pub fn release_all(&self) {
+        let mut g = lock(&self.state);
+        g.hold_full.clear();
+        g.hold_reduced.clear();
+        drop(g);
+        self.cv.notify_all();
+    }
+
+    fn wait(&self, done: impl Fn(&GateState) -> bool) -> bool {
+        let deadline = Instant::now() + WAIT;
+        let mut g = lock(&self.state);
+        while !done(&g) {
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            g = self
+                .cv
+                .wait_timeout(g, deadline - now)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+        true
+    }
+
+    /// Wait until a full (`full`) or reduced decode of `name` started.
+    pub fn wait_started(&self, name: &str, full: bool) -> bool {
+        self.wait(|s| s.started.iter().any(|(n, f)| n == name && *f == full))
+    }
+
+    /// Wait until a held full decode of `name` stopped because it was
+    /// cancelled.
+    pub fn wait_cancelled(&self, name: &str) -> bool {
+        self.wait(|s| s.cancelled.iter().any(|n| n == name))
+    }
+
+    /// Wait until a full (`full`) or reduced decode of `name` returned an
+    /// image.
+    pub fn wait_finished(&self, name: &str, full: bool) -> bool {
+        self.wait(|s| s.finished.iter().any(|(n, f)| n == name && *f == full))
+    }
+
+    /// Full decodes of `name` that finished with an image.
+    pub fn full_finished(&self, name: &str) -> usize {
+        lock(&self.state)
+            .finished
+            .iter()
+            .filter(|(n, f)| n == name && *f)
+            .count()
+    }
+}
+
+fn staged_size(source: &Source) -> CoreResult<(u32, u32)> {
+    let text = std::str::from_utf8(source.bytes()).map_err(|_| Error::Corrupt("utf8".into()))?;
+    let mut parts = text.split_whitespace().skip(1);
+    let mut num = || -> CoreResult<u32> {
+        parts
+            .next()
+            .and_then(|p| p.parse().ok())
+            .ok_or_else(|| Error::Corrupt("size".into()))
+    };
+    Ok((num()?, num()?))
+}
+
+impl DecoderProvider for GatedDecoder {
+    fn id(&self) -> &'static str {
+        "staged"
+    }
+
+    fn name(&self) -> &'static str {
+        "Staged test image"
+    }
+
+    fn extensions(&self) -> &'static [&'static str] {
+        &["stg"]
+    }
+
+    fn sniff(&self, header: &[u8]) -> bool {
+        header.starts_with(b"STAGED")
+    }
+
+    fn probe(&self, source: &Source) -> CoreResult<ImageMeta> {
+        let (width, height) = staged_size(source)?;
+        Ok(ImageMeta {
+            width,
+            height,
+            format: "staged",
+            kind: ContentKind::Still,
+            frame_count: 1,
+            has_alpha: false,
+            orientation: Orientation::Normal,
+        })
+    }
+
+    fn reduced_decode(&self, _source: &Source) -> bool {
+        true
+    }
+
+    fn decode(&self, source: &Source, options: &DecodeOptions) -> CoreResult<Content> {
+        let name = source
+            .path()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let (w, h) = staged_size(source)?;
+        let full = options.target_size.is_none();
+        let mut g = lock(&self.state);
+        g.started.push((name.clone(), full));
+        self.cv.notify_all();
+        loop {
+            let held = if full {
+                g.hold_full.contains(&name)
+            } else {
+                g.hold_reduced.contains(&name)
+            };
+            if !held {
+                break;
+            }
+            if options.cancel.is_cancelled() {
+                if full {
+                    g.cancelled.push(name.clone());
+                }
+                drop(g);
+                self.cv.notify_all();
+                return Err(Error::Cancelled);
+            }
+            g = self
+                .cv
+                .wait_timeout(g, Duration::from_millis(1))
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+        drop(g);
+        let image = match options.target_size {
+            None => staged_pattern(w, h),
+            Some((tw, th)) => {
+                // Cover the target: the smallest scale that reaches it on
+                // one axis, sampling the full pattern.
+                let s = (f64::from(tw) / f64::from(w))
+                    .max(f64::from(th) / f64::from(h))
+                    .min(1.0);
+                let (rw, rh) = (
+                    ((f64::from(w) * s).ceil() as u32).max(1),
+                    ((f64::from(h) * s).ceil() as u32).max(1),
+                );
+                let full = staged_pattern(w, h);
+                image(rw, rh, |x, y| {
+                    let sx = (x * w / rw).min(w - 1);
+                    let sy = (y * h / rh).min(h - 1);
+                    let i = ((sy * w + sx) * 4) as usize;
+                    let p = &full.data()[i..i + 4];
+                    [p[0], p[1], p[2], p[3]]
+                })
+            }
+        };
+        lock(&self.state).finished.push((name, full));
+        self.cv.notify_all();
+        Ok(Content::Still(image))
+    }
 }

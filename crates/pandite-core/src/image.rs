@@ -50,7 +50,10 @@ pub struct ImageBuf {
     width: u32,
     height: u32,
     format: PixelFormat,
-    data: Arc<[u8]>,
+    /// Shared without copying the decoder's buffer: wrapping a `Vec` in an
+    /// `Arc` moves only its header, while `Arc<[u8]>` would copy every
+    /// byte (240 MB for a 60 megapixel image).
+    data: Arc<Vec<u8>>,
 }
 
 impl ImageBuf {
@@ -69,7 +72,7 @@ impl ImageBuf {
             width,
             height,
             format,
-            data: data.into(),
+            data: Arc::new(data),
         })
     }
 
@@ -410,6 +413,15 @@ mod tests {
             ImageBuf::byte_len(65_535, 65_535, PixelFormat::RgbaF32),
             Err(Error::TooLarge { .. })
         ));
+    }
+
+    #[test]
+    fn imagebuf_keeps_the_decoder_buffer() {
+        let data = vec![7u8; 4 * 3 * 4];
+        let ptr = data.as_ptr();
+        let img = ImageBuf::new(4, 3, PixelFormat::Rgba8, data).unwrap();
+        assert_eq!(img.data().as_ptr(), ptr, "no copy on construction");
+        assert_eq!(img.clone().data().as_ptr(), ptr, "clones share the pixels");
     }
 
     #[test]

@@ -156,11 +156,9 @@ impl<'a> Ctx<'a> {
             let end = hi.min(tx + plane.tw);
             let src = row.get(x - tx..end - tx).unwrap_or(&[]);
             let dst = &mut out[x - lo..end - lo];
-            for (i, (o, &s)) in dst.iter_mut().zip(src).enumerate() {
-                let (b, k) = if (x + i) & 1 == 0 { (b0, k0) } else { (b1, k1) };
-                // R-ARW-77: normalized values are clipped to 0 to 1.
-                *o = ((f32::from(s) - b) * k).clamp(0.0, 1.0);
-            }
+            // R-ARW-77: normalized values are clipped to 0 to 1. Column
+            // parity picks the black level and scale of each sample.
+            crate::simd::normalize_row(src, x & 1 == 1, [b0, b1], [k0, k1], dst);
             x = end;
         }
     }
@@ -220,7 +218,7 @@ impl<'a> Ctx<'a> {
 
     /// Camera RGB of absolute pixels (x0..x1, y) for CFA data. `win` holds
     /// normalized rows indexed by column - base, base = max(x0, 1) - 1.
-    fn cfa_row(&self, y: usize, x0: usize, x1: usize, win: &Window, out: &mut [[f32; 3]]) {
+    fn cfa_row(&self, y: usize, x0: usize, x1: usize, win: &Window, out: &mut RowRgb) {
         let base = win.base;
         let rows = [
             if y > 0 { win.get(y - 1) } else { None },
@@ -239,37 +237,37 @@ impl<'a> Ctx<'a> {
             (x1, x1)
         };
         for x in x0..fa.min(x1) {
-            out[x - x0] = self.demosaic_general(x, y, &rows, base);
+            out.set(x - x0, self.demosaic_general(x, y, &rows, base));
         }
         if let (Some(a), Some(b), Some(c)) = (rows[0], rows[1], rows[2]) {
-            for x in fa..fb {
-                let i = x - base;
-                let own = self.color(x, y);
-                let mut p = [0f32; 3];
+            if fb > fa {
                 // Fixed neighbor sets of a Bayer pattern with diagonal
-                // greens; equal to the general rule of R-ARW-54.
-                if own == 1 {
-                    let h = self.color(x + 1, y);
-                    let v = self.color(x, y + 1);
-                    p[1] = b[i];
-                    p[h] = (b[i - 1] + b[i + 1]) * 0.5;
-                    p[v] = (a[i] + c[i]) * 0.5;
+                // greens, equal to the general rule of R-ARW-54: own
+                // value, horizontal and vertical pairs for green pixels,
+                // the cross and the diagonals for the others.
+                let green_first = self.color(fa, y) == 1;
+                let q = if green_first {
+                    self.color(fa + 1, y)
                 } else {
-                    p[own] = b[i];
-                    p[1] = (b[i - 1] + b[i + 1] + a[i] + c[i]) * 0.25;
-                    p[2 - own] = (a[i - 1] + a[i + 1] + c[i - 1] + c[i + 1]) * 0.25;
-                }
-                out[x - x0] = p;
+                    self.color(fa, y)
+                };
+                let [r, g, bl] = &mut out.p;
+                let planes = [
+                    &mut r[fa - x0..fb - x0],
+                    &mut g[fa - x0..fb - x0],
+                    &mut bl[fa - x0..fb - x0],
+                ];
+                crate::simd::bayer_row(a, b, c, fa - base, fb - fa, green_first, q, planes);
             }
         }
         for x in fb.max(fa.min(x1))..x1 {
-            out[x - x0] = self.demosaic_general(x, y, &rows, base);
+            out.set(x - x0, self.demosaic_general(x, y, &rows, base));
         }
     }
 
     /// Camera RGB of absolute pixels (x0..x1, y) for V5 data: R-ARW-41
     /// chroma placement, R-ARW-42 conversion, R-ARW-48 levels.
-    fn ycc_row(&self, p: &YccPlanes, y: usize, x0: usize, x1: usize, out: &mut [[f32; 3]]) {
+    fn ycc_row(&self, p: &YccPlanes, y: usize, x0: usize, x1: usize, out: &mut RowRgb) {
         let mut x = x0;
         while x < x1 {
             let tc = x / p.y.tw;
@@ -286,22 +284,45 @@ impl<'a> Ctx<'a> {
                 let cb = f64::from(cbr.get(lx / 2).copied().unwrap_or(0));
                 let cr = f64::from(crr.get(lx / 2).copied().unwrap_or(0));
                 let rgb = ycc_rgb(luma, cb, cr, &self.ycc);
-                out[xx - x0] = v5_levels(rgb, &self.ycc);
+                out.set(xx - x0, v5_levels(rgb, &self.ycc));
             }
             x = end;
         }
     }
+}
 
-    /// R-ARW-52: the matrix product, clipped to 0 to 1.
-    #[inline]
-    fn to_srgb(&self, v: [f32; 3]) -> [f32; 3] {
-        let m = &self.m;
-        let mut o = [0f32; 3];
-        for r in 0..3 {
-            o[r] = (m[r][0] * v[0] + m[r][1] * v[1] + m[r][2] * v[2]).clamp(0.0, 1.0);
+/// One row of camera RGB as three planes, so the vector kernels load and
+/// store whole runs of one channel.
+pub(super) struct RowRgb {
+    /// Red, green and blue.
+    pub p: [Vec<f32>; 3],
+}
+
+impl RowRgb {
+    fn new(n: usize) -> Self {
+        RowRgb {
+            p: [vec![0.0; n], vec![0.0; n], vec![0.0; n]],
         }
-        o
     }
+
+    #[inline]
+    fn set(&mut self, k: usize, v: [f32; 3]) {
+        self.p[0][k] = v[0];
+        self.p[1][k] = v[1];
+        self.p[2][k] = v[2];
+    }
+
+    fn planes(&self) -> [&[f32]; 3] {
+        [&self.p[0], &self.p[1], &self.p[2]]
+    }
+}
+
+/// R-ARW-52: the matrix product of camera RGB `v`, clipped to 0 to 1:
+/// linear sRGB (R-ARW-53). The clip takes the lower bound first, so a NaN
+/// (which R-ARW-78 rules out) would become 0 the same way in every path.
+#[inline]
+pub(crate) fn to_srgb(m: &[[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
+    crate::raw::tone::matrix_clip(m, v)
 }
 
 /// Normalized CFA rows y - 1, y, y + 1 for one band, columns base..limit.
@@ -339,17 +360,24 @@ impl Window {
     }
 }
 
-/// Render the image. `encode` turns one linear sRGB pixel (R-ARW-53) into
-/// `N` output bytes. Returns the bytes of the oriented, cropped image.
-pub(super) fn render<const N: usize, E>(
+/// Turns rows of camera RGB into output bytes: the color matrix (R-ARW-52,
+/// see [`to_srgb`]) to linear sRGB (R-ARW-53), then the encoding.
+pub(super) trait RowEncoder: Sync {
+    /// Bytes of one output pixel.
+    fn pixel_bytes(&self) -> usize;
+    /// Encode `cam` (camera RGB planes, white balanced, 0..1) through
+    /// matrix `m` into `out`, which is `pixels * pixel_bytes()` long.
+    fn encode(&self, m: &[[f32; 3]; 3], cam: [&[f32]; 3], out: &mut [u8]);
+}
+
+/// Render the image through `encoder`. Returns the bytes of the oriented,
+/// cropped image.
+pub(super) fn render(
     plan: &Plan,
     sensor: &Sensor,
     cancel: &CancelToken,
-    encode: E,
-) -> ArwResult<Vec<u8>>
-where
-    E: Fn([f32; 3]) -> [u8; N] + Sync,
-{
+    encoder: &dyn RowEncoder,
+) -> ArwResult<Vec<u8>> {
     match (sensor, plan.variant) {
         (Sensor::Ycc(_), Variant::V5) => {}
         (Sensor::Cfa(_), v) if v != Variant::V5 => {}
@@ -361,7 +389,8 @@ where
         return Err(fail("crop outside the valid area"));
     }
     let (ow, oh) = output_size(crop, ctx.orientation);
-    let row_bytes = ow * N;
+    let n = encoder.pixel_bytes();
+    let row_bytes = ow * n;
     let len = row_bytes
         .checked_mul(oh)
         .ok_or_else(|| fail("output size"))?;
@@ -369,23 +398,22 @@ where
     let band = (oh / (pool::threads() * 4)).clamp(16, 256);
     let work: Vec<(usize, &mut [u8])> = out.chunks_mut(row_bytes * band).enumerate().collect();
     pool::run(work, cancel, |(i, rows)| {
-        render_band(&ctx, i * band, rows.len() / row_bytes, ow, rows, &encode);
+        render_band(&ctx, i * band, rows.len() / row_bytes, ow, rows, encoder);
         Ok(())
     })?;
     Ok(out)
 }
 
 /// Render output rows `r0..r0 + n` into `dst`.
-fn render_band<const N: usize, E>(
+fn render_band(
     ctx: &Ctx<'_>,
     r0: usize,
     n: usize,
     ow: usize,
     dst: &mut [u8],
-    encode: &E,
-) where
-    E: Fn([f32; 3]) -> [u8; N],
-{
+    encoder: &dyn RowEncoder,
+) {
+    let px = encoder.pixel_bytes();
     let (cw, ch, o) = (ctx.crop.w, ctx.crop.h, ctx.orientation);
     // The source rectangle (crop coordinates) that maps to these rows.
     let (xa, xb, ya, yb) = match o {
@@ -397,7 +425,8 @@ fn render_band<const N: usize, E>(
     // R-ARW-56: demosaic in absolute raster coordinates (the CFA phase of
     // the stored raster) and keep only the crop.
     let (x0, x1) = (ctx.crop.x + xa, ctx.crop.x + xb);
-    let mut cam = vec![[0f32; 3]; x1 - x0];
+    let mut cam = RowRgb::new(x1 - x0);
+    let mut encoded = vec![0u8; (x1 - x0) * px];
     let mut window = match ctx.sensor {
         Sensor::Cfa(_) => Some(Window::new(x0.saturating_sub(1), (x1 + 1).min(ctx.vw))),
         Sensor::Ycc(_) => None,
@@ -414,11 +443,20 @@ fn render_band<const N: usize, E>(
             (Sensor::Ycc(p), _) => ctx.ycc_row(p, y, x0, x1, &mut cam),
             _ => {}
         }
-        for (i, &v) in cam.iter().enumerate() {
+        encoder.encode(&ctx.m, cam.planes(), &mut encoded);
+        if o == 1 {
+            // Upright: the source row is one output row.
+            let at = (yc - r0) * ow * px;
+            if let Some(row) = dst.get_mut(at..at + encoded.len()) {
+                row.copy_from_slice(&encoded);
+            }
+            continue;
+        }
+        for (i, src) in encoded.chunks_exact(px).enumerate() {
             let (ox, oy) = map(o, xa + i, yc, cw, ch);
-            let at = ((oy - r0) * ow + ox) * N;
-            if let Some(px) = dst.get_mut(at..at + N) {
-                px.copy_from_slice(&encode(ctx.to_srgb(v)));
+            let at = ((oy - r0) * ow + ox) * px;
+            if let Some(d) = dst.get_mut(at..at + px) {
+                d.copy_from_slice(src);
             }
         }
     }

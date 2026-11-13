@@ -3,12 +3,18 @@
 //!
 //! - [`FolderList`] lists the files of a folder that a [`Registry`] can
 //!   open, in natural order (`img2` before `img10`, case-insensitive).
-//! - [`Library`] owns worker threads and two memory-budgeted caches. After
+//! - [`Library`] owns worker threads and memory-budgeted caches. After
 //!   [`Library::set_current`] it decodes the current image first, then its
 //!   neighbors (next, previous, next+1, previous+1, ...), then thumbnails
 //!   for the visible gallery range, a margin beyond it, and the rest of the
-//!   folder. Results arrive through [`Library::poll_events`] after a wake
-//!   callback, so the interface never waits for a decode.
+//!   folder. While the current image loads, nothing else starts. Results
+//!   arrive through [`Library::poll_events`] after a wake callback, so the
+//!   interface never waits for a decode.
+//! - With [`LibraryConfig::screen_size`] set (staged loading), the current
+//!   image delivers a quick reduced stage ([`Event::Reduced`],
+//!   [`Library::reduced`]) before its full resolution, neighbors are kept
+//!   at screen resolution only, and full resolution is decoded for the
+//!   current image alone.
 //! - Every file system call goes through [`FileAccess`] on a worker
 //!   thread. A stalled read never blocks the caller or shutdown, and files
 //!   that are not stored locally (cloud placeholders) are read only when
@@ -37,4 +43,6 @@ pub use fs::{
     FILE_ATTRIBUTE_OFFLINE, FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS, FILE_ATTRIBUTE_RECALL_ON_OPEN,
     READ_CHUNK,
 };
-pub use library::{DownscaleFn, Event, Fetch, Library, LibraryConfig, Stats, WakeFn};
+pub use library::{
+    DownscaleFn, Event, Fetch, Library, LibraryConfig, LoadTimings, Reduced, Stats, WakeFn,
+};

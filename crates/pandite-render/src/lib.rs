@@ -61,10 +61,15 @@
 //!   and tone mapped: identity up to 0.75, then a smooth shoulder to white.
 //! - Transparent content is composited over a checkerboard
 //!   ([`Checkerboard`]) or the background color, in linear light.
-//! - Uploads copy the pixels once into strip-sized staging textures and do
-//!   conversion and mip generation in render passes. Nothing waits for the
-//!   GPU, and [`ContentFactory`] runs uploads on a worker thread.
+//! - Uploads copy the pixels once, strip by strip, into reusable mapped
+//!   staging buffers (paged in at start-up by [`Gpu::prepare_uploads`]),
+//!   and do conversion and mip generation in render passes. Nothing waits
+//!   for the GPU, and [`ContentFactory`] runs uploads on a worker thread.
 //!   Animations upload the next frame while the current one is shown.
+//! - A reduced decode can stand in for a larger image
+//!   ([`RenderInput::Reduced`]): it is placed, fitted and zoomed as if it
+//!   had the full image's size, so the full image replaces it without
+//!   moving the view.
 //!
 //! # Interface
 //!
@@ -101,7 +106,7 @@ pub use wgpu;
 
 pub use anim::{AnimationProvider, ANIMATION_CACHE_BYTES};
 pub use gpu::{list_adapters, AdapterSummary, Gpu, GpuOptions};
-pub use image::GpuImage;
+pub use image::{GpuImage, UploadTimings};
 pub use pipelines::DEPTH_FORMAT;
 pub use provider::{
     ContentRenderer, DrawContext, FrameContext, Placement, ProviderContext, ProviderRegistry,

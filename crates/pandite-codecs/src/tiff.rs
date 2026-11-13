@@ -55,6 +55,17 @@ impl DecoderProvider for TiffDecoder {
         is_tiff_signature(header)
     }
 
+    fn reduced_decode(&self, source: &Source) -> bool {
+        // Camera RAW files in a TIFF structure are handed to the RAW
+        // decoder, which uses their embedded previews.
+        #[cfg(feature = "raw")]
+        if crate::raw::is_camera_raw(source) {
+            return crate::raw::RawDecoder.reduced_decode(source);
+        }
+        let _ = source;
+        false
+    }
+
     fn probe(&self, source: &Source) -> Result<ImageMeta> {
         #[cfg(feature = "raw")]
         if crate::raw::is_camera_raw(source) {

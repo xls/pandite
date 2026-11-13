@@ -44,11 +44,18 @@ impl CancelToken {
     }
 }
 
+/// Shared file bytes, held the way they arrived so no copy is made.
+#[derive(Clone, Debug)]
+enum Bytes {
+    Shared(Arc<[u8]>),
+    Owned(Arc<Vec<u8>>),
+}
+
 /// The bytes of one file plus where they came from.
 #[derive(Clone, Debug)]
 pub struct Source {
     path: Option<PathBuf>,
-    bytes: Arc<[u8]>,
+    bytes: Bytes,
 }
 
 impl Source {
@@ -56,24 +63,34 @@ impl Source {
     pub fn from_path(path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
         let bytes = std::fs::read(&path)?;
-        Ok(Self {
-            path: Some(path),
-            bytes: bytes.into(),
-        })
+        Ok(Self::from_vec(bytes, Some(path)))
     }
 
     /// Wrap bytes that are already in memory. `path` is only a hint for
     /// extension matching and for platform codecs that want a file name.
+    /// A `Vec` passed here is copied into the shared buffer; use
+    /// [`Source::from_vec`] to keep it as it is.
     pub fn from_bytes(bytes: impl Into<Arc<[u8]>>, path: Option<PathBuf>) -> Self {
         Self {
             path,
-            bytes: bytes.into(),
+            bytes: Bytes::Shared(bytes.into()),
+        }
+    }
+
+    /// Wrap a buffer without copying it (a file read into a `Vec`).
+    pub fn from_vec(bytes: Vec<u8>, path: Option<PathBuf>) -> Self {
+        Self {
+            path,
+            bytes: Bytes::Owned(Arc::new(bytes)),
         }
     }
 
     /// The file contents.
     pub fn bytes(&self) -> &[u8] {
-        &self.bytes
+        match &self.bytes {
+            Bytes::Shared(b) => b,
+            Bytes::Owned(b) => b,
+        }
     }
 
     /// The originating path when known.
@@ -88,7 +105,8 @@ impl Source {
 
     /// The first [`SNIFF_LEN`] bytes (fewer for short files).
     pub fn header(&self) -> &[u8] {
-        &self.bytes[..self.bytes.len().min(SNIFF_LEN)]
+        let bytes = self.bytes();
+        &bytes[..bytes.len().min(SNIFF_LEN)]
     }
 }
 
@@ -108,6 +126,11 @@ pub struct DecodeOptions {
     pub target_size: Option<(u32, u32)>,
     /// Return only the first frame of an animation as a still.
     pub first_frame_only: bool,
+    /// The result is only displayed: decoders that develop deep data
+    /// (camera RAW) deliver [`crate::PixelFormat::Rgba8`] instead of
+    /// `Rgba16`, half the memory and upload. Others ignore it. Leave it
+    /// off where precision matters (conversion, saving).
+    pub prefer_8bit: bool,
     /// Lets the caller abandon a decode that is no longer needed.
     pub cancel: CancelToken,
 }
@@ -130,6 +153,16 @@ pub trait DecoderProvider: Send + Sync {
 
     /// Read size and basic facts without decoding pixels.
     fn probe(&self, source: &Source) -> Result<ImageMeta>;
+
+    /// True when a decode of `source` with [`DecodeOptions::target_size`]
+    /// returns a smaller image at a fraction of the cost of a full decode
+    /// (DCT scaling, embedded previews, vector rendering). Callers use it
+    /// to decide whether a fast first stage is worth running beside the
+    /// full decode. Default: false.
+    fn reduced_decode(&self, source: &Source) -> bool {
+        let _ = source;
+        false
+    }
 
     /// Decode the file. Pixels come back upright: any stored orientation is
     /// already applied. Must be safe to call from several threads at once.
@@ -387,5 +420,13 @@ mod tests {
         let short = Source::from_bytes(vec![1u8, 2], None);
         assert_eq!(short.header(), &[1, 2]);
         assert_eq!(short.extension(), None);
+        // from_vec keeps the buffer: no copy of a large file.
+        let data = vec![9u8; 300];
+        let ptr = data.as_ptr();
+        let owned = Source::from_vec(data, Some("x.PNG".into()));
+        assert_eq!(owned.bytes().as_ptr(), ptr);
+        assert_eq!(owned.header().len(), SNIFF_LEN);
+        assert_eq!(owned.clone().bytes().len(), 300);
+        assert_eq!(owned.extension().as_deref(), Some("png"));
     }
 }

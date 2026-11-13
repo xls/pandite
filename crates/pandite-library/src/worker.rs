@@ -2,14 +2,17 @@
 
 use crate::folder::FolderList;
 use crate::fs::Stamp;
-use crate::library::Shared;
-use crate::state::{Outcome, State, Task, Work};
-use pandite_core::{Content, DecodeOptions, Error, ImageBuf, Result, Source};
+use crate::library::{LoadTimings, Reduced, Shared};
+use crate::state::{Outcome, Staged, State, Task, Work};
+use pandite_core::{
+    CancelToken, Content, DecodeOptions, Error, ImageBuf, ImageMeta, Result, Source,
+};
 use std::io;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 use std::sync::Arc;
 use std::thread;
+use std::time::Instant;
 
 /// Run `f`, turning a panic into an error so one bad file cannot kill a
 /// worker (with `panic = "abort"` the process stops instead).
@@ -60,12 +63,23 @@ fn worker_main(shared: Arc<Shared>, tid: u64) {
             }
             shared.idle_cv.notify_all();
             st.waiting += 1;
-            st = shared.wait_work(st);
+            // Held back by a current image whose file lookup has not
+            // answered yet: look again when its grace ends.
+            st = match st.gate_ends() {
+                Some(left) => shared.wait_work_for(st, left),
+                None => shared.wait_work(st),
+            };
             st.waiting -= 1;
         };
         drop(st);
-        let outcome = run_task(&shared, tid, &task);
+        let mut timings = LoadTimings::default();
+        let outcome = run_task(&shared, tid, &task, &mut timings);
         st = shared.lock();
+        if let Work::Full { path, .. } = &task.work {
+            if timings.decode_full.is_some() {
+                st.note_timings(path, timings);
+            }
+        }
         let wake = st.finish(tid, task, outcome);
         let keep = st.after_task(tid);
         if std::mem::take(&mut st.replanned) {
@@ -98,7 +112,7 @@ enum Early {
     Abandoned,
 }
 
-fn run_task(shared: &Shared, tid: u64, task: &Task) -> Outcome {
+fn run_task(shared: &Arc<Shared>, tid: u64, task: &Task, timings: &mut LoadTimings) -> Outcome {
     match &task.work {
         Work::List { target, .. } => {
             let listed = guard(|| {
@@ -110,27 +124,44 @@ fn run_task(shared: &Shared, tid: u64, task: &Task) -> Outcome {
             });
             Outcome::Listed(listed.ok())
         }
-        Work::Full { path, explicit } => match read(shared, tid, task, path, *explicit) {
+        Work::Full {
+            path,
+            explicit,
+            quick,
+        } => match read(shared, tid, task, path, *explicit, timings) {
             Ok((source, stamp)) => {
+                if let Some(target) = *quick {
+                    start_quick(shared, task, &source, target, stamp);
+                }
                 let options = DecodeOptions {
+                    prefer_8bit: true,
                     cancel: task.cancel.clone(),
                     ..DecodeOptions::default()
                 };
+                let start = Instant::now();
                 let content = guard(|| shared.registry.decode(&source, &options));
+                timings.decode_full = Some(start.elapsed());
                 Outcome::Full(content, stamp)
             }
             Err(early) => early_outcome(early, Outcome::Full),
+        },
+        Work::Screen { path, target } => match read(shared, tid, task, path, false, timings) {
+            Ok((source, stamp)) => {
+                Outcome::Screen(screen_image(shared, task, &source, *target), stamp)
+            }
+            Err(early) => early_outcome(early, Outcome::Screen),
         },
         Work::Thumb {
             from: Some((content, stamp)),
             ..
         } => Outcome::Thumb(thumbnail_of(shared, task, content), *stamp),
-        Work::Thumb { path, from: None } => match read(shared, tid, task, path, false) {
+        Work::Thumb { path, from: None } => match read(shared, tid, task, path, false, timings) {
             Ok((source, stamp)) => {
                 let side = shared.thumb_size;
                 let options = DecodeOptions {
                     target_size: Some((side, side)),
                     first_frame_only: true,
+                    prefer_8bit: true,
                     cancel: task.cancel.clone(),
                 };
                 let image = guard(|| shared.registry.decode(&source, &options))
@@ -151,6 +182,118 @@ fn early_outcome<T>(early: Early, wrap: fn(Result<T>, Option<Stamp>) -> Outcome)
     }
 }
 
+/// The image's size when a quick reduced decode is worth it: the image is
+/// larger than `target`. Runs on the quick stage's own thread (a probe
+/// through an operating system codec takes a while).
+fn quick_meta(shared: &Shared, source: &Source, target: (u32, u32)) -> Option<ImageMeta> {
+    let meta = guard(|| shared.registry.probe(source)).ok()?;
+    (meta.width > target.0 || meta.height > target.1).then_some(meta)
+}
+
+/// Start the quick first stage of the current image on its own thread,
+/// beside the full decode: a reduced decode covering `target`, delivered
+/// as the image's screen image as soon as it is ready. It shares the
+/// task's cancel token; a result that arrives after the full image (or
+/// after the user moved on) is dropped by the state.
+fn start_quick(
+    shared: &Arc<Shared>,
+    task: &Task,
+    source: &Source,
+    target: (u32, u32),
+    stamp: Option<Stamp>,
+) {
+    let Work::Full { path, .. } = &task.work else {
+        return;
+    };
+    let (shared, source, path, id) = (Arc::clone(shared), source.clone(), path.clone(), task.id);
+    let cancel: CancelToken = task.cancel.clone();
+    let spawned = thread::Builder::new()
+        .name("pandite-library-quick".into())
+        .spawn(move || {
+            // Only for decoders that make reduced images of this file
+            // cheaply (asking may look into the file, so it happens here,
+            // beside the full decode).
+            let cheap = shared
+                .registry
+                .decoder_for(&source)
+                .is_some_and(|d| d.reduced_decode(&source));
+            if !cheap {
+                return;
+            }
+            let Some(meta) = quick_meta(&shared, &source, target) else {
+                return;
+            };
+            let options = DecodeOptions {
+                target_size: Some(target),
+                first_frame_only: true,
+                prefer_8bit: true,
+                cancel,
+            };
+            let start = Instant::now();
+            let Ok(content) = guard(|| shared.registry.decode(&source, &options)) else {
+                return;
+            };
+            let elapsed = start.elapsed();
+            let image = content.first_image().clone();
+            if image.width() >= meta.width && image.height() >= meta.height {
+                // Not reduced after all: the full stage delivers it.
+                return;
+            }
+            let reduced = Reduced {
+                image,
+                width: meta.width,
+                height: meta.height,
+            };
+            let wake = shared
+                .lock()
+                .deliver_quick(&path, id, reduced, stamp, elapsed);
+            if wake {
+                (shared.wake)();
+            }
+        });
+    // No thread: the full stage alone shows the image.
+    drop(spawned);
+}
+
+/// A read-ahead neighbor at screen resolution: a reduced decode covering
+/// `target`, the image itself when it is no larger, or the full decode
+/// shrunk to the screen when the format has no reduced decode.
+fn screen_image(
+    shared: &Shared,
+    task: &Task,
+    source: &Source,
+    target: (u32, u32),
+) -> Result<Staged> {
+    let meta = guard(|| shared.registry.probe(source)).ok();
+    let options = DecodeOptions {
+        target_size: Some(target),
+        prefer_8bit: true,
+        cancel: task.cancel.clone(),
+        ..DecodeOptions::default()
+    };
+    let content = guard(|| shared.registry.decode(source, &options))?;
+    task.cancel.check()?;
+    let image = content.first_image();
+    let (w, h) = (image.width(), image.height());
+    if let Some(meta) = meta.filter(|m| w < m.width || h < m.height) {
+        return Ok(Staged::Reduced(Reduced {
+            image: image.clone(),
+            width: meta.width,
+            height: meta.height,
+        }));
+    }
+    if (w <= target.0 && h <= target.1) || content.kind() != pandite_core::ContentKind::Still {
+        return Ok(Staged::Full(content));
+    }
+    let side = target.0.max(target.1);
+    let small = guard(|| Ok((shared.downscale)(image, side)))?;
+    Ok(Staged::Reduced(Reduced {
+        image: small,
+        width: w,
+        height: h,
+    }))
+}
+
 fn thumbnail_of(shared: &Shared, task: &Task, content: &Content) -> Result<ImageBuf> {
     task.cancel.check()?;
     let side = shared.thumb_size;
@@ -166,6 +309,7 @@ fn read(
     task: &Task,
     path: &Path,
     explicit: bool,
+    timings: &mut LoadTimings,
 ) -> std::result::Result<(Source, Option<Stamp>), Early> {
     // Leave the file system part; an abandoned task reports nothing else.
     let leave = |early: Early| {
@@ -191,8 +335,13 @@ fn read(
         if wake {
             (shared.wake)();
         }
+    } else {
+        shared.lock().mark_local_read(task);
     }
-    match guard(|| shared.files.read(path, &task.cancel)) {
+    let start = Instant::now();
+    let read = guard(|| shared.files.read(path, &task.cancel));
+    timings.read = Some(start.elapsed());
+    match read {
         Ok(source) => {
             if shared.lock().checkpoint(tid, task) {
                 Ok((source, stamp))

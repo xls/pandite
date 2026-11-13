@@ -488,9 +488,12 @@ fn run_one(ctx: &Ctx<'_>, plan: &Plan) -> FileOutcome {
 fn process(ctx: &Ctx<'_>, plan: &Plan) -> Result<FileOutcome> {
     ctx.cancel.check()?;
     let source = Source::from_path(&plan.input)?;
+    // Bulk conversion keeps full precision: 16-bit sources stay 16-bit
+    // for formats that can store it.
     let options = DecodeOptions {
         target_size: None,
         first_frame_only: true,
+        prefer_8bit: false,
         cancel: ctx.cancel.clone(),
     };
     let content = ctx.registry.decode(&source, &options)?;

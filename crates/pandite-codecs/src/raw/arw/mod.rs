@@ -9,10 +9,15 @@
 //! SR2 structures, and neither does this code (R-ARW-15).
 //!
 //! The developed image is linear sRGB (R-ARW-53) inside the pipeline. The
-//! provider delivers it as `PixelFormat::Rgba16` with the sRGB transfer
-//! function, as the DNG path does, because that is pandite's pixel
-//! contract for 16-bit images; a preview arrives as `PixelFormat::Rgba8`.
-//! [`Origin`] reports which one was delivered (R-ARW-64).
+//! specification's result is available as [`Rendering::Colorimetric`]:
+//! `PixelFormat::Rgba16` with the sRGB transfer function (pandite's pixel
+//! contract for 16-bit images). The provider delivers
+//! [`Rendering::Display`]: pandite's default display rendering
+//! ([`crate::raw::tone`], not part of the specification) applied to that
+//! linear result, as `Rgba16`, or as `Rgba8` in one pass when the caller
+//! prefers 8 bits. A preview arrives as `Rgba8`. [`Developed::origin`]
+//! reports which one was delivered (R-ARW-64); the pixel format alone no
+//! longer tells them apart when 8 bits are preferred.
 //!
 //! Failures inside the decoder are recoverable `Error` values, never
 //! process aborts (R-ARW-79); a partly decoded raw image is dropped and
@@ -25,7 +30,6 @@ mod ifd;
 mod lj92;
 mod meta;
 mod plane;
-mod pool;
 mod preview;
 mod render;
 mod strips;
@@ -38,6 +42,8 @@ mod tests;
 
 pub(crate) use meta::{Class, Rect, Variant, WbSource};
 
+use crate::pool;
+use crate::raw::tone::Tone;
 use crate::util::check_size;
 use pandite_core::{CancelToken, DecodeOptions, Error, ImageBuf, Orientation, PixelFormat, Result};
 use std::fmt::Display;
@@ -82,8 +88,7 @@ pub(crate) struct Info {
 }
 
 /// A delivered image and where it came from (R-ARW-64). The provider
-/// passes on the image only; its pixel format tells the two origins apart
-/// (`Rgba16` developed, `Rgba8` preview). The tests read the report.
+/// passes on the image only; the tests read the report.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct Developed {
     /// The image, upright.
@@ -113,6 +118,12 @@ pub(crate) fn is_arw(data: &[u8], extension: Option<&str>) -> bool {
     matches!(ifd0.ascii(0x010F), Ok(Some(b"SONY"))) && ifd0.has(0x014A) && ifd0.has(0xC634)
 }
 
+/// True when the file carries an embedded preview (R-ARW-59, R-ARW-60):
+/// a reduced decode is then cheap.
+pub(crate) fn has_preview(data: &[u8]) -> bool {
+    matches!(meta::open(data), Ok(Some(c)) if !preview::collect(&c).is_empty())
+}
+
 /// Size and orientation of the image [`decode`] delivers at full size, or
 /// `Ok(None)` when the data are not a little-endian TIFF (the caller then
 /// uses its generic preview search).
@@ -136,14 +147,38 @@ pub(crate) fn probe(data: &[u8]) -> Result<Option<(u32, u32, Orientation)>> {
     Ok(Some((w, h, orientation)))
 }
 
-/// Decode an ARW file to an upright image, or `Ok(None)` when the data
-/// are not a little-endian TIFF.
-pub(crate) fn decode(data: &[u8], options: &DecodeOptions) -> Result<Option<ImageBuf>> {
-    Ok(decode_report(data, options)?.map(|d| d.image))
+/// How developed sensor data are delivered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Rendering {
+    /// The colorimetric result of the specification: linear sRGB
+    /// (R-ARW-53) with the sRGB transfer function, `Rgba16`.
+    Colorimetric,
+    /// pandite's default display rendering ([`crate::raw::tone`]) on top
+    /// of the colorimetric result: `Rgba8` when the caller prefers 8 bits,
+    /// else `Rgba16`.
+    Display,
 }
 
-/// [`decode`], reporting the origin of the delivered image (R-ARW-64).
+/// Decode an ARW file to an upright image with the default display
+/// rendering, or `Ok(None)` when the data are not a little-endian TIFF.
+pub(crate) fn decode(data: &[u8], options: &DecodeOptions) -> Result<Option<ImageBuf>> {
+    Ok(decode_with(data, options, Rendering::Display)?.map(|d| d.image))
+}
+
+/// The colorimetric decode of the specification, reporting the origin of
+/// the delivered image (R-ARW-64).
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn decode_report(data: &[u8], options: &DecodeOptions) -> Result<Option<Developed>> {
+    decode_with(data, options, Rendering::Colorimetric)
+}
+
+/// Decode with the given rendering of the sensor data, reporting the
+/// origin of the delivered image (R-ARW-64).
+pub(crate) fn decode_with(
+    data: &[u8],
+    options: &DecodeOptions,
+    rendering: Rendering,
+) -> Result<Option<Developed>> {
     // Steps 1 and 2 of the decoding procedure: header and IFD chain.
     let c = match meta::open(data) {
         Ok(Some(c)) => c,
@@ -202,7 +237,12 @@ pub(crate) fn decode_report(data: &[u8], options: &DecodeOptions) -> Result<Opti
 
     // Steps 8 to 14 for the specified variants.
     if let Some(plan) = &plan {
-        match develop(data, plan, &options.cancel) {
+        let output = match rendering {
+            Rendering::Colorimetric => Output::Colorimetric16,
+            Rendering::Display if options.prefer_8bit => Output::Display8,
+            Rendering::Display => Output::Display16,
+        };
+        match develop(data, plan, &options.cancel, output) {
             Ok(image) => {
                 return Ok(Some(Developed {
                     image,
@@ -260,26 +300,99 @@ fn decode_sensor(
     })
 }
 
-/// Develop the sensor data to an upright 16-bit sRGB image (steps 8 to
-/// 14).
-fn develop(data: &[u8], plan: &meta::Plan, cancel: &CancelToken) -> ArwResult<ImageBuf> {
+/// The pixel encoding of a developed image.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Output {
+    /// Colorimetric linear sRGB with the sRGB transfer, 16 bits.
+    Colorimetric16,
+    /// Default display rendering, 16 bits.
+    Display16,
+    /// Default display rendering, 8 bits.
+    Display8,
+}
+
+/// Linear sRGB to 16-bit sRGB codes, colorimetric.
+struct Colorimetric16;
+
+impl render::RowEncoder for Colorimetric16 {
+    fn pixel_bytes(&self) -> usize {
+        8
+    }
+
+    fn encode(&self, m: &[[f32; 3]; 3], cam: [&[f32]; 3], out: &mut [u8]) {
+        let table = render::srgb_table();
+        for (k, px) in out.chunks_exact_mut(8).enumerate() {
+            let v = render::to_srgb(m, [cam[0][k], cam[1][k], cam[2][k]]);
+            for k in 0..3 {
+                // v is clipped to 0..1 (R-ARW-52); NaN cannot occur (R-ARW-78).
+                let i = ((v[k] * 65535.0 + 0.5) as usize).min(65535);
+                px[2 * k..2 * k + 2].copy_from_slice(&table[i].to_ne_bytes());
+            }
+            px[6..8].copy_from_slice(&u16::MAX.to_ne_bytes());
+        }
+    }
+}
+
+/// The default display rendering to 16-bit sRGB codes.
+struct Display16(&'static Tone);
+
+impl render::RowEncoder for Display16 {
+    fn pixel_bytes(&self) -> usize {
+        8
+    }
+
+    fn encode(&self, m: &[[f32; 3]; 3], cam: [&[f32]; 3], out: &mut [u8]) {
+        let table = render::srgb_table();
+        for (k, px) in out.chunks_exact_mut(8).enumerate() {
+            let d = self
+                .0
+                .apply(render::to_srgb(m, [cam[0][k], cam[1][k], cam[2][k]]));
+            for k in 0..3 {
+                let i = ((d[k] * 65535.0 + 0.5) as usize).min(65535);
+                px[2 * k..2 * k + 2].copy_from_slice(&table[i].to_ne_bytes());
+            }
+            px[6..8].copy_from_slice(&u16::MAX.to_ne_bytes());
+        }
+    }
+}
+
+/// The default display rendering to 8-bit sRGB in one pass.
+struct Display8(&'static Tone);
+
+impl render::RowEncoder for Display8 {
+    fn pixel_bytes(&self) -> usize {
+        4
+    }
+
+    fn encode(&self, m: &[[f32; 3]; 3], cam: [&[f32]; 3], out: &mut [u8]) {
+        crate::simd::matrix_tone_rgba8(m, self.0, cam, out);
+    }
+}
+
+/// Develop the sensor data to an upright sRGB image (steps 8 to 14) in
+/// the requested encoding. Full precision is kept until the last step.
+fn develop(
+    data: &[u8],
+    plan: &meta::Plan,
+    cancel: &CancelToken,
+    output: Output,
+) -> ArwResult<ImageBuf> {
     let (w, h) = render::output_size(plan.crop, plan.orientation);
     let (w, h) = (
         u32::try_from(w).map_err(|_| fail("output size"))?,
         u32::try_from(h).map_err(|_| fail("output size"))?,
     );
-    check_size(w, h, PixelFormat::Rgba16)?;
+    let format = match output {
+        Output::Display8 => PixelFormat::Rgba8,
+        Output::Colorimetric16 | Output::Display16 => PixelFormat::Rgba16,
+    };
+    check_size(w, h, format)?;
     let sensor = decode_sensor(data, plan, cancel)?;
-    let table = render::srgb_table();
-    let bytes = render::render::<8, _>(plan, &sensor, cancel, |rgb| {
-        let mut px = [0u8; 8];
-        for (k, v) in rgb.iter().enumerate() {
-            // v is clipped to 0..1 (R-ARW-52); NaN cannot occur (R-ARW-78).
-            let i = ((v * 65535.0 + 0.5) as usize).min(65535);
-            px[2 * k..2 * k + 2].copy_from_slice(&table[i].to_ne_bytes());
-        }
-        px[6..8].copy_from_slice(&u16::MAX.to_ne_bytes());
-        px
-    })?;
-    ImageBuf::new(w, h, PixelFormat::Rgba16, bytes)
+    let tone = Tone::unit();
+    let bytes = match output {
+        Output::Colorimetric16 => render::render(plan, &sensor, cancel, &Colorimetric16)?,
+        Output::Display16 => render::render(plan, &sensor, cancel, &Display16(tone))?,
+        Output::Display8 => render::render(plan, &sensor, cancel, &Display8(tone))?,
+    };
+    ImageBuf::new(w, h, format, bytes)
 }
