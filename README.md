@@ -8,9 +8,10 @@ works offline, and a file that is stuck on a cloud drive cannot freeze it.
 
 Most viewers stop and wait when a file is slow to arrive. pandite does
 not. Every file read and every decode runs on a worker thread, so the
-window keeps drawing and Esc always answers. When a file on a cloud drive
-or a network share takes its time, pandite shows a loading screen that you
-can leave at once. On Windows, pandite also knows which OneDrive files are
+window keeps drawing and Esc always answers: it closes pandite at once,
+also in the middle of a load. When a file on a cloud drive or a network
+share takes its time, pandite shows a loading screen that you can leave
+at once. On Windows, pandite also knows which OneDrive files are
 only placeholders. It reads ahead only the files that are already on your
 disk, so browsing a folder does not start downloads behind your back.
 
@@ -43,9 +44,11 @@ into the program on any platform.
   choose Save as, and pandite asks before it writes over the original.
 - Save as PNG, JPEG, WebP (lossless) or BMP.
 - Bulk convert and resize a set of files or a whole folder.
+- Ctrl+C copies the image to the clipboard at full resolution, with your
+  rotation, flip and crop applied. The copy runs in the background.
 - Select and copy the text in an image, on Windows. See
   [Text in images](#text-in-images).
-- A button that copies the path of the current file.
+- Ctrl+Shift+C, or a toolbar button, copies the path of the current file.
 - Remembers the window size and position. On first open, the window takes
   a share of the screen and the image fits inside it.
 - A minimal dark interface that steps aside for the image and follows the
@@ -57,7 +60,9 @@ On Windows, pandite reads the text in the image on screen. Point at a word
 and the pointer becomes a text cursor. Drag across words to select them,
 double-click a word or triple-click a line, or press Ctrl+A for all the
 text. Ctrl+C then copies the text, with one line for each line in the
-image.
+image. Without a selection, Ctrl+C copies the image itself. Esc closes
+pandite, also while text is selected. Click the image away from the text
+to clear a selection.
 
 The reading happens on your computer, with the text recognizer that comes
 with Windows, so it works offline. It starts in the background once the
@@ -167,10 +172,12 @@ On macOS, use Command for Ctrl and Option for Alt.
 | Ctrl+R | Resize |
 | Ctrl+B | Bulk convert and resize |
 | Ctrl+Shift+S | Save as |
-| Ctrl+C | Copy the selected text, or the file path when no text is selected |
+| Ctrl+C | Copy the image, or the selected text when text is selected |
+| Ctrl+Shift+C | Copy the file path |
 | Ctrl+A | Select all the text in the image (Windows) |
 | Ctrl+Z | Undo |
-| Esc | Clear a text selection, cancel loading, close a dialog, leave full screen |
+| Esc | Close the open dialog or menu. With none open, quit pandite |
+| Ctrl+Q / Ctrl+W | Quit pandite |
 | F1 | Show all shortcuts |
 
 The full list, with the mouse actions, is in

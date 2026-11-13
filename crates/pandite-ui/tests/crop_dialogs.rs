@@ -212,7 +212,7 @@ fn crop_handles_resize_selection() {
 }
 
 #[test]
-fn crop_enter_confirms_escape_cancels() {
+fn crop_enter_confirms_escape_quits() {
     let ctx = crop_ctx();
     let mut ui = Ui::new();
     press_key(&mut ui, &ctx, Key::C);
@@ -231,13 +231,14 @@ fn crop_enter_confirms_escape_cancels() {
         ip(90.0, 90.0),
         PointerButton::Left,
     );
-    assert_eq!(
-        press_key(&mut ui, &ctx, Key::Escape),
-        vec![Action::CancelCrop]
-    );
+    // Crop mode is no dialog: Escape quits the application. The crop key
+    // C cancels the crop.
+    assert_eq!(press_key(&mut ui, &ctx, Key::Escape), vec![Action::Quit]);
+    assert_eq!(ui.mode(), UiMode::Crop);
+    assert_eq!(press_key(&mut ui, &ctx, Key::C), vec![Action::CancelCrop]);
     assert_eq!(ui.mode(), UiMode::Normal);
 
-    // In full screen, Escape cancels the crop before leaving full screen.
+    // The same in full screen.
     let mut full = ctx;
     full.fullscreen = true;
     press_key(&mut ui, &full, Key::C);
@@ -248,14 +249,9 @@ fn crop_enter_confirms_escape_cancels() {
         ip(90.0, 90.0),
         PointerButton::Left,
     );
-    assert_eq!(
-        press_key(&mut ui, &full, Key::Escape),
-        vec![Action::CancelCrop]
-    );
-    assert_eq!(
-        press_key(&mut ui, &full, Key::Escape),
-        vec![Action::ToggleFullscreen]
-    );
+    assert_eq!(press_key(&mut ui, &full, Key::Escape), vec![Action::Quit]);
+    assert_eq!(press_key(&mut ui, &full, Key::C), vec![Action::CancelCrop]);
+    assert_eq!(ui.mode(), UiMode::Normal);
 
     // Ctrl+A selects the whole image; arrows nudge; Enter applies.
     press_key(&mut ui, &ctx, Key::C);

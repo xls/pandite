@@ -1,12 +1,14 @@
-//! Write the pandite icon as PNG files, plus a Windows `.ico`.
+//! Write the pandite icon as PNG files, plus the Windows `.ico`.
 //!
 //! Usage: `cargo run -p pandite-app --example make_icon -- <out_dir> <size> [<size>...]`
 //!
 //! Writes `icon-<size>.png` for each size (antialiased, transparent
-//! background). When the sizes include 16, 32, 48 and 256 it also writes
-//! `pandite.ico` with those four images. Sizes run from 1 to 4096.
+//! background) and `pandite.ico` with every size of
+//! `pandite_app::icon::ICO_SIZES` (32-bit bitmaps below 256 px, PNG at
+//! 256 px). Copy that file to `crates/pandite-app/assets/` after the icon
+//! changes. Sizes run from 1 to 4096.
 
-use pandite_app::icon::{build_ico, encode_png, render_icon, ICO_SIZES, MAX_ICON_SIZE};
+use pandite_app::icon::{encode_png, program_ico, render_icon, MAX_ICON_SIZE};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -39,7 +41,6 @@ fn main() -> ExitCode {
         eprintln!("cannot create {}: {err}", dir.display());
         return ExitCode::FAILURE;
     }
-    let mut ico_images = Vec::new();
     for &size in &sizes {
         let png = match render_icon(size).and_then(|img| encode_png(&img)) {
             Ok(png) => png,
@@ -54,24 +55,19 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
         println!("wrote {}", path.display());
-        if ICO_SIZES.contains(&size) {
-            ico_images.push((size, png));
-        }
     }
-    if ico_images.len() == ICO_SIZES.len() {
-        let path = dir.join("pandite.ico");
-        let ico = match build_ico(&ico_images) {
-            Ok(ico) => ico,
-            Err(err) => {
-                eprintln!("cannot build the icon file: {err}");
-                return ExitCode::FAILURE;
-            }
-        };
-        if let Err(err) = std::fs::write(&path, ico) {
-            eprintln!("cannot write {}: {err}", path.display());
+    let path = dir.join("pandite.ico");
+    let ico = match program_ico() {
+        Ok(ico) => ico,
+        Err(err) => {
+            eprintln!("cannot build the icon file: {err}");
             return ExitCode::FAILURE;
         }
-        println!("wrote {}", path.display());
+    };
+    if let Err(err) = std::fs::write(&path, ico) {
+        eprintln!("cannot write {}: {err}", path.display());
+        return ExitCode::FAILURE;
     }
+    println!("wrote {}", path.display());
     ExitCode::SUCCESS
 }

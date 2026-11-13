@@ -170,6 +170,11 @@ pub enum Action {
     /// Put the current file's absolute path on the clipboard, then call
     /// [`crate::Ui::toast`] with a confirmation.
     CopyPath,
+    /// Put the image on screen on the clipboard as pixels: full
+    /// resolution, with the view edits applied (what Save As would write),
+    /// the frame on screen for an animation. Do the work off the event
+    /// loop and confirm with [`crate::Ui::toast`].
+    CopyImage,
     /// Put this text on the clipboard (Ctrl+C or Ctrl+X in a text field).
     CopyText(String),
     /// Read the clipboard and send its text back as
@@ -209,10 +214,6 @@ pub enum Action {
     RunBulk(BulkJob),
     /// Stop the running bulk job.
     CancelBulk,
-    /// Stop loading the file that is being read or downloaded. When it was
-    /// the first image the application may close; otherwise it keeps the
-    /// previous image.
-    CancelLoad,
     /// Undo the last view edit (rotate, flip, crop, resize).
     Undo,
     /// Display mode: best fit in the content viewport.
@@ -277,6 +278,8 @@ pub enum ActionKind {
     SaveAs,
     /// [`Action::CopyPath`].
     CopyPath,
+    /// [`Action::CopyImage`].
+    CopyImage,
     /// [`Action::CopyText`].
     CopyText,
     /// [`Action::RequestPaste`].
@@ -311,8 +314,6 @@ pub enum ActionKind {
     RunBulk,
     /// [`Action::CancelBulk`].
     CancelBulk,
-    /// [`Action::CancelLoad`].
-    CancelLoad,
     /// [`Action::Undo`].
     Undo,
     /// [`Action::FitToWindow`].
@@ -349,6 +350,7 @@ impl ActionKind {
         ActionKind::Open,
         ActionKind::SaveAs,
         ActionKind::CopyPath,
+        ActionKind::CopyImage,
         ActionKind::CopyText,
         ActionKind::RequestPaste,
         ActionKind::RotateLeft,
@@ -366,7 +368,6 @@ impl ActionKind {
         ActionKind::PickBulkDestination,
         ActionKind::RunBulk,
         ActionKind::CancelBulk,
-        ActionKind::CancelLoad,
         ActionKind::Undo,
         ActionKind::FitToWindow,
         ActionKind::OneToOne,
@@ -390,24 +391,24 @@ impl ActionKind {
             ActionKind::Open => 0,
             ActionKind::SaveAs => 1,
             ActionKind::CopyPath => 2,
-            ActionKind::CopyText => 3,
-            ActionKind::RequestPaste => 4,
-            ActionKind::RotateLeft => 5,
-            ActionKind::RotateRight => 6,
-            ActionKind::FlipHorizontal => 7,
-            ActionKind::FlipVertical => 8,
-            ActionKind::StartCrop => 9,
-            ActionKind::ApplyCrop => 10,
-            ActionKind::CancelCrop => 11,
-            ActionKind::OpenResizeDialog => 12,
-            ActionKind::ApplyResize => 13,
-            ActionKind::OpenBulkDialog => 14,
-            ActionKind::PickBulkFiles => 15,
-            ActionKind::PickBulkFolder => 16,
-            ActionKind::PickBulkDestination => 17,
-            ActionKind::RunBulk => 18,
-            ActionKind::CancelBulk => 19,
-            ActionKind::CancelLoad => 20,
+            ActionKind::CopyImage => 3,
+            ActionKind::CopyText => 4,
+            ActionKind::RequestPaste => 5,
+            ActionKind::RotateLeft => 6,
+            ActionKind::RotateRight => 7,
+            ActionKind::FlipHorizontal => 8,
+            ActionKind::FlipVertical => 9,
+            ActionKind::StartCrop => 10,
+            ActionKind::ApplyCrop => 11,
+            ActionKind::CancelCrop => 12,
+            ActionKind::OpenResizeDialog => 13,
+            ActionKind::ApplyResize => 14,
+            ActionKind::OpenBulkDialog => 15,
+            ActionKind::PickBulkFiles => 16,
+            ActionKind::PickBulkFolder => 17,
+            ActionKind::PickBulkDestination => 18,
+            ActionKind::RunBulk => 19,
+            ActionKind::CancelBulk => 20,
             ActionKind::Undo => 21,
             ActionKind::FitToWindow => 22,
             ActionKind::OneToOne => 23,
@@ -433,6 +434,7 @@ impl Action {
             Action::Open => ActionKind::Open,
             Action::SaveAs => ActionKind::SaveAs,
             Action::CopyPath => ActionKind::CopyPath,
+            Action::CopyImage => ActionKind::CopyImage,
             Action::CopyText(_) => ActionKind::CopyText,
             Action::RequestPaste => ActionKind::RequestPaste,
             Action::RotateLeft => ActionKind::RotateLeft,
@@ -450,7 +452,6 @@ impl Action {
             Action::PickBulkDestination => ActionKind::PickBulkDestination,
             Action::RunBulk(_) => ActionKind::RunBulk,
             Action::CancelBulk => ActionKind::CancelBulk,
-            Action::CancelLoad => ActionKind::CancelLoad,
             Action::Undo => ActionKind::Undo,
             Action::FitToWindow => ActionKind::FitToWindow,
             Action::OneToOne { .. } => ActionKind::OneToOne,

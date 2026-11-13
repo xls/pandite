@@ -18,6 +18,8 @@ pub enum Command {
     SaveAs,
     /// Copy the current file path.
     CopyPath,
+    /// Copy the image on screen, with its view edits, as pixels.
+    CopyImage,
     /// Undo the last view edit.
     Undo,
     /// Rotate 90 degrees counterclockwise.
@@ -66,8 +68,8 @@ pub enum Command {
     ContextMenu,
     /// Show the keyboard shortcut overlay.
     Help,
-    /// Escape: cancel loading, close the topmost menu, dialog or mode, or
-    /// leave full screen.
+    /// Escape: close the topmost menu, overlay or dialog, or quit when
+    /// none is open.
     Cancel,
     /// Close the application.
     Quit,
@@ -85,9 +87,10 @@ pub enum Command {
 
 impl Command {
     /// Every command, in the order the shortcut overlay lists them.
-    pub const ALL: [Command; 34] = [
+    pub const ALL: [Command; 35] = [
         Command::Open,
         Command::SaveAs,
+        Command::CopyImage,
         Command::CopyPath,
         Command::CopyText,
         Command::SelectAllText,
@@ -128,6 +131,7 @@ impl Command {
             Command::Open => "Open...",
             Command::SaveAs => "Save as...",
             Command::CopyPath => "Copy file path",
+            Command::CopyImage => "Copy image",
             Command::Undo => "Undo",
             Command::RotateLeft => "Rotate left",
             Command::RotateRight => "Rotate right",
@@ -152,7 +156,7 @@ impl Command {
             Command::Fullscreen => "Full screen",
             Command::ContextMenu => "Context menu",
             Command::Help => "Keyboard shortcuts",
-            Command::Cancel => "Cancel or leave full screen",
+            Command::Cancel => "Close dialog or quit",
             Command::Quit => "Quit",
             Command::CropApply => "Apply crop",
             Command::CropSelectAll => "Select whole image",
@@ -196,6 +200,7 @@ impl Command {
             self,
             Command::SaveAs
                 | Command::CopyPath
+                | Command::CopyImage
                 | Command::Undo
                 | Command::RotateLeft
                 | Command::RotateRight
@@ -342,15 +347,18 @@ const CTRL_SHIFT: Modifiers = Modifiers::CTRL_SHIFT;
 /// The global keyboard table. The first binding of a command is the one
 /// shown in tooltips and menus. Dialogs and text fields handle their own
 /// keys (Enter, Escape, Tab, editing keys) before this table is consulted.
-/// Ctrl+C is listed for both copy commands: [`command_for_key`] returns
-/// [`Command::CopyPath`], and the interface copies the selected text
-/// instead while a text selection exists.
+/// Ctrl+C is listed for both the image and the text copy:
+/// [`command_for_key`] returns [`Command::CopyImage`], and the interface
+/// copies the selected text instead while a text selection exists.
+/// Ctrl+Shift+C copies the file path. Escape never leaves full screen or
+/// a mode by itself: it closes the topmost dialog, or quits.
 pub const SHORTCUTS: &[Shortcut] = &[
     Shortcut::new(Key::O, CTRL, Command::Open),
     Shortcut::new(Key::S, CTRL_SHIFT, Command::SaveAs),
     Shortcut::new(Key::S, CTRL, Command::SaveAs),
-    Shortcut::new(Key::C, CTRL, Command::CopyPath),
+    Shortcut::new(Key::C, CTRL, Command::CopyImage),
     Shortcut::new(Key::C, CTRL, Command::CopyText),
+    Shortcut::new(Key::C, CTRL_SHIFT, Command::CopyPath),
     Shortcut::new(Key::A, CTRL, Command::SelectAllText),
     Shortcut::new(Key::Z, CTRL, Command::Undo),
     Shortcut::new(Key::R, SHIFT, Command::RotateLeft),
@@ -392,12 +400,12 @@ pub const SHORTCUTS: &[Shortcut] = &[
     Shortcut::new(Key::W, CTRL, Command::Quit),
     Shortcut::new(Key::Enter, N, Command::CropApply),
     Shortcut::new(Key::A, CTRL, Command::CropSelectAll),
-    Shortcut::new(Key::Escape, N, Command::CropCancel),
+    Shortcut::new(Key::C, N, Command::CropCancel),
 ];
 
 /// The command a key press runs in the given mode, if any. In crop mode
-/// crop bindings win (Enter applies, Escape cancels); outside crop mode
-/// they are skipped.
+/// crop bindings win (Enter applies, C cancels); outside crop mode they
+/// are skipped.
 pub fn command_for_key(key: Key, mods: Modifiers, cropping: bool) -> Option<Command> {
     let mut found = None;
     for s in SHORTCUTS.iter().filter(|s| s.matches(key, mods)) {
@@ -441,17 +449,25 @@ mod tests {
             command_for_key(Key::Enter, Modifiers::NONE, true),
             Some(Command::CropApply)
         );
+        // C starts a crop and, in crop mode, cancels it. Escape is the
+        // same command in every mode: close a dialog, or quit.
         assert_eq!(
-            command_for_key(Key::Escape, Modifiers::NONE, true),
+            command_for_key(Key::C, Modifiers::NONE, false),
+            Some(Command::Crop)
+        );
+        assert_eq!(
+            command_for_key(Key::C, Modifiers::NONE, true),
             Some(Command::CropCancel)
         );
-        assert_eq!(
-            command_for_key(Key::Escape, Modifiers::NONE, false),
-            Some(Command::Cancel)
-        );
+        for cropping in [false, true] {
+            assert_eq!(
+                command_for_key(Key::Escape, Modifiers::NONE, cropping),
+                Some(Command::Cancel)
+            );
+        }
         // Ctrl+A selects text outside crop mode and the crop inside it;
-        // Ctrl+C resolves to the path copy, which a text selection
-        // overrides in the interface.
+        // Ctrl+C resolves to the image copy, which a text selection
+        // overrides in the interface; Ctrl+Shift+C copies the path.
         assert_eq!(
             command_for_key(Key::A, Modifiers::CTRL, false),
             Some(Command::SelectAllText)
@@ -462,11 +478,23 @@ mod tests {
         );
         assert_eq!(
             command_for_key(Key::C, Modifiers::CTRL, false),
+            Some(Command::CopyImage)
+        );
+        assert_eq!(
+            command_for_key(Key::C, Modifiers::CTRL_SHIFT, false),
             Some(Command::CopyPath)
         );
         assert_eq!(
             Command::CopyText.shortcut_label().as_deref(),
             Some("Ctrl+C")
+        );
+        assert_eq!(
+            Command::CopyImage.shortcut_label().as_deref(),
+            Some("Ctrl+C")
+        );
+        assert_eq!(
+            Command::CopyPath.tooltip(),
+            "Copy file path  (Ctrl+Shift+C)"
         );
     }
 

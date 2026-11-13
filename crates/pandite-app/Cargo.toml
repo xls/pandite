@@ -30,11 +30,16 @@ arboard = { version = "3.7", default-features = false }
 # Linux needs window system backends for winit, a dialog backend for rfd
 # and the Wayland clipboard protocol for arboard (X11 is its fallback). The
 # rfd portal backend talks D-Bus over a Unix socket with its own small
-# client and pulls in no async runtime; it falls back to zenity.
+# client and pulls in no async runtime; it falls back to zenity. Outside
+# Windows, images reach the clipboard through arboard ("image-data");
+# Windows uses its own clipboard functions (src/shell/native.rs).
 [target.'cfg(all(unix, not(target_vendor = "apple")))'.dependencies]
 winit = { version = "0.30.13", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen", "wayland-csd-adwaita"] }
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
-arboard = { version = "3.7", default-features = false, features = ["wayland-data-control"] }
+arboard = { version = "3.7", default-features = false, features = ["wayland-data-control", "image-data"] }
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+arboard = { version = "3.7", default-features = false, features = ["image-data"] }
 
 [lints]
 workspace = true

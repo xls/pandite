@@ -1,7 +1,7 @@
 //! Gate G3: selecting and copying recognized text. A drag that starts on a
 //! word selects words in reading order, a drag off text pans, Ctrl+A and
 //! Ctrl+C select and copy with line breaks, highlights follow every view
-//! transform, and Escape clears a selection before anything else.
+//! transform, and Escape quits even while text is selected.
 
 mod support;
 
@@ -324,10 +324,10 @@ fn select_all_and_copy_text() {
     let ctx = fit_ctx(&l);
     let mut ui = Ui::new();
     move_to(&mut ui, &ctx, Point::new(600.0, 400.0));
-    // Nothing selected: Ctrl+C keeps copying the file path.
+    // Nothing selected: Ctrl+C copies the image.
     assert_eq!(
         key(&mut ui, &ctx, Key::C, Modifiers::CTRL),
-        vec![Action::CopyPath]
+        vec![Action::CopyImage]
     );
     // Ctrl+A selects every word, Ctrl+C copies them with line breaks.
     assert!(key(&mut ui, &ctx, Key::A, Modifiers::CTRL).is_empty());
@@ -350,7 +350,7 @@ fn select_all_and_copy_text() {
         vec![Action::CopyText("gamma\ndelta epsilon".into())]
     );
 
-    // The context menu offers both, next to the path copy.
+    // The context menu offers both, next to the image and path copies.
     let p = word_center(&ctx, 0);
     press(&mut ui, &ctx, p, PointerButton::Right);
     release(&mut ui, &ctx, p, PointerButton::Right);
@@ -377,7 +377,7 @@ fn select_all_and_copy_text() {
     assert!(key(&mut ui, &plain, Key::A, Modifiers::CTRL).is_empty());
     assert_eq!(
         key(&mut ui, &plain, Key::C, Modifiers::CTRL),
-        vec![Action::CopyPath]
+        vec![Action::CopyImage]
     );
     press(&mut ui, &plain, p, PointerButton::Right);
     release(&mut ui, &plain, p, PointerButton::Right);
@@ -535,7 +535,7 @@ fn selection_follows_view_transform() {
 }
 
 #[test]
-fn escape_clears_text_selection() {
+fn escape_quits_with_text_selection() {
     let l = layout();
     let mut ctx = fit_ctx(&l);
     ctx.fullscreen = true;
@@ -550,44 +550,86 @@ fn escape_clears_text_selection() {
     let mut ui = Ui::new();
     key(&mut ui, &ctx, Key::A, Modifiers::CTRL);
     assert!(ui.selected_text(&ctx).is_some());
-    // The first Escape only clears the selection.
-    assert!(press_key(&mut ui, &ctx, Key::Escape).is_empty());
-    assert_eq!(ui.selected_text(&ctx), None);
-    assert!(highlights(&frame(&mut ui, &ctx)).is_empty());
-    // The next one has its usual meaning: cancel the load.
-    assert_eq!(
-        press_key(&mut ui, &ctx, Key::Escape),
-        vec![Action::CancelLoad]
-    );
-
-    // Without a load, Escape leaves full screen once the selection is gone.
+    // Escape quits at once: it does not clear the selection first, cancel
+    // the load or leave full screen.
+    assert_eq!(press_key(&mut ui, &ctx, Key::Escape), vec![Action::Quit]);
+    // The same in a window without a load.
     ctx.loading = None;
-    key(&mut ui, &ctx, Key::A, Modifiers::CTRL);
-    assert!(press_key(&mut ui, &ctx, Key::Escape).is_empty());
-    assert_eq!(
-        press_key(&mut ui, &ctx, Key::Escape),
-        vec![Action::ToggleFullscreen]
-    );
+    ctx.fullscreen = false;
+    assert_eq!(press_key(&mut ui, &ctx, Key::Escape), vec![Action::Quit]);
 
-    // Escape during a text drag ends the drag and the selection; the
-    // release that follows does nothing.
+    // Escape during a text drag quits as well.
     let a = word_center(&ctx, 0);
     let b = word_center(&ctx, 2);
     move_to(&mut ui, &ctx, a);
     press(&mut ui, &ctx, a, PointerButton::Left);
     move_to(&mut ui, &ctx, b);
     assert_eq!(ui.selected_text(&ctx).as_deref(), Some("alpha beta gamma"));
-    assert!(press_key(&mut ui, &ctx, Key::Escape).is_empty());
-    assert_eq!(ui.selected_text(&ctx), None);
-    assert!(release(&mut ui, &ctx, b, PointerButton::Left).is_empty());
-    assert_eq!(ui.selected_text(&ctx), None);
+    assert_eq!(press_key(&mut ui, &ctx, Key::Escape), vec![Action::Quit]);
+    release(&mut ui, &ctx, b, PointerButton::Left);
 
-    // An open menu takes Escape first; the selection stays.
+    // An open menu takes Escape first and the selection stays; the next
+    // Escape quits.
     key(&mut ui, &ctx, Key::A, Modifiers::CTRL);
     press(&mut ui, &ctx, a, PointerButton::Right);
     release(&mut ui, &ctx, a, PointerButton::Right);
     assert!(press_key(&mut ui, &ctx, Key::Escape).is_empty());
     assert_eq!(ui.selected_text(&ctx).as_deref(), Some(ALL_TEXT));
-    assert!(press_key(&mut ui, &ctx, Key::Escape).is_empty());
+    assert_eq!(press_key(&mut ui, &ctx, Key::Escape), vec![Action::Quit]);
+    // Ctrl+C still copies the selected text, not the image.
+    assert_eq!(
+        key(&mut ui, &ctx, Key::C, Modifiers::CTRL),
+        vec![Action::CopyText(ALL_TEXT.into())]
+    );
+}
+
+#[test]
+fn ctrl_c_copies_selected_text() {
+    let l = layout();
+    let ctx = fit_ctx(&l);
+    let mut ui = Ui::new();
+    // Text is there but nothing is selected: Ctrl+C copies the image.
+    assert_eq!(
+        key(&mut ui, &ctx, Key::C, Modifiers::CTRL),
+        vec![Action::CopyImage]
+    );
+    // A selection makes Ctrl+C copy its words instead, and a toast says
+    // which copy it was.
+    drag(
+        &mut ui,
+        &ctx,
+        word_center(&ctx, 0),
+        word_center(&ctx, 1),
+        PointerButton::Left,
+    );
+    assert_eq!(
+        key(&mut ui, &ctx, Key::C, Modifiers::CTRL),
+        vec![Action::CopyText("alpha beta".into())]
+    );
+    assert!(has_text(&frame(&mut ui, &ctx), "Text copied"));
+    // A held key copies once.
+    let held = ui.handle_event(
+        pandite_ui::InputEvent::KeyDown {
+            key: Key::C,
+            mods: Modifiers::CTRL,
+            repeat: true,
+        },
+        &ctx,
+    );
+    assert!(held.is_empty());
+    // Ctrl+Shift+C copies the file path, with or without a selection, and
+    // keeps the selection.
+    assert_eq!(
+        key(&mut ui, &ctx, Key::C, Modifiers::CTRL_SHIFT),
+        vec![Action::CopyPath]
+    );
+    assert_eq!(ui.selected_text(&ctx).as_deref(), Some("alpha beta"));
+    // A click off the text drops the selection: Ctrl+C copies the image
+    // again.
+    click(&mut ui, &ctx, on_screen(&ctx, Point::new(1500.0, 800.0)));
     assert_eq!(ui.selected_text(&ctx), None);
+    assert_eq!(
+        key(&mut ui, &ctx, Key::C, Modifiers::CTRL),
+        vec![Action::CopyImage]
+    );
 }

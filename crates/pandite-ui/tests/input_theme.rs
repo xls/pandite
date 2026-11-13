@@ -6,8 +6,8 @@ mod support;
 use pandite_core::{DisplayMode, DrawCmd, Point, Rect, Size};
 use pandite_ui::{
     contrast, Action, ActionKind, Command, ConfirmRequest, CursorShape, Icon, InputEvent, Key,
-    Loading, Modifiers, PointerButton, Progress, Theme, ThemeKind, Ui, UiContext, UiMode,
-    WheelDelta, SHORTCUTS, ZOOM_STEP,
+    Modifiers, PointerButton, Progress, Theme, ThemeKind, Ui, UiContext, UiMode, WheelDelta,
+    SHORTCUTS, ZOOM_STEP,
 };
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -58,7 +58,7 @@ fn shortcuts_cover_every_action() {
     key(&mut ui, &ctx, Key::A, Modifiers::CTRL);
     note(&press_key(&mut ui, &ctx, Key::Enter), "C, Ctrl+A, Enter");
     press_key(&mut ui, &ctx, Key::C);
-    note(&press_key(&mut ui, &ctx, Key::Escape), "C, Esc");
+    note(&press_key(&mut ui, &ctx, Key::C), "C, C");
 
     // Resize dialog keys, including clipboard keys in its field.
     let mut ui = Ui::new();
@@ -111,21 +111,6 @@ fn shortcuts_cover_every_action() {
     );
     note(&out, "Enter in a confirm dialog");
 
-    // Escape while a file loads.
-    let mut loading = ctx;
-    loading.loading = Some(Loading {
-        file_name: "big.tif",
-        elapsed: ms(500),
-        progress: None,
-        cloud: false,
-        over_image: true,
-    });
-    let mut ui = Ui::new();
-    note(
-        &press_key(&mut ui, &loading, Key::Escape),
-        "Esc while loading",
-    );
-
     // Zoom at a point from the context menu.
     let mut ui = Ui::new();
     let p = Point::new(500.0, 300.0);
@@ -162,18 +147,16 @@ fn f11_maps_to_fullscreen() {
         key(&mut ui, &ctx, Key::Enter, Modifiers::ALT),
         vec![Action::ToggleFullscreen]
     );
-    // Escape leaves full screen, and does nothing in a window.
+    // F11 leaves full screen again. Escape does not: it quits, in full
+    // screen as in a window.
     let mut full = ctx;
     full.fullscreen = true;
     assert_eq!(
         press_key(&mut ui, &full, Key::F11),
         vec![Action::ToggleFullscreen]
     );
-    assert_eq!(
-        press_key(&mut ui, &full, Key::Escape),
-        vec![Action::ToggleFullscreen]
-    );
-    assert!(press_key(&mut ui, &ctx, Key::Escape).is_empty());
+    assert_eq!(press_key(&mut ui, &full, Key::Escape), vec![Action::Quit]);
+    assert_eq!(press_key(&mut ui, &ctx, Key::Escape), vec![Action::Quit]);
     // F11 works inside a dialog and without an image; a held key does not
     // repeat it.
     key(&mut ui, &ctx, Key::R, Modifiers::CTRL);
@@ -199,7 +182,7 @@ fn f11_maps_to_fullscreen() {
     assert!(held.is_empty());
 
     // The other keys the gate names.
-    let table: [(Key, Modifiers, Action); 9] = [
+    let table: [(Key, Modifiers, Action); 10] = [
         (Key::Right, Modifiers::NONE, Action::Next),
         (Key::PageDown, Modifiers::NONE, Action::Next),
         (Key::Left, Modifiers::NONE, Action::Previous),
@@ -207,7 +190,8 @@ fn f11_maps_to_fullscreen() {
         (Key::Plus, Modifiers::SHIFT, Action::ZoomIn),
         (Key::Equals, Modifiers::NONE, Action::ZoomIn),
         (Key::Minus, Modifiers::NONE, Action::ZoomOut),
-        (Key::C, Modifiers::CTRL, Action::CopyPath),
+        (Key::C, Modifiers::CTRL, Action::CopyImage),
+        (Key::C, Modifiers::CTRL_SHIFT, Action::CopyPath),
         (Key::S, Modifiers::CTRL_SHIFT, Action::SaveAs),
     ];
     for (k, mods, expected) in table {
@@ -345,6 +329,7 @@ fn context_menu_lists_commands() {
     for cmd in [
         Command::Open,
         Command::SaveAs,
+        Command::CopyImage,
         Command::CopyPath,
         Command::Undo,
         Command::RotateLeft,
@@ -370,7 +355,14 @@ fn context_menu_lists_commands() {
             "{cmd:?} missing from the context menu"
         );
     }
-    for keys in ["Ctrl+O", "Ctrl+Shift+S", "Ctrl+C", "F11", "Shift+R"] {
+    for keys in [
+        "Ctrl+O",
+        "Ctrl+Shift+S",
+        "Ctrl+C",
+        "Ctrl+Shift+C",
+        "F11",
+        "Shift+R",
+    ] {
         assert!(
             text_rect_exact(&list, keys).is_some(),
             "shortcut {keys} shown"

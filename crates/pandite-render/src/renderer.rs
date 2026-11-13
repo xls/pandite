@@ -284,8 +284,15 @@ impl Renderer {
             + Sync
             + 'static,
     {
-        let (instance, surface) = gpu::window_instance(window.clone(), options)?;
-        let candidates = gpu::candidates(&instance, Some(&surface), options);
+        let mut attempt = 0;
+        let (instance, surface, candidates) = loop {
+            let (instance, surface) = gpu::window_instance(window.clone(), options)?;
+            let candidates = gpu::candidates(&instance, Some(&surface), options);
+            if !gpu::wait_for_discrete(options, &candidates, attempt) {
+                break (instance, surface, candidates);
+            }
+            attempt += 1;
+        };
         let mut surface = Some(surface);
         let mut failures = Vec::new();
         for adapter in candidates {
@@ -579,6 +586,12 @@ impl Renderer {
     /// Natural size of the content shown, for [`ViewState`] math.
     pub fn content_size(&self) -> Option<Size> {
         self.content.as_ref().map(|c| c.renderer.size())
+    }
+
+    /// The frame of the content on screen: its index among the frames of an
+    /// animation, 0 for a still. `None` without content.
+    pub fn content_frame(&self) -> Option<usize> {
+        self.content.as_ref().map(|c| c.renderer.frame_index())
     }
 
     /// Advance animated content by `dt` (the real time since the previous

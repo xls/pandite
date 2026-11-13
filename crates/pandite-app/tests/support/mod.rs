@@ -10,7 +10,9 @@
 
 use pandite_app::app::{App, Handled, Platform, Startup, WindowState};
 use pandite_app::disk::{Disk, StdDisk};
-use pandite_app::platform::{Clipboard, DialogKind, DialogReply, Dialogs, WindowControl};
+use pandite_app::platform::{
+    Clipboard, DialogKind, DialogReply, Dialogs, ImageWriter, WindowControl,
+};
 use pandite_app::settings::Settings;
 use pandite_core::{
     CancelToken, Content, ContentKind, DecodeOptions, DecoderProvider, DrawCmd, DrawList,
@@ -418,16 +420,111 @@ impl WindowControl for FakeWindow {
     }
 }
 
+/// The text and image clipboard of the tests. Nothing reaches the real
+/// system clipboard.
 #[derive(Clone, Default)]
-pub struct FakeClipboard(pub Arc<Mutex<Option<String>>>);
+pub struct FakeClipboard {
+    pub text: Arc<Mutex<Option<String>>>,
+    pub images: Arc<ImageBoard>,
+}
 
 impl Clipboard for FakeClipboard {
     fn set_text(&mut self, text: &str) -> Result<(), String> {
-        *lock(&self.0) = Some(text.to_string());
+        *lock(&self.text) = Some(text.to_string());
         Ok(())
     }
     fn get_text(&mut self) -> Result<String, String> {
-        lock(&self.0).clone().ok_or_else(|| "empty".into())
+        lock(&self.text).clone().ok_or_else(|| "empty".into())
+    }
+    fn image_writer(&mut self) -> Box<dyn ImageWriter> {
+        lock(&self.images.state).writers += 1;
+        Box::new(FakeImageWriter(Arc::clone(&self.images)))
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct ImageState {
+    /// Writers the core asked for.
+    pub writers: usize,
+    /// The thread of every `set_image` call, in order.
+    pub threads: Vec<ThreadId>,
+    /// Images that reached the clipboard.
+    pub images: Vec<ImageBuf>,
+    /// Calls that ended cancelled.
+    pub cancelled: usize,
+    /// While set, `set_image` blocks like a hand-over stuck on another
+    /// program, ignoring cancellation, until released.
+    pub hold: bool,
+}
+
+/// The image side of [`FakeClipboard`]: a record of every call with its
+/// thread and a latch that holds calls.
+#[derive(Default)]
+pub struct ImageBoard {
+    pub state: Mutex<ImageState>,
+    cv: Condvar,
+}
+
+impl ImageBoard {
+    pub fn hold(&self) {
+        lock(&self.state).hold = true;
+    }
+
+    pub fn release(&self) {
+        lock(&self.state).hold = false;
+        self.cv.notify_all();
+    }
+
+    /// The images on the clipboard so far, oldest first.
+    pub fn images(&self) -> Vec<ImageBuf> {
+        lock(&self.state).images.clone()
+    }
+
+    pub fn threads(&self) -> Vec<ThreadId> {
+        lock(&self.state).threads.clone()
+    }
+
+    pub fn writers(&self) -> usize {
+        lock(&self.state).writers
+    }
+
+    /// Wait until `n` calls started.
+    pub fn wait_started(&self, n: usize) -> bool {
+        let deadline = Instant::now() + WAIT;
+        let mut g = lock(&self.state);
+        while g.threads.len() < n {
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            g = self
+                .cv
+                .wait_timeout(g, deadline - now)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+        true
+    }
+}
+
+struct FakeImageWriter(Arc<ImageBoard>);
+
+impl ImageWriter for FakeImageWriter {
+    fn set_image(self: Box<Self>, image: &ImageBuf, cancel: &CancelToken) -> CoreResult<()> {
+        let board = &self.0;
+        let mut g = lock(&board.state);
+        g.threads.push(thread::current().id());
+        board.cv.notify_all();
+        while g.hold {
+            g = board.cv.wait(g).unwrap_or_else(|e| e.into_inner());
+        }
+        if cancel.is_cancelled() {
+            g.cancelled += 1;
+            return Err(Error::Cancelled);
+        }
+        g.images.push(image.clone());
+        board.cv.notify_all();
+        Ok(())
     }
 }
 
@@ -533,6 +630,8 @@ pub struct Harness {
     pub disk: Arc<TestDisk>,
     pub window: Arc<Mutex<WindowLog>>,
     pub clipboard: Arc<Mutex<Option<String>>>,
+    /// The image side of the fake clipboard.
+    pub images: Arc<ImageBoard>,
     pub dialogs: Arc<Mutex<DialogLog>>,
     pub registry: Arc<Registry>,
     pub now: Duration,
@@ -587,7 +686,8 @@ impl Harness {
             app: Some(app),
             disk,
             window,
-            clipboard: clipboard.0,
+            clipboard: clipboard.text,
+            images: clipboard.images,
             dialogs: dialogs.0,
             registry,
             now: Duration::from_millis(1),
@@ -763,6 +863,7 @@ impl Harness {
 impl Drop for Harness {
     fn drop(&mut self) {
         self.disk.release_all();
+        self.images.release();
         if let Some(app) = self.app.take() {
             let _ = app.shutdown(Duration::from_millis(500));
         }

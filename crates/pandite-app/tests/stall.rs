@@ -1,7 +1,8 @@
 //! The app never freezes on a stalled file: the window and loading screen
 //! come first, the event loop keeps turning while a read hangs forever,
-//! Escape and quitting never wait for it, and no file system call runs on
-//! the event-loop thread.
+//! Escape and quitting never wait for it (nor for a decode, a clipboard
+//! copy or text recognition), and no file system call runs on the
+//! event-loop thread.
 //!
 //! Stalls are latches in the test file system that only teardown opens.
 //! Every "returns at once" claim is guarded by a watchdog that aborts the
@@ -9,13 +10,17 @@
 
 mod support;
 
-use pandite_ui::{Action, BulkJob, BulkSource, InputEvent, Key, Modifiers, OverwritePolicy};
+use pandite_core::{DecoderProvider, Point};
+use pandite_ui::{
+    Action, BulkJob, BulkSource, InputEvent, Key, Modifiers, OverwritePolicy, PointerButton, UiMode,
+};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use support::*;
 
-const SPLASH_HINT: &str = "Press Esc to cancel";
+const SPLASH_HINT: &str = "Press Esc to quit";
 
 #[test]
 fn window_appears_before_file_is_read() {
@@ -139,7 +144,7 @@ fn escape_while_loading_first_image_quits_at_once() {
 }
 
 #[test]
-fn escape_while_loading_later_image_keeps_previous() {
+fn escape_while_loading_later_image_quits() {
     let (_dir, paths) = folder("esclater", &["a.png", "b.png", "c.png"], 16, 16);
     let disk = TestDisk::new();
     disk.stall_read("b.png");
@@ -168,27 +173,198 @@ fn escape_while_loading_later_image_keeps_previous() {
         "a stays on screen"
     );
     h.advance(400);
+    let list = h.frame();
     assert!(
-        has_text(&h.frame(), "b.png"),
+        has_text(&list, "b.png"),
         "the small loading overlay names b.png"
     );
+    assert!(has_text(&list, SPLASH_HINT), "and says that Esc quits");
 
+    // Escape quits at once: no step back to a.png first.
     {
         let _guard = Watchdog::arm("Escape", QUICK);
         h.key(Key::Escape, Modifiers::NONE);
     }
-    assert!(!h.app().exit_requested());
-    assert_eq!(h.app().loading_path(), None);
+    assert!(h.app().exit_requested());
     assert_eq!(h.app().shown_path(), Some(paths[0].as_path()));
-    assert_eq!(h.app().target_path(), Some(paths[0].as_path()));
-    assert_eq!(h.app().index(), Some(0));
-    assert_eq!(h.app().library().current(), Some(0));
-    assert_eq!(h.app().title(), "a.png - pandite");
-    assert!(!has_text(&h.frame(), SPLASH_HINT));
-    // The library still serves other images while that read hangs.
-    h.act(Action::GoTo(2));
-    assert!(h.wait_shown(&paths[2]));
-    assert_eq!(h.disk.returned("b.png"), 0);
+    let app = h.app.take().unwrap();
+    let t = Instant::now();
+    {
+        let _guard = Watchdog::arm("shutdown", QUICK);
+        let _ = app.shutdown(Duration::from_secs(2));
+    }
+    assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+    assert_eq!(h.disk.returned("b.png"), 0, "nothing waited for the read");
+}
+
+#[test]
+fn escape_quits_during_stalled_load() {
+    // Everything that can hang at once: text recognition held on the
+    // first image, an image copy stuck in its clipboard hand-over, a full
+    // decode held on the second image and a read that never returns on
+    // the third.
+    let dir = TempDir::new("escstall");
+    let a = dir.join("a.png");
+    write_png(&a, &numbered(6, 5));
+    let b = dir.join("b.stg");
+    write_staged(&b, 2400, 1600);
+    let c = dir.join("c.png");
+    write_png(&c, &numbered(4, 4));
+    let fake = FakeText::new(&[&[("word", [0.1, 0.1, 0.5, 0.3])]]);
+    fake.hold();
+    let dec = GatedDecoder::new();
+    dec.hold_full("b.stg");
+    let disk = TestDisk::new();
+    disk.stall_read("c.png");
+    let mut h = Harness::with_disk(
+        Config {
+            open: Some(a.clone()),
+            registry: Some(fake.registry(&[Arc::clone(&dec) as Arc<dyn DecoderProvider>])),
+            ..Config::default()
+        },
+        disk,
+    );
+    h.start();
+    assert!(h.wait_shown(&a));
+    assert!(h.wait_until(|app| app.count() == 3));
+    h.frame();
+    h.advance(300);
+    h.frame();
+    assert!(fake.wait_started(1), "recognition runs and hangs");
+    h.images.hold();
+    h.key(Key::C, Modifiers::CTRL);
+    assert!(h.images.wait_started(1), "the copy hangs in its hand-over");
+    h.key(Key::Right, Modifiers::NONE);
+    assert!(dec.wait_started("b.stg", true), "the full decode hangs");
+    h.key(Key::Right, Modifiers::NONE);
+    assert!(h.disk.wait_read_started("c.png"), "the read hangs");
+    h.pump();
+    assert_eq!(h.app().loading_path(), Some(c.as_path()));
+
+    {
+        let _guard = Watchdog::arm("Escape with everything stuck", QUICK);
+        h.key(Key::Escape, Modifiers::NONE);
+    }
+    assert!(h.app().exit_requested(), "Escape quits at once");
+    let app = h.app.take().unwrap();
+    let t = Instant::now();
+    {
+        let _guard = Watchdog::arm("shutdown with everything stuck", QUICK);
+        let _ = app.shutdown(Duration::from_secs(2));
+    }
+    assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+    assert_eq!(h.disk.returned("c.png"), 0, "the read was not joined");
+    assert_eq!(dec.full_finished("b.stg"), 0, "the decode was not joined");
+    assert!(h.images.images().is_empty(), "the copy was not joined");
+    dec.release_all();
+    fake.release();
+}
+
+#[test]
+fn escape_quits_app() {
+    let (_dir, paths) = folder("escquit", &["a.png", "b.png"], 64, 48);
+    let cfg = TempDir::new("escquitcfg");
+    let start = |settings_path: Option<PathBuf>| {
+        let mut h = Harness::new(Config {
+            open: Some(paths[0].clone()),
+            settings_path,
+            ..Config::default()
+        });
+        h.start();
+        assert!(h.wait_shown(&paths[0]));
+        h.frame();
+        h
+    };
+
+    // A plain window: Escape takes the same way out as Ctrl+Q, settings
+    // included.
+    let mut h = start(Some(cfg.join("settings.ini")));
+    h.key(Key::Escape, Modifiers::NONE);
+    assert!(h.app().exit_requested());
+    let app = h.app.take().unwrap();
+    assert_eq!(
+        app.shutdown(Duration::from_secs(5)).settings_saved,
+        Some(true)
+    );
+
+    // Full screen: no step back to a window first.
+    let mut h = start(None);
+    h.key(Key::F11, Modifiers::NONE);
+    h.key(Key::Escape, Modifiers::NONE);
+    assert!(h.app().exit_requested());
+    assert!(h.app().fullscreen());
+
+    // Crop mode, in the middle of a drag.
+    let mut h = start(None);
+    h.key(Key::C, Modifiers::NONE);
+    assert_eq!(h.app().ui().mode(), UiMode::Crop);
+    let p = Point::new(400.0, 300.0);
+    h.input(InputEvent::PointerDown {
+        pos: p,
+        button: PointerButton::Left,
+    });
+    h.input(InputEvent::PointerMove {
+        pos: Point::new(600.0, 500.0),
+    });
+    h.key(Key::Escape, Modifiers::NONE);
+    assert!(h.app().exit_requested());
+
+    // Unsaved edits: Escape quits like Ctrl+Q, which asks nothing either.
+    let mut h = start(None);
+    h.key(Key::R, Modifiers::NONE);
+    assert!(h.app().is_edited());
+    h.key(Key::Escape, Modifiers::NONE);
+    assert!(h.app().exit_requested());
+    assert_eq!(h.app().ui().mode(), UiMode::Normal, "no question");
+
+    // A dialog closes first; the next Escape quits.
+    let mut h = start(None);
+    h.key(Key::R, Modifiers::CTRL);
+    assert_eq!(h.app().ui().mode(), UiMode::Modal);
+    h.key(Key::Escape, Modifiers::NONE);
+    assert!(!h.app().exit_requested());
+    assert_eq!(h.app().ui().mode(), UiMode::Normal);
+    h.key(Key::Escape, Modifiers::NONE);
+    assert!(h.app().exit_requested());
+
+    // The question before Save As replaces the original: Escape answers
+    // no and keeps the app open.
+    let mut h = start(None);
+    h.key(Key::R, Modifiers::NONE);
+    assert!(h.wait_idle());
+    h.answer_dialog(vec![paths[0].clone()]);
+    h.act(Action::SaveAs);
+    h.pump();
+    assert_eq!(h.app().ui().mode(), UiMode::Modal);
+    h.key(Key::Escape, Modifiers::NONE);
+    assert!(!h.app().exit_requested());
+    assert!(h.app().is_edited(), "not saved");
+    h.key(Key::Escape, Modifiers::NONE);
+    assert!(h.app().exit_requested());
+
+    // Selected recognized text: Ctrl+A selects it, Escape still quits.
+    let fake = FakeText::new(&[&[("word", [0.1, 0.1, 0.5, 0.3])]]);
+    let mut h = Harness::new(Config {
+        open: Some(paths[1].clone()),
+        registry: Some(fake.registry(&[])),
+        ..Config::default()
+    });
+    h.start();
+    assert!(h.wait_shown(&paths[1]));
+    h.frame();
+    h.advance(300);
+    h.frame();
+    assert!(h.wait_until(|app| app.shown_text().is_some()));
+    h.frame();
+    h.key(Key::A, Modifiers::CTRL);
+    h.key(Key::C, Modifiers::CTRL);
+    assert_eq!(
+        h.clipboard().as_deref(),
+        Some("word"),
+        "the text is selected"
+    );
+    h.key(Key::Escape, Modifiers::NONE);
+    assert!(h.app().exit_requested());
 }
 
 #[test]

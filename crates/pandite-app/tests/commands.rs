@@ -124,7 +124,7 @@ fn copy_path_puts_absolute_path_on_clipboard() {
     let path = parsed.path.unwrap();
     assert!(path.is_absolute());
     let mut h = open(&path);
-    h.key(Key::C, Modifiers::CTRL);
+    h.key(Key::C, Modifiers::CTRL_SHIFT);
     let copied = h.clipboard().expect("clipboard has text");
     assert!(PathBuf::from(&copied).is_absolute(), "{copied}");
     assert_eq!(PathBuf::from(&copied), a);
@@ -276,14 +276,14 @@ fn f11_toggles_fullscreen_state() {
     assert!(h.app().fullscreen());
     h.key(Key::F11, Modifiers::NONE);
     assert!(!h.app().fullscreen());
-    // Escape leaves full screen.
+    // Escape does not leave full screen: it quits, in full screen too.
     h.key(Key::F11, Modifiers::NONE);
     assert!(h.app().fullscreen());
     assert!(h.app().settings().window.is_none() || h.app().settings().window.unwrap().fullscreen);
     h.key(Key::Escape, Modifiers::NONE);
-    assert!(!h.app().fullscreen());
-    assert_eq!(lock(&h.window).fullscreen, vec![true, false, true, false]);
-    assert!(!h.app().exit_requested());
+    assert!(h.app().exit_requested());
+    assert!(h.app().fullscreen(), "full screen is saved as it was");
+    assert_eq!(lock(&h.window).fullscreen, vec![true, false, true]);
 }
 
 #[test]

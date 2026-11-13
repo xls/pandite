@@ -51,7 +51,7 @@ for (const f of files) {
   const full = [];
   let pixels = 0;
   for (let i = 0; i < runs; i += 1) {
-    const res = spawnSync(exe, ['--smoke', join(folder, f), '--timing'], { encoding: 'utf8', timeout: 120000 });
+    const res = spawnSync(exe, ['--smoke', join(folder, f), '--timing'], { encoding: 'utf8', timeout: 120000, env: { ...process.env, PANDITE_EXPECT_DISCRETE: '1' } });
     const out = `${res.stdout ?? ''}\n${res.stderr ?? ''}`;
     if (res.error || res.status !== 0 || !out.includes('SMOKE OK')) fail(`smoke run failed for ${f}\n${out.slice(-600)}`);
     if (!/gpu [^\n]*discrete/.test(out)) fail(`run for ${f} did not use a discrete GPU`);

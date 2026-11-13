@@ -238,8 +238,7 @@ impl Ui {
         m: &Metrics,
         out: &mut Vec<Action>,
     ) {
-        let modal =
-            self.menu.is_some() || self.help || self.confirm.is_some() || self.dialog.is_some();
+        let modal = self.modal();
         if matches!(button, PointerButton::Back | PointerButton::Forward) {
             // Side buttons act on press and never hold the pointer.
             self.pointer = Some(pos);
@@ -641,21 +640,9 @@ impl Ui {
         m: &Metrics,
         out: &mut Vec<Action>,
     ) {
-        // Escape clears a text selection before any of its other meanings
-        // (cancelling a load, leaving full screen).
-        if key == Key::Escape && !self.modal() && self.selection(ctx).is_some() {
-            if !repeat {
-                self.clear_text_selection();
-            }
-            return;
-        }
-        // Escape while a file loads cancels the load, before anything else.
-        if key == Key::Escape && ctx.loading.is_some() {
-            if !repeat {
-                out.push(Action::CancelLoad);
-            }
-            return;
-        }
+        // Escape closes the topmost menu, overlay or dialog below. With none
+        // open it reaches the shortcut table and quits; a held key never
+        // does, so a long press that closes a dialog stops there.
         if self.menu.is_some() {
             self.menu_key(key, ctx, m, out);
             return;
@@ -728,8 +715,8 @@ impl Ui {
             return;
         };
         // Ctrl+C copies the selected text while there is a selection, and
-        // the file path otherwise.
-        if cmd == Command::CopyPath && self.command_enabled(Command::CopyText, ctx) {
+        // the image otherwise.
+        if cmd == Command::CopyImage && self.command_enabled(Command::CopyText, ctx) {
             cmd = Command::CopyText;
         }
         if repeat && !cmd.repeats() {

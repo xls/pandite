@@ -556,7 +556,7 @@ impl Ui {
             out,
             measure,
             hint_r,
-            "Press Esc to cancel",
+            "Press Esc to quit",
             m.text_small(),
             t.text_dim,
         );
@@ -573,7 +573,7 @@ impl Ui {
     ) {
         let content = self.content_rect(ctx);
         let (title, status) = Self::loading_lines(l);
-        let status = format!("{status} - Press Esc to cancel");
+        let status = format!("{status} - Press Esc to quit");
         let font = m.text();
         let small = m.text_small();
         let max_w = (content.w - 2.0 * m.margin()).max(m.px(60.0));

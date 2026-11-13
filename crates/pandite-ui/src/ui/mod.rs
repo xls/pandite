@@ -903,6 +903,7 @@ impl Ui {
             Command::Open => out.push(Action::Open),
             Command::SaveAs => out.push(Action::SaveAs),
             Command::CopyPath => out.push(Action::CopyPath),
+            Command::CopyImage => out.push(Action::CopyImage),
             Command::Undo => out.push(Action::Undo),
             Command::RotateLeft => out.push(Action::RotateLeft),
             Command::RotateRight => out.push(Action::RotateRight),
@@ -990,7 +991,7 @@ impl Ui {
             Command::CopyText => {
                 if let Some(text) = self.selected_text(ctx) {
                     out.push(Action::CopyText(text));
-                    // Ctrl+C also copies the file path; say which it was.
+                    // Ctrl+C also copies the image; say which it was.
                     self.toast("Text copied", self.now);
                 }
             }
@@ -1011,14 +1012,11 @@ impl Ui {
         });
     }
 
-    /// Escape: clear the text selection, or close the topmost thing, or
-    /// leave full screen.
+    /// Escape: close the topmost menu, overlay or dialog. With none open
+    /// it quits, whatever else goes on (full screen, crop mode, a text
+    /// selection, a load).
     fn cancel(&mut self, ctx: &UiContext<'_>, out: &mut Vec<Action>) {
-        if !self.modal() && self.selection(ctx).is_some() {
-            self.clear_text_selection();
-        } else if ctx.loading.is_some() {
-            out.push(Action::CancelLoad);
-        } else if self.menu.is_some() {
+        if self.menu.is_some() {
             self.menu = None;
         } else if self.help {
             self.help = false;
@@ -1026,10 +1024,8 @@ impl Ui {
             self.confirm_event(&crate::form::FormEvent::Cancel, ctx, out);
         } else if self.dialog.is_some() {
             self.dialog_event(crate::form::FormEvent::Cancel, ctx, out);
-        } else if self.crop.is_some() {
-            self.finish_crop(None, out);
-        } else if ctx.fullscreen {
-            out.push(Action::ToggleFullscreen);
+        } else {
+            out.push(Action::Quit);
         }
     }
 
@@ -1123,9 +1119,10 @@ impl Ui {
 }
 
 /// The context menu in normal mode. `None` is a separator.
-const CONTEXT_MENU: [Option<Command>; 27] = [
+const CONTEXT_MENU: [Option<Command>; 28] = [
     Some(Command::Open),
     Some(Command::SaveAs),
+    Some(Command::CopyImage),
     Some(Command::CopyPath),
     None,
     Some(Command::Undo),

@@ -183,6 +183,12 @@ pub trait ContentRenderer: Send {
     /// changes (a still, or a finished animation).
     fn update(&mut self, dt: Duration) -> Option<Duration>;
 
+    /// The frame shown now, as an index into the frames of the content (an
+    /// animation). Content without frames reports 0.
+    fn frame_index(&self) -> usize {
+        0
+    }
+
     /// True when [`ContentRenderer::draw`] needs a depth attachment.
     fn uses_depth(&self) -> bool {
         false

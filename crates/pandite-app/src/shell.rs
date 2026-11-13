@@ -163,7 +163,7 @@ pub fn run(cli: Cli) -> i32 {
         // Do not keep the folder of the first image in use.
         let _ = std::env::set_current_dir(std::env::temp_dir());
     }
-    let early_gpu = start_gpu(&proxy, start);
+    let early_gpu = start_gpu(&proxy, start, gpu_options(&settings));
     let mut shell = Shell::new(cli, start, settings, settings_path, proxy);
     shell.early_gpu = early_gpu;
     shell.resident = stays;
@@ -175,13 +175,24 @@ pub fn run(cli: Cli) -> i32 {
     shell.finish()
 }
 
+/// GPU options for this start. A discrete GPU seen at the last start (or
+/// demanded with `PANDITE_EXPECT_DISCRETE=1`, which test runs use because
+/// they read no settings) is waited for briefly when it is not listed.
+fn gpu_options(settings: &Settings) -> GpuOptions {
+    let demanded = std::env::var_os("PANDITE_EXPECT_DISCRETE").is_some_and(|v| v == "1");
+    GpuOptions {
+        expect_discrete: settings.gpu_discrete_seen || demanded,
+        ..GpuOptions::default()
+    }
+}
+
 /// Open the GPU device on a worker while the window is created and shown,
 /// and build the shared pipelines with a tiny offscreen frame. The two
 /// steps take most of the start-up time, so running them in parallel with
 /// the window brings the first frame forward. Only on Windows: a DirectX 12
 /// device can present to any window, and other platforms want surface
 /// work on the main thread. Returns true when the worker started.
-fn start_gpu(proxy: &EventLoopProxy<UserEvent>, start: Instant) -> bool {
+fn start_gpu(proxy: &EventLoopProxy<UserEvent>, start: Instant, options: GpuOptions) -> bool {
     if !cfg!(windows) {
         return false;
     }
@@ -198,7 +209,7 @@ fn start_gpu(proxy: &EventLoopProxy<UserEvent>, start: Instant) -> bool {
     std::thread::Builder::new()
         .name("pandite-gpu-start".into())
         .spawn(move || {
-            let result = Gpu::new(&GpuOptions::default()).inspect(|gpu| {
+            let result = Gpu::new(&options).inspect(|gpu| {
                 mark("GPU device open");
                 if let Ok(mut warm) =
                     Renderer::offscreen(Arc::clone(gpu), 4, 4, RenderSettings::default())
@@ -594,7 +605,7 @@ impl Shell {
             Arc::clone(&window),
             size.width,
             size.height,
-            &GpuOptions::default(),
+            &gpu_options(&self.settings),
             self.render_settings(background),
         )
         .map_err(|e| (format!("no usable GPU: {e}"), EXIT_NO_GPU))?;
@@ -612,6 +623,10 @@ impl Shell {
             renderer.gpu().set_measure_uploads(true);
         }
         self.measurer = Some(renderer.text_measurer());
+        // Remember a discrete GPU, so the next start waits for it when the
+        // system is slow to list it; forget it when it is gone for good.
+        self.settings.gpu_discrete_seen = renderer.gpu().adapter_summary().device_type
+            == pandite_render::wgpu::DeviceType::DiscreteGpu;
         self.renderer = Some(renderer);
         if let Some(smoke) = &mut self.smoke {
             smoke.window_ready();
@@ -682,7 +697,7 @@ impl Shell {
                 Arc::clone(&window),
                 size.width,
                 size.height,
-                &GpuOptions::default(),
+                &gpu_options(&self.settings),
                 settings,
             )
             .map_err(|e| (format!("no usable GPU: {e}"), EXIT_NO_GPU))?,
@@ -928,7 +943,7 @@ impl Shell {
             Arc::clone(&window),
             size.width,
             size.height,
-            &GpuOptions::default(),
+            &gpu_options(&self.settings),
             settings,
         ) {
             Ok(renderer) => {
@@ -973,6 +988,10 @@ impl Shell {
         let advanced = self.anim_deadline.is_some_and(|d| t >= d);
         self.last_frame = Some(t);
         self.anim_deadline = renderer.update(dt).map(|d| t + d);
+        if let Some(frame) = renderer.content_frame() {
+            // An image copy of an animation takes the frame on screen.
+            app.frame_on_screen(self.uploads.shown, frame);
+        }
         app.sync_textures(now, renderer);
         self.list.clear();
         let out = app.frame(now, measurer, &mut self.list);

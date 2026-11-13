@@ -9,8 +9,12 @@
 
 use pandite_core::{EncodeOptions, EncoderProvider, Error, ImageBuf, PixelFormat, Result};
 
-/// Sizes stored in the Windows `.ico` file.
-pub const ICO_SIZES: [u32; 4] = [16, 32, 48, 256];
+/// Sizes stored in the Windows `.ico` file. Sizes below 256 are stored as
+/// 32-bit bitmaps and 256 as PNG, the layout Windows components expect.
+pub const ICO_SIZES: [u32; 8] = [16, 20, 24, 32, 40, 48, 64, 256];
+
+/// Bytes of the BITMAPINFOHEADER that starts an icon bitmap.
+pub const ICO_BITMAP_HEADER: usize = 40;
 
 /// Largest icon side [`render_icon`] accepts.
 pub const MAX_ICON_SIZE: u32 = 4096;
@@ -165,39 +169,114 @@ pub fn encode_png(image: &ImageBuf) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Build a Windows `.ico` file from PNG-compressed images, one per side
-/// length. Sides above 256 are rejected (the format cannot express them).
-pub fn build_ico(images: &[(u32, Vec<u8>)]) -> Result<Vec<u8>> {
+/// Bytes in one row of the 1-bit AND mask of a `width` pixel wide icon
+/// bitmap: rows are padded to 32 bits.
+pub fn ico_mask_stride(width: u32) -> usize {
+    (width as usize).div_ceil(32) * 4
+}
+
+/// Encode a square RGBA8 icon image as a classic Windows icon bitmap: a
+/// BITMAPINFOHEADER with twice the height, 32-bit BGRA rows bottom-up,
+/// then the 1-bit AND mask rows bottom-up (a set bit marks a fully
+/// transparent pixel).
+pub fn encode_ico_bitmap(image: &ImageBuf) -> Result<Vec<u8>> {
+    let (w, h) = (image.width(), image.height());
+    if image.format() != PixelFormat::Rgba8 || w > 256 || h > 256 {
+        return Err(Error::Invalid(format!(
+            "an icon bitmap needs RGBA8 pixels up to 256 x 256, not {w} x {h} {:?}",
+            image.format()
+        )));
+    }
+    let color = w as usize * h as usize * 4;
+    let stride = ico_mask_stride(w);
+    let mask = stride * h as usize;
+    let mut out = Vec::with_capacity(ICO_BITMAP_HEADER + color + mask);
+    out.extend_from_slice(&(ICO_BITMAP_HEADER as u32).to_le_bytes());
+    out.extend_from_slice(&(w as i32).to_le_bytes());
+    // The height covers the color rows and the mask rows.
+    out.extend_from_slice(&(2 * h as i32).to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes()); // planes
+    out.extend_from_slice(&32u16.to_le_bytes()); // bits per pixel
+    out.extend_from_slice(&0u32.to_le_bytes()); // BI_RGB, no compression
+    out.extend_from_slice(&((color + mask) as u32).to_le_bytes());
+    out.extend_from_slice(&0i32.to_le_bytes()); // pixels per meter
+    out.extend_from_slice(&0i32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes()); // colors used
+    out.extend_from_slice(&0u32.to_le_bytes()); // colors important
+    for y in (0..h).rev() {
+        for p in image.row(y).chunks_exact(4) {
+            out.extend_from_slice(&[p[2], p[1], p[0], p[3]]);
+        }
+    }
+    for y in (0..h).rev() {
+        let mut row = vec![0u8; stride];
+        for (x, p) in image.row(y).chunks_exact(4).enumerate() {
+            if p[3] == 0 {
+                row[x / 8] |= 0x80 >> (x % 8);
+            }
+        }
+        out.extend_from_slice(&row);
+    }
+    Ok(out)
+}
+
+/// Build a Windows `.ico` file from square RGBA8 images, one per side
+/// length from 1 to 256. The 256 pixel image is stored PNG-compressed and
+/// every smaller one as a 32-bit bitmap ([`encode_ico_bitmap`]).
+pub fn build_ico(images: &[ImageBuf]) -> Result<Vec<u8>> {
     if images.is_empty() || images.len() > usize::from(u16::MAX) {
         return Err(Error::Invalid(
             "an icon file needs 1 to 65535 images".into(),
         ));
     }
     let count = images.len() as u16;
+    let mut entries = Vec::with_capacity(images.len());
+    for image in images {
+        let side = image.width();
+        if side != image.height() || side == 0 || side > 256 {
+            return Err(Error::Invalid(format!(
+                "icon image {side} x {} is not a square of 1 to 256",
+                image.height()
+            )));
+        }
+        let data = if side == 256 {
+            encode_png(image)?
+        } else {
+            encode_ico_bitmap(image)?
+        };
+        entries.push((side, data));
+    }
     let mut out = Vec::new();
     out.extend_from_slice(&0u16.to_le_bytes());
     out.extend_from_slice(&1u16.to_le_bytes());
     out.extend_from_slice(&count.to_le_bytes());
-    let mut offset = 6 + 16 * images.len();
-    for (side, png) in images {
-        if *side == 0 || *side > 256 {
-            return Err(Error::Invalid(format!("icon side {side} is not 1 to 256")));
-        }
+    let mut offset = 6 + 16 * entries.len();
+    for (side, data) in &entries {
         // 256 is written as 0 in the one-byte size fields.
         let byte = if *side == 256 { 0 } else { *side as u8 };
         out.extend_from_slice(&[byte, byte, 0, 0]);
         out.extend_from_slice(&1u16.to_le_bytes());
         out.extend_from_slice(&32u16.to_le_bytes());
-        let len = u32::try_from(png.len()).map_err(|_| Error::Invalid("icon too big".into()))?;
+        let len = u32::try_from(data.len()).map_err(|_| Error::Invalid("icon too big".into()))?;
         out.extend_from_slice(&len.to_le_bytes());
         let at = u32::try_from(offset).map_err(|_| Error::Invalid("icon too big".into()))?;
         out.extend_from_slice(&at.to_le_bytes());
-        offset += png.len();
+        offset += data.len();
     }
-    for (_, png) in images {
-        out.extend_from_slice(png);
+    for (_, data) in &entries {
+        out.extend_from_slice(data);
     }
     Ok(out)
+}
+
+/// The application `.ico` file: every size of [`ICO_SIZES`] drawn by
+/// [`render_icon`].
+pub fn program_ico() -> Result<Vec<u8>> {
+    let images = ICO_SIZES
+        .iter()
+        .map(|&s| render_icon(s))
+        .collect::<Result<Vec<_>>>()?;
+    build_ico(&images)
 }
 
 /// The window icon as raw RGBA8 rows plus its side, for the window system.
@@ -232,21 +311,144 @@ mod tests {
         assert!(render_icon(0).is_err());
     }
 
-    #[test]
-    fn ico_lists_every_size_and_png_decodes() {
-        let images: Vec<(u32, Vec<u8>)> = ICO_SIZES
-            .iter()
-            .map(|&s| (s, encode_png(&render_icon(s).unwrap()).unwrap()))
+    fn u16_at(b: &[u8], at: usize) -> u16 {
+        u16::from_le_bytes([b[at], b[at + 1]])
+    }
+
+    fn u32_at(b: &[u8], at: usize) -> u32 {
+        u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]])
+    }
+
+    /// One directory entry of an `.ico` file and its image data.
+    struct Entry<'a> {
+        width: u32,
+        height: u32,
+        colors: u8,
+        planes: u16,
+        bits: u16,
+        data: &'a [u8],
+    }
+
+    fn entries(ico: &[u8]) -> Vec<Entry<'_>> {
+        assert_eq!(u16_at(ico, 0), 0, "reserved");
+        assert_eq!(u16_at(ico, 2), 1, "type icon");
+        let count = usize::from(u16_at(ico, 4));
+        let mut end = 6 + 16 * count;
+        let out: Vec<Entry<'_>> = (0..count)
+            .map(|i| {
+                let e = 6 + 16 * i;
+                let side = |b: u8| if b == 0 { 256 } else { u32::from(b) };
+                let len = u32_at(ico, e + 8) as usize;
+                let offset = u32_at(ico, e + 12) as usize;
+                assert_eq!(offset, end, "entry {i} follows the one before");
+                end = offset + len;
+                assert_eq!(ico[e + 3], 0, "reserved byte");
+                Entry {
+                    width: side(ico[e]),
+                    height: side(ico[e + 1]),
+                    colors: ico[e + 2],
+                    planes: u16_at(ico, e + 4),
+                    bits: u16_at(ico, e + 6),
+                    data: &ico[offset..offset + len],
+                }
+            })
             .collect();
-        let ico = build_ico(&images).unwrap();
-        assert_eq!(&ico[..6], &[0, 0, 1, 0, 4, 0]);
-        // The 256 entry stores 0 as its size byte.
-        assert_eq!(ico[6 + 3 * 16], 0);
-        let png = &images[3].1;
-        let source = Source::from_vec(png.clone(), None);
-        let decoded = pandite_codecs::PngDecoder
+        assert_eq!(end, ico.len(), "no bytes after the last image");
+        out
+    }
+
+    const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+
+    fn decode_png(data: &[u8]) -> ImageBuf {
+        let source = Source::from_vec(data.to_vec(), None);
+        pandite_codecs::PngDecoder
             .decode(&source, &DecodeOptions::default())
-            .unwrap();
-        assert_eq!(decoded.dimensions(), (256, 256));
+            .unwrap()
+            .first_image()
+            .clone()
+    }
+
+    #[test]
+    fn ico_stores_small_sizes_as_bitmaps_and_256_as_png() {
+        let ico = program_ico().unwrap();
+        let list = entries(&ico);
+        assert_eq!(
+            list.iter().map(|e| e.width).collect::<Vec<_>>(),
+            ICO_SIZES.to_vec()
+        );
+        for (entry, &side) in list.iter().zip(&ICO_SIZES) {
+            let drawn = render_icon(side).unwrap();
+            if side == 256 {
+                assert_eq!(decode_png(entry.data).data(), drawn.data());
+                continue;
+            }
+            // The bitmap holds the drawn pixels, bottom row first, as BGRA,
+            // and the mask marks exactly the fully transparent pixels.
+            let s = side as usize;
+            let colors = &entry.data[ICO_BITMAP_HEADER..ICO_BITMAP_HEADER + s * s * 4];
+            let mask = &entry.data[ICO_BITMAP_HEADER + s * s * 4..];
+            let stride = ico_mask_stride(side);
+            for y in 0..s {
+                let row = drawn.row((s - 1 - y) as u32);
+                for x in 0..s {
+                    let src = &row[x * 4..x * 4 + 4];
+                    let got = &colors[(y * s + x) * 4..(y * s + x) * 4 + 4];
+                    assert_eq!(
+                        got,
+                        &[src[2], src[1], src[0], src[3]],
+                        "{side} px at {x},{y}"
+                    );
+                    let bit = mask[y * stride + x / 8] & (0x80 >> (x % 8)) != 0;
+                    assert_eq!(bit, src[3] == 0, "{side} px mask at {x},{y}");
+                }
+            }
+        }
+        // A non-square or oversized image is refused.
+        assert!(build_ico(&[render_icon(300).unwrap()]).is_err());
+        let wide = ImageBuf::solid_rgba8(4, 2, [0; 4]).unwrap();
+        assert!(build_ico(&[wide]).is_err());
+    }
+
+    /// The committed icon file holds 32-bit bitmaps for every size below
+    /// 256 and PNG only for 256, with consistent headers and lengths.
+    #[test]
+    fn program_icon_small_sizes_are_bitmaps() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/pandite.ico");
+        let ico = std::fs::read(&path).unwrap();
+        let list = entries(&ico);
+        for side in [16, 32, 48, 256] {
+            assert!(list.iter().any(|e| e.width == side), "{side} px present");
+        }
+        for e in &list {
+            assert_eq!(e.width, e.height, "square entries");
+            assert_eq!((e.colors, e.planes, e.bits), (0, 1, 32), "{} px", e.width);
+            if e.width == 256 {
+                assert!(e.data.starts_with(PNG_SIGNATURE), "256 px is PNG");
+                let png = decode_png(e.data);
+                assert_eq!((png.width(), png.height()), (256, 256));
+                continue;
+            }
+            assert!(
+                !e.data.starts_with(PNG_SIGNATURE),
+                "{} px must be a bitmap",
+                e.width
+            );
+            let d = e.data;
+            assert_eq!(u32_at(d, 0) as usize, ICO_BITMAP_HEADER, "header size");
+            assert_eq!(u32_at(d, 4), e.width, "bitmap width");
+            assert_eq!(u32_at(d, 8), 2 * e.height, "height covers color and mask");
+            assert_eq!(u16_at(d, 12), 1, "planes");
+            assert_eq!(u16_at(d, 14), 32, "bits per pixel");
+            assert_eq!(u32_at(d, 16), 0, "no compression");
+            let color = (e.width * e.height * 4) as usize;
+            let mask = ico_mask_stride(e.width) * e.height as usize;
+            assert_eq!(u32_at(d, 20) as usize, color + mask, "image size field");
+            assert_eq!(d.len(), ICO_BITMAP_HEADER + color + mask, "total length");
+        }
+        // The committed file is what the generator writes today.
+        assert!(
+            ico == program_ico().unwrap(),
+            "assets/pandite.ico is stale: run the make_icon example"
+        );
     }
 }

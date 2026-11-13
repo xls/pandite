@@ -145,6 +145,9 @@ pub struct Settings {
     /// Windows: when the window closes, stay in the background without
     /// any image in memory, so the next image opens at once.
     pub stay_ready: bool,
+    /// The last start drew with a discrete GPU. The next start then waits
+    /// a moment for it when the system leaves it out of the adapter list.
+    pub gpu_discrete_seen: bool,
 }
 
 impl Default for Settings {
@@ -162,6 +165,7 @@ impl Default for Settings {
             jpeg_quality: 90,
             ocr: TextRecognition::Auto,
             stay_ready: true,
+            gpu_discrete_seen: false,
         }
     }
 }
@@ -224,6 +228,13 @@ impl Settings {
             "# kept in memory), so the next image opens at once. pandite --quit ends it."
         );
         let _ = writeln!(s, "stay_ready = {}", self.stay_ready);
+        let _ = writeln!(
+            s,
+            "
+# Written by pandite: the last start used a discrete GPU. When true,
+# a start waits up to half a second for that GPU to be listed."
+        );
+        let _ = writeln!(s, "gpu_discrete_seen = {}", self.gpu_discrete_seen);
         s
     }
 
@@ -292,6 +303,7 @@ impl Settings {
                         .ok_or_else(bad)?;
                 }
                 "ocr" => s.ocr = TextRecognition::parse(value).ok_or_else(bad)?,
+                "gpu_discrete_seen" => s.gpu_discrete_seen = parse_bool(value).ok_or_else(bad)?,
                 _ => {}
             }
         }
@@ -522,6 +534,7 @@ mod tests {
             jpeg_quality: 77,
             ocr: TextRecognition::Off,
             stay_ready: false,
+            gpu_discrete_seen: true,
         };
         assert_eq!(Settings::parse(&s.to_text()).unwrap(), s);
         assert_eq!(
