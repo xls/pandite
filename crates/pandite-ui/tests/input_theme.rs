@@ -332,7 +332,8 @@ fn layout_scales_with_dpi() {
 fn context_menu_lists_commands() {
     let ctx = image_ctx();
     let mut ui = Ui::new();
-    let p = Point::new(500.0, 100.0);
+    // High enough that the whole menu fits below the pointer.
+    let p = Point::new(500.0, 50.0);
     move_to(&mut ui, &ctx, p);
     press(&mut ui, &ctx, p, PointerButton::Right);
     assert!(release(&mut ui, &ctx, p, PointerButton::Right).is_empty());
@@ -344,6 +345,8 @@ fn context_menu_lists_commands() {
         Command::CopyImage,
         Command::CopyPath,
         Command::Undo,
+        Command::MoveToTrash,
+        Command::DeleteFile,
         Command::RotateLeft,
         Command::RotateRight,
         Command::FlipHorizontal,
@@ -374,6 +377,8 @@ fn context_menu_lists_commands() {
         "Ctrl+Shift+C",
         "F11",
         "Shift+R",
+        "Del",
+        "Shift+Del",
     ] {
         assert!(
             text_rect_exact(&list, keys).is_some(),
@@ -389,6 +394,16 @@ fn context_menu_lists_commands() {
         vec![Action::RotateRight]
     );
     assert_eq!(ui.mode(), UiMode::Normal);
+    // The delete commands run from the menu as they do from the keys.
+    for (label, action) in [
+        ("Move to Trash", Action::MoveToTrash),
+        ("Delete permanently...", Action::DeleteFile),
+    ] {
+        press(&mut ui, &ctx, p, PointerButton::Right);
+        release(&mut ui, &ctx, p, PointerButton::Right);
+        assert_eq!(click_label(&mut ui, &ctx, label), vec![action]);
+        assert_eq!(ui.mode(), UiMode::Normal);
+    }
     // Zoom from the menu zooms at the point that was clicked.
     press(&mut ui, &ctx, p, PointerButton::Right);
     release(&mut ui, &ctx, p, PointerButton::Right);

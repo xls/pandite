@@ -1197,13 +1197,16 @@ impl Ui {
 }
 
 /// The context menu in normal mode. `None` is a separator.
-const CONTEXT_MENU: [Option<Command>; 28] = [
+const CONTEXT_MENU: [Option<Command>; 31] = [
     Some(Command::Open),
     Some(Command::SaveAs),
     Some(Command::CopyImage),
     Some(Command::CopyPath),
     None,
     Some(Command::Undo),
+    None,
+    Some(Command::MoveToTrash),
+    Some(Command::DeleteFile),
     None,
     Some(Command::RotateLeft),
     Some(Command::RotateRight),

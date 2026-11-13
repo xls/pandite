@@ -37,10 +37,13 @@ crate prints it with `cargo run -p pandite-codecs --example extensions`.
 - DNG files are developed from the sensor data: black and white levels,
   as-shot white balance, the camera color matrix and the default crop.
   The result is a 16-bit image.
-- CR2, CR3, NEF, ARW, RAF, ORF, RW2, PEF and SRW files show the JPEG
-  preview that the camera embeds in the file. pandite uses the largest
-  preview. Most cameras store it at full resolution. pandite does not
-  develop the sensor data of these formats.
+- Sony ARW files are developed from the sensor data. The embedded preview
+  shows first, then the developed image replaces it. An ARW variant that
+  pandite cannot read shows its embedded preview.
+- CR2, CR3, NEF, RAF, ORF, RW2, PEF and SRW files show the JPEG preview
+  that the camera embeds in the file. pandite uses the largest preview.
+  Most cameras store it at full resolution. pandite does not develop the
+  sensor data of these formats.
 - A DNG file with sensor data in a compression that pandite cannot read
   also shows its embedded preview.
 
