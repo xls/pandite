@@ -14,13 +14,24 @@
 //    MIME types, minus the formats Linux cannot decode
 //  - every packaging script the workflows call exists, and every action is
 //    pinned to a major version
+//  - the Windows setup script (pandite.iss) takes its version from the
+//    build, installs the files of the portable zip per user, runs
+//    --register, --quit and --unregister, has the right architectures, and
+//    names the publisher and URL of LICENSE and Cargo.toml
+//  - the Debian control template and the RPM spec take their version from
+//    the build, ship the files of the tarball (with its desktop entry, so
+//    the same MIME types), and recommend the same run-time libraries
+//  - the npm launcher has the Cargo.toml version, no dependencies and no
+//    install script, and downloads the file names the build scripts write
+//  - the release workflow passes the version to every package builder and
+//    pins the Inno Setup download; ci.yml builds no installer
 //  - packaging, workflow and documentation text files are pure ASCII
 //    without tabs in YAML
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import process from 'node:process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const errors = [];
@@ -207,16 +218,308 @@ for (const wf of ['.github/workflows/ci.yml', '.github/workflows/release.yml']) 
   if (!/^concurrency:/m.test(text)) err(`${wf} sets no concurrency group`);
 }
 
+// ------------------------------------------------------- version and names
+
+const cargo = read('Cargo.toml');
+const workspace = (cargo.split(/^\[workspace\.package\]\s*$/m)[1] ?? '').split(/^\[/m)[0];
+const cargoField = (key) => new RegExp(`^${key}\\s*=\\s*"([^"]+)"`, 'm').exec(workspace)?.[1];
+const VERSION = cargoField('version');
+const REPO = cargoField('repository');
+const LICENSE_ID = cargoField('license');
+if (!VERSION || !REPO || !LICENSE_ID) err('Cargo.toml [workspace.package] lacks version, repository or license');
+const HOLDER = /^Copyright \(c\) \d{4}(?:-\d{4})? (.+)$/m.exec(read('LICENSE'))?.[1]?.trim();
+if (!HOLDER) err('LICENSE has no "Copyright (c) <year> <name>" line');
+const release = read('.github/workflows/release.yml');
+const ci = read('.github/workflows/ci.yml');
+
+// Files of the portable zip, as build-zip.ps1 stages them.
+const zipFiles = new Set([...read('packaging/windows/build-zip.ps1').matchAll(/Join-Path \$stage '([^']+)'/g)].map((m) => m[1]));
+if (!zipFiles.has('pandite.exe')) err('build-zip.ps1 stages no pandite.exe');
+
+// --------------------------------------------------- Windows setup program
+
+/** Sections of an Inno Setup script: name -> lines without comments. */
+function issSections(text) {
+  const sections = new Map();
+  let current = '';
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    const head = /^\[(\w+)\]$/.exec(line);
+    if (head) {
+      current = head[1];
+      if (!sections.has(current)) sections.set(current, []);
+      continue;
+    }
+    if (!current || !line || line.startsWith(';') || line.startsWith('#')) continue;
+    sections.get(current).push(line);
+  }
+  return sections;
+}
+/** Parameters of an Inno Setup entry line: Name: "x"; Flags: a b. */
+function issEntry(line) {
+  const out = {};
+  for (const m of line.matchAll(/(\w+):\s*("(?:[^"]|"")*"|[^;]*)/g)) {
+    const v = m[2].trim();
+    out[m[1]] = v.startsWith('"') ? v.slice(1, -1).replace(/""/g, '"') : v;
+  }
+  return out;
+}
+
+const issRel = 'packaging/windows/pandite.iss';
+const iss = read(issRel);
+const issDir = join(ROOT, 'packaging/windows');
+const sections = issSections(iss);
+const setup = {};
+for (const line of sections.get('Setup') ?? []) {
+  const m = /^(\w+)=(.*)$/.exec(line);
+  if (m) (setup[m[1]] ??= []).push(m[2]);
+}
+const one = (key) => (setup[key]?.length === 1 ? setup[key][0] : undefined);
+const want = {
+  AppName: 'Pandite',
+  AppVersion: '{#Version}',
+  VersionInfoVersion: '{#NumericVersion}',
+  AppPublisher: HOLDER,
+  AppPublisherURL: REPO,
+  AppSupportURL: `${REPO}/issues`,
+  AppUpdatesURL: `${REPO}/releases`,
+  PrivilegesRequired: 'lowest',
+  DefaultDirName: '{localappdata}\\Programs\\Pandite',
+  UninstallDisplayIcon: '{app}\\pandite.exe',
+  OutputBaseFilename: 'pandite-{#Version}-{#Target}-setup',
+  OutputDir: '{#OutDir}',
+};
+for (const [key, value] of Object.entries(want)) {
+  if (one(key) !== value) err(`${issRel}: ${key} is ${setup[key] ?? 'missing'}, want ${value}`);
+}
+if (!/^\{\{[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}\}$/.test(one('AppId') ?? '')) {
+  err(`${issRel}: AppId must be one fixed GUID written {{GUID}`);
+}
+if (/AppVersion=\d/.test(iss)) err(`${issRel}: the version must come from the build (/DVersion), not the script`);
+const manifestMin = /TargetDeviceFamily[^>]*MinVersion="([\d.]+)"/.exec(body)?.[1]?.replace(/\.0$/, '');
+if (one('MinVersion') !== manifestMin) err(`${issRel}: MinVersion ${one('MinVersion')} differs from the MSIX manifest ${manifestMin}`);
+for (const [key, file, magic] of [
+  ['SetupIconFile', 'crates/pandite-app/assets/pandite.ico', '00000100'],
+  ['LicenseFile', 'LICENSE', null],
+]) {
+  const p = resolve(issDir, (one(key) ?? '').replace(/\\/g, '/'));
+  if (relative(ROOT, p).replace(/\\/g, '/') !== file) err(`${issRel}: ${key} must be ${file}`);
+  else if (magic && readFileSync(p).toString('hex', 0, 4) !== magic) err(`${file} is not an .ico file`);
+}
+// x64: x64 Windows and Windows 11 on ARM64. ARM64: ARM64 Windows only.
+const archBlock = (arch) => new RegExp(`#(?:el)?if Arch == "${arch}"\\s*\\n(?:;.*\\n)*`).exec(iss);
+for (const [arch, value] of [['x64', 'x64compatible'], ['arm64', 'arm64']]) {
+  const at = archBlock(arch);
+  const block = at ? iss.slice(at.index + at[0].length).split(/^#/m)[0] : '';
+  if (!block.includes(`ArchitecturesAllowed=${value}\n`) || !block.includes(`ArchitecturesInstallIn64BitMode=${value}\n`)) {
+    err(`${issRel}: the ${arch} build needs ArchitecturesAllowed and ArchitecturesInstallIn64BitMode = ${value}`);
+  }
+}
+if (sections.has('Registry')) err(`${issRel}: file associations come from pandite.exe --register only, not from [Registry]`);
+const issFiles = (sections.get('Files') ?? []).map(issEntry);
+const issDest = new Set(issFiles.map((f) => f.DestName || basename(f.Source.replace(/\\/g, '/'))));
+if (!setEq(issDest, zipFiles)) err(`${issRel} installs [${[...issDest].sort()}], the portable zip holds [${[...zipFiles].sort()}]`);
+for (const f of issFiles) {
+  if (f.DestDir !== '{app}') err(`${issRel}: ${f.Source} goes to ${f.DestDir}, want {app}`);
+  if (!f.Source.startsWith('{#') && !existsSync(resolve(issDir, f.Source.replace(/\\/g, '/')))) err(`${issRel}: ${f.Source} does not exist`);
+}
+const tasks = new Map((sections.get('Tasks') ?? []).map(issEntry).map((t) => [t.Name, t]));
+const assoc = tasks.get('associate');
+if (assoc?.Description !== 'Associate image files with Pandite' || /unchecked/.test(assoc?.Flags ?? '')) {
+  err(`${issRel}: task "associate" must read "Associate image files with Pandite" and be checked by default`);
+}
+if (!/unchecked/.test(tasks.get('desktopicon')?.Flags ?? '')) err(`${issRel}: the desktop shortcut task must be unchecked by default`);
+const runs = (sections.get('Run') ?? []).map(issEntry);
+if (!runs.some((r) => r.Filename === '{app}\\pandite.exe' && r.Parameters === '--register' && r.Tasks === 'associate')) {
+  err(`${issRel}: [Run] must run {app}\\pandite.exe --register for the task associate`);
+}
+const unruns = (sections.get('UninstallRun') ?? []).map(issEntry);
+if (!unruns.some((r) => r.Filename === '{app}\\pandite.exe' && r.Parameters === '--unregister' && r.RunOnceId)) {
+  err(`${issRel}: [UninstallRun] must run {app}\\pandite.exe --unregister with a RunOnceId`);
+}
+const icons = (sections.get('Icons') ?? []).map(issEntry);
+if (!icons.some((i) => i.Name === '{autoprograms}\\Pandite' && i.Filename === '{app}\\pandite.exe')) err(`${issRel}: no Start menu shortcut "Pandite"`);
+if (!icons.some((i) => i.Name === '{autodesktop}\\Pandite' && i.Tasks === 'desktopicon')) err(`${issRel}: no optional desktop shortcut`);
+const code = (iss.split(/^\[Code\]$/m)[1] ?? '');
+if (!/Exec\(Exe, '--quit'/.test(code)) err(`${issRel}: [Code] must run pandite.exe --quit`);
+if (!/function PrepareToInstall[\s\S]*?QuitResidentPandite;[\s\S]*?end;/.test(code)) err(`${issRel}: PrepareToInstall must end the resident pandite`);
+if (!/usUninstall then\s+QuitResidentPandite;/.test(code)) err(`${issRel}: uninstall must end the resident pandite`);
+const buildSetup = read('packaging/windows/build-setup.ps1');
+for (const m of iss.matchAll(/^#ifndef (\w+)$/gm)) {
+  if (!buildSetup.includes(`"/D${m[1]}=`)) err(`build-setup.ps1 does not pass /D${m[1]} to ${issRel}`);
+}
+
+// ------------------------------------------------------- Debian and RPM
+
+// The tarball items and where each package puts them.
+const LAYOUT = [
+  // [tarball path, Debian package path (build-deb.sh), RPM path (pandite.spec %files)]
+  ['pandite', '$PKG/usr/bin/pandite', '%{_bindir}/pandite'],
+  ['share/applications/pandite.desktop', '$PKG/usr/share/applications/pandite.desktop', '%{_datadir}/applications/pandite.desktop'],
+  ['share/icons/hicolor', '$PKG/usr/share/icons/hicolor', '%{_datadir}/icons/hicolor/*/apps/pandite.png'],
+  ['LICENSE', '$DOC/copyright', '%{_datadir}/licenses/pandite/LICENSE'],
+  ['README.md', '$DOC/README.md.gz', '%{_datadir}/doc/pandite/README.md'],
+  ['THIRD-PARTY-NOTICES.md', '$DOC/THIRD-PARTY-NOTICES.md.gz', '%{_datadir}/doc/pandite/THIRD-PARTY-NOTICES.md'],
+];
+const TARBALL_ONLY = ['install.sh'];
+// Debian package -> soname of each library the program loads at run time.
+const RUNTIME_LIBS = {
+  libvulkan1: 'libvulkan.so.1',
+  libegl1: 'libEGL.so.1',
+  libxkbcommon0: 'libxkbcommon.so.0',
+  'libxkbcommon-x11-0': 'libxkbcommon-x11.so.0',
+  'libwayland-client0': 'libwayland-client.so.0',
+  'libwayland-cursor0': 'libwayland-cursor.so.0',
+  'libwayland-egl1': 'libwayland-egl.so.1',
+  'libx11-6': 'libX11.so.6',
+  'libx11-xcb1': 'libX11-xcb.so.1',
+  libxcursor1: 'libXcursor.so.1',
+  libxi6: 'libXi.so.6',
+  libxrandr2: 'libXrandr.so.2',
+};
+
+const tarScript = read('packaging/linux/build-tarball.sh');
+const tarItems = new Set([...tarScript.matchAll(/^(?:install|cp)\b.*"\$D\/([^"]+)"\s*$/gm)].map((m) => m[1]));
+const tarWant = new Set([...LAYOUT.map((l) => l[0]), ...TARBALL_ONLY]);
+if (!setEq(tarItems, tarWant)) {
+  err(`build-tarball.sh packs [${[...tarItems].sort()}]; check.mjs LAYOUT maps [${[...tarWant].sort()}]: update the .deb, the .rpm and LAYOUT together`);
+}
+const debScript = read('packaging/linux/build-deb.sh');
+const spec = read('packaging/linux/pandite.spec');
+const specFiles = (spec.split(/^%files\s*$/m)[1] ?? '').split(/^%\w+\s*$/m)[0];
+const specInstall = (spec.split(/^%install\s*$/m)[1] ?? '').split(/^%(?:post|postun|files|check)\b/m)[0];
+for (const [tar, deb, rpm] of LAYOUT) {
+  if (!debScript.includes(`"$SRC/${tar}"`) || !debScript.includes(deb)) err(`build-deb.sh does not install ${tar} as ${deb}`);
+  if (!specInstall.includes(`"$src/${tar}`) && !specInstall.includes(`"$src"/${tar}`)) err(`pandite.spec %install does not take ${tar} from the tarball`);
+  if (!specFiles.split(/\r?\n/).some((l) => l.trim().split(/\s+/).pop() === rpm)) err(`pandite.spec %files does not list ${rpm}`);
+}
+for (const [name, text] of [['build-deb.sh', debScript], ['pandite.spec', spec]]) {
+  if (/MimeType|\.desktop"\s*\|?\s*sed|sed[^\n]*pandite\.desktop/.test(text)) err(`${name} must ship the desktop entry of the tarball unchanged (same MIME types)`);
+}
+
+const controlRel = 'packaging/linux/debian/control';
+const control = read(controlRel);
+const field = (key) => new RegExp(`^${key}: (.*)$`, 'm').exec(control)?.[1];
+for (const [key, value] of [
+  ['Package', 'pandite'],
+  ['Version', '@VERSION@'],
+  ['Architecture', 'amd64'],
+  ['Installed-Size', '@INSTALLED_SIZE@'],
+  ['Depends', '@DEPENDS@'],
+  ['Homepage', REPO],
+]) {
+  if (field(key) !== value) err(`${controlRel}: ${key} is ${field(key)}, want ${value}`);
+}
+if (!(field('Maintainer') ?? '').startsWith(`${HOLDER} <`)) err(`${controlRel}: Maintainer must be "${HOLDER} <address>"`);
+if (!field('Section') || !field('Description')) err(`${controlRel} lacks Section or Description`);
+for (const token of control.matchAll(/@([A-Z_]+)@/g)) {
+  if (!debScript.includes(`s|@${token[1]}@|`)) err(`build-deb.sh does not fill @${token[1]}@ in ${controlRel}`);
+}
+const debRecommends = (field('Recommends') ?? '').split(',').map((s) => s.trim()).filter((s) => s && !s.includes('|'));
+if (!setEq(new Set(debRecommends), new Set(Object.keys(RUNTIME_LIBS)))) {
+  err(`${controlRel}: Recommends [${debRecommends}] differs from the run-time libraries [${Object.keys(RUNTIME_LIBS)}]`);
+}
+const rpmRecommends = new Set([...spec.matchAll(/^Recommends:\s*(\S+)$/gm)].map((m) => m[1]));
+const rpmWant = new Set(Object.values(RUNTIME_LIBS).map((so) => `${so}()(64bit)`));
+if (!setEq(rpmRecommends, rpmWant)) err(`pandite.spec Recommends differs from the Debian Recommends: missing [${diff(rpmWant, rpmRecommends)}] extra [${diff(rpmRecommends, rpmWant)}]`);
+for (const script of ['postinst', 'postrm']) {
+  const text = read(`packaging/linux/debian/${script}`);
+  if (!text.startsWith('#!/bin/sh\n') || !/^set -e$/m.test(text)) err(`debian/${script} must start with #!/bin/sh and set -e`);
+  if (!text.includes('update-desktop-database') || !text.includes('gtk-update-icon-cache')) err(`debian/${script} must refresh the desktop and icon caches`);
+}
+const specField = (key) => new RegExp(`^${key}:\\s*(.+)$`, 'm').exec(spec)?.[1]?.trim();
+for (const [key, value] of [
+  ['Name', 'pandite'],
+  ['Version', '%{pandite_version}'],
+  ['License', LICENSE_ID],
+  ['URL', REPO],
+  ['BuildArch', 'x86_64'],
+]) {
+  if (specField(key) !== value) err(`pandite.spec: ${key} is ${specField(key)}, want ${value}`);
+}
+const rpmScript = read('packaging/linux/build-rpm.sh');
+for (const macro of ['pandite_version', 'pandite_source']) {
+  if (!rpmScript.includes(`--define "${macro} `)) err(`build-rpm.sh does not define ${macro}`);
+}
+
+// ------------------------------------------------------------ npm launcher
+
+const npmRel = 'packaging/npm/package.json';
+const npmPkg = JSON.parse(read(npmRel));
+if (npmPkg.name !== 'pandite') err(`${npmRel}: name must be pandite`);
+if (npmPkg.version !== VERSION) err(`${npmRel}: version ${npmPkg.version} differs from Cargo.toml ${VERSION}`);
+if (npmPkg.license !== LICENSE_ID) err(`${npmRel}: license must be ${LICENSE_ID}`);
+if (npmPkg.homepage !== REPO || !String(npmPkg.repository?.url ?? '').includes(REPO.replace(/^https:\/\//, ''))) err(`${npmRel}: homepage and repository must name ${REPO}`);
+if (npmPkg.type !== 'module') err(`${npmRel}: type must be module`);
+for (const key of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies', 'bundleDependencies', 'bundledDependencies', 'scripts']) {
+  if (key in npmPkg) err(`${npmRel}: the launcher has no ${key}`);
+}
+const npmBin = npmPkg.bin?.pandite;
+if (!npmBin || !existsSync(join(ROOT, 'packaging/npm', npmBin))) err(`${npmRel}: bin.pandite must name a file`);
+else if (!read(`packaging/npm/${npmBin}`).startsWith('#!/usr/bin/env node\n')) err(`packaging/npm/${npmBin} must start with #!/usr/bin/env node`);
+for (const f of ['bin/', 'lib/', 'checksums.json']) if (!npmPkg.files?.includes(f)) err(`${npmRel}: files must include ${f}`);
+if (existsSync(join(ROOT, 'packaging/npm/checksums.json'))) err('packaging/npm/checksums.json is made by the release workflow; do not keep it in the source tree');
+const launcher = await import(pathToFileURL(join(ROOT, 'packaging/npm/lib/launcher.js')).href);
+if (launcher.RELEASES_URL !== `${REPO}/releases/download`) err(`launcher.js downloads from ${launcher.RELEASES_URL}, want ${REPO}/releases/download`);
+const appScript = read('packaging/macos/build-app.sh');
+const zipScript = read('packaging/windows/build-zip.ps1');
+const winTargets = [...release.matchAll(/^\s*- target: (\S+-pc-windows-msvc)$/gm)].map((m) => m[1]);
+for (const p of launcher.PLATFORMS) {
+  const pick = launcher.assetFor({ ...p, version: VERSION });
+  const builtBy = {
+    win32: () =>
+      winTargets.includes(pick.target) &&
+      pick.asset === `pandite-${VERSION}-${pick.target}.zip` &&
+      pick.exe === `pandite-${VERSION}-${pick.target}/pandite.exe` &&
+      zipScript.includes('$name = "pandite-$Version-$Target"') &&
+      zipScript.includes('"$name.zip"'),
+    darwin: () =>
+      pick.asset === `pandite-${VERSION}-universal-apple-darwin.zip` &&
+      pick.exe === 'pandite.app/Contents/MacOS/pandite' &&
+      appScript.includes('NAME="pandite-$VERSION-universal-apple-darwin"') &&
+      appScript.includes('"$OUT/$NAME.zip"') &&
+      appScript.includes('APP="$WORK/pandite.app"') &&
+      appScript.includes('"$APP/Contents/MacOS/pandite"'),
+    linux: () =>
+      pick.asset === `pandite-${VERSION}-x86_64-unknown-linux-gnu.tar.gz` &&
+      pick.exe === `pandite-${VERSION}-x86_64-unknown-linux-gnu/pandite` &&
+      tarScript.includes('TARGET=x86_64-unknown-linux-gnu') &&
+      tarScript.includes('NAME="pandite-$VERSION-$TARGET"') &&
+      tarScript.includes('"$OUT/$NAME.tar.gz"') &&
+      tarItems.has('pandite'),
+  }[p.platform];
+  if (!builtBy?.()) err(`the npm launcher downloads ${pick.asset} (${pick.exe}) for ${p.platform} ${p.arch}, which no build script writes`);
+}
+
+// ---------------------------------------------------------- release steps
+
+for (const [what, pattern] of [
+  ['a setup program build with the release version', /build-setup\.ps1\s+-Exe "target\/\$env:TARGET\/release\/pandite\.exe"\s+-Version \$env:VERSION -Target \$env:TARGET/],
+  ['a .deb build from the tarball with the release version', /build-deb\.sh "\$VERSION" dist\s*\\\s*"dist\/pandite-\$VERSION-x86_64-unknown-linux-gnu\.tar\.gz"/],
+  ['an .rpm build from the tarball with the release version', /build-rpm\.sh "\$VERSION" dist\s*\\\s*"dist\/pandite-\$VERSION-x86_64-unknown-linux-gnu\.tar\.gz"/],
+  ['an npm launcher build with the release version', /packaging\/npm\/build\.mjs --version "\$VERSION"/],
+  ['the offline npm launcher test', /node packaging\/npm\/test\.mjs/],
+  ['a pinned Inno Setup 6 version (INNO_SETUP_VERSION)', /INNO_SETUP_VERSION: "6\.\d+\.\d+"/],
+  ['the SHA-256 of the Inno Setup download (INNO_SETUP_SHA256)', /INNO_SETUP_SHA256: [0-9a-f]{64}\n/],
+  ['an npm publish step that runs only with the NPM_TOKEN secret', /HAS_NPM_TOKEN: \$\{\{ secrets\.NPM_TOKEN != '' \}\}[\s\S]*if: env\.HAS_NPM_TOKEN == 'true'[\s\S]*npm publish/],
+]) {
+  if (!pattern.test(release)) err(`release.yml lacks ${what}`);
+}
+if (/build-setup|pandite\.iss|ISCC|build-deb|build-rpm|rpmbuild|dpkg-deb|lintian|packaging\/npm/.test(ci)) {
+  err('ci.yml builds installers or packages; the release workflow does that');
+}
+
 // --------------------------------------------------------------------- ASCII
 
-const TEXT_EXT = /\.(mjs|js|sh|ps1|xml|plist|desktop|txt|md|yml|yaml)$/i;
+const TEXT_EXT = /\.(mjs|js|sh|ps1|xml|plist|desktop|txt|md|yml|yaml|iss|spec|json)$/i;
+const isText = (f) => TEXT_EXT.test(f) || f.replace(/\\/g, '/').startsWith('packaging/linux/debian/');
 function walk(rel) {
   const abs = join(ROOT, rel);
   if (!existsSync(abs)) return [];
   if (statSync(abs).isFile()) return [rel];
   return readdirSync(abs).flatMap((n) => walk(join(rel, n)));
 }
-const textFiles = ['packaging', '.github', 'docs', 'README.md'].flatMap(walk).filter((f) => TEXT_EXT.test(f));
+const textFiles = ['packaging', '.github', 'docs', 'README.md'].flatMap(walk).filter(isText);
 for (const f of textFiles) {
   const bytes = readFileSync(join(ROOT, f));
   const bad = bytes.findIndex((b) => b > 0x7e || (b < 0x20 && b !== 0x0a && b !== 0x0d && b !== 0x09));
@@ -232,4 +535,9 @@ if (errors.length) {
   process.exit(1);
 }
 console.log(`${exts.size} extensions in manifest, Info.plist and desktop entry; ${logos.length} logos with variants; ${textFiles.length} text files ASCII`);
+console.log(
+  `version ${VERSION} from Cargo.toml for the setup program, .deb, .rpm and npm launcher; ` +
+    `${issDest.size} setup files = portable zip; ${LAYOUT.length} tarball items in .deb and .rpm; ` +
+    `${launcher.PLATFORMS.length} npm launcher systems`,
+);
 console.log('PACKAGING CONSISTENT');

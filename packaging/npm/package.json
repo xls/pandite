@@ -1,0 +1,33 @@
+{
+  "name": "pandite",
+  "version": "0.1.0",
+  "description": "Run Pandite, the fast offline image viewer, with npx: downloads the checked release for your system on first run",
+  "keywords": [
+    "image",
+    "viewer",
+    "photo",
+    "raw",
+    "gpu"
+  ],
+  "homepage": "https://github.com/xls/pandite",
+  "bugs": "https://github.com/xls/pandite/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xls/pandite.git",
+    "directory": "packaging/npm"
+  },
+  "license": "MIT",
+  "author": "Thomas Rizos",
+  "type": "module",
+  "bin": {
+    "pandite": "bin/pandite.js"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "checksums.json"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}

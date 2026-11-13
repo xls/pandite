@@ -1,0 +1,18 @@
+Package: pandite
+Version: @VERSION@
+Architecture: amd64
+Maintainer: Thomas Rizos <423484+xls@users.noreply.github.com>
+Installed-Size: @INSTALLED_SIZE@
+Depends: @DEPENDS@
+Recommends: libvulkan1, mesa-vulkan-drivers | vulkan-icd, libegl1, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libwayland-cursor0, libwayland-egl1, libx11-6, libx11-xcb1, libxcursor1, libxi6, libxrandr2
+Section: graphics
+Priority: optional
+Homepage: https://github.com/xls/pandite
+Description: fast offline image viewer
+ Pandite is a GPU image viewer written in Rust with wgpu. It opens JPEG,
+ PNG, GIF, WebP, AVIF, JPEG XL, TIFF, OpenEXR, SVG, Photoshop and camera
+ RAW files. Reads and decodes run on worker threads, so a slow file never
+ freezes the window. It has no account, no telemetry and no network code.
+ .
+ The program loads the Vulkan or EGL driver and the X11 or Wayland
+ libraries at run time, so they are recommendations, not dependencies.

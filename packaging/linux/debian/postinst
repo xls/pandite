@@ -1,0 +1,20 @@
+#!/bin/sh
+# Debian package: refresh the desktop entry and icon caches after install.
+set -e
+
+refresh() {
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database -q /usr/share/applications || true
+  fi
+  if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
+  fi
+}
+
+case "$1" in
+  configure|abort-upgrade|abort-remove|abort-deconfigure)
+    refresh
+    ;;
+esac
+
+exit 0

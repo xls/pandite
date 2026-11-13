@@ -65,6 +65,32 @@ When you change `RUSTFLAGS`, cargo builds everything again.
 
 2. Find the zip at `dist\pandite-0.1.0-x86_64-pc-windows-msvc.zip`.
 
+### Setup program
+
+The script needs Inno Setup 6.3 or later. It finds `ISCC.exe` in the
+standard Inno Setup 6 folders and on `PATH`. If `ISCC.exe` is in a
+different folder, set `PANDITE_ISCC` to its full path.
+
+1. Install Inno Setup 6 from https://jrsoftware.org/isdl.php.
+2. Make the setup program with PowerShell 7:
+
+   ```powershell
+   pwsh packaging/windows/build-setup.ps1 -Exe target/release/pandite.exe -Version 0.1.0 -Target x86_64-pc-windows-msvc -OutDir dist
+   ```
+
+3. Find the setup program at
+   `dist\pandite-0.1.0-x86_64-pc-windows-msvc-setup.exe`.
+4. For ARM64, use the ARM64 binary and `-Target aarch64-pc-windows-msvc`.
+
+The setup program installs the files of the portable zip for the current
+user in `%LOCALAPPDATA%\Programs\Pandite`. It needs no administrator
+rights. The task "Associate image files with Pandite" runs
+`pandite.exe --register`. Before an upgrade or an uninstall, the setup
+program runs `pandite.exe --quit`. The uninstall runs
+`pandite.exe --unregister`. The x64 setup program also installs on
+Windows 11 on ARM64. The ARM64 setup program installs on ARM64 only. The
+setup program is unsigned.
+
 ### MSIX package
 
 The script needs `makeappx.exe` and `makepri.exe` from the Windows SDK. It
@@ -170,6 +196,66 @@ pandite draws with Vulkan or with OpenGL ES. The Mesa drivers supply both.
 The release workflow builds the Linux binary on Ubuntu 22.04. That binary
 needs glibc 2.35 or later.
 
+### Debian and RPM packages
+
+The scripts make the packages from the tarball. The packages hold the same
+program, desktop entry and icons under `/usr`.
+
+1. Install the tools. On Debian and Ubuntu:
+
+   ```sh
+   sudo apt install dpkg-dev rpm
+   ```
+
+2. Make the tarball. See the steps above.
+3. Make the Debian package:
+
+   ```sh
+   bash packaging/linux/build-deb.sh 0.1.0 dist dist/pandite-0.1.0-x86_64-unknown-linux-gnu.tar.gz
+   ```
+
+4. Make the RPM package:
+
+   ```sh
+   bash packaging/linux/build-rpm.sh 0.1.0 dist dist/pandite-0.1.0-x86_64-unknown-linux-gnu.tar.gz
+   ```
+
+5. Find `dist/pandite_0.1.0_amd64.deb` and
+   `dist/pandite-0.1.0-1.x86_64.rpm`.
+
+`dpkg-shlibdeps` and `rpmbuild` write the dependencies from the libraries
+that the program links. The program loads Vulkan, EGL, X11 and Wayland at
+run time. `packaging/linux/debian/control` and
+`packaging/linux/pandite.spec` list these libraries as recommended
+packages.
+
+## npm launcher
+
+The npm package `pandite` holds a launcher for Node.js 18 or later. The
+launcher is a separate Node.js script. The program itself has no network
+code. On the first run, the launcher downloads the release file for its
+system and version from the GitHub release. It compares the SHA-256 of the
+file with `checksums.json` and unpacks the file into a per-user cache.
+
+1. Test the launcher. The test uses no network:
+
+   ```sh
+   node packaging/npm/test.mjs
+   ```
+
+2. Make the package. The script needs the SHA-256 of the release packages
+   in the format of `SHA256SUMS.txt`:
+
+   ```sh
+   node packaging/npm/build.mjs --version 0.1.0 --sums dist/SHA256SUMS.txt --out dist
+   ```
+
+3. Find `dist/pandite-0.1.0-npm.tgz`.
+
+The release workflow writes `checksums.json` into the package. Do not keep
+`checksums.json` in `packaging/npm`. If the file is there,
+`node packaging/check.mjs` fails.
+
 ## Tests and checks
 
 1. Run the tests:
@@ -194,6 +280,12 @@ needs glibc 2.35 or later.
 
    ```sh
    node packaging/check.mjs
+   ```
+
+5. Test the npm launcher:
+
+   ```sh
+   node packaging/npm/test.mjs
    ```
 
 The GPU tests need a GPU adapter. When the computer has no adapter, these
@@ -226,6 +318,12 @@ tests skip there. Run the GPU tests on a computer with a real GPU.
 | `packaging/macos/pandite.icns` | macOS icon. |
 | `packaging/linux/pandite.desktop` | Desktop entry with the MIME types. |
 | `packaging/linux/icons/` | Linux icons. |
+| `packaging/windows/pandite.iss` | Inno Setup script of the Windows setup program. |
+| `packaging/windows/build-setup.ps1` | Builds the setup program with `ISCC.exe`. |
+| `packaging/linux/debian/` | Debian control template, `postinst` and `postrm`. |
+| `packaging/linux/build-deb.sh`, `build-rpm.sh` | Build the `.deb` and the `.rpm` from the tarball. |
+| `packaging/linux/pandite.spec` | RPM spec. |
+| `packaging/npm/` | npm launcher package, its build script and its offline test. |
 | `docs/THIRD-PARTY-NOTICES.md` | Licenses of the dependencies. |
 
 After you change a file in this table, do the related step:
@@ -235,10 +333,15 @@ After you change a file in this table, do the related step:
    `node packaging/check.mjs`.
 2. If the application icon changes, run `node packaging/make-assets.mjs`.
 3. If the dependencies change, run `node packaging/third-party-notices.mjs`.
+4. If the tarball gets a new file, add it to `build-deb.sh`,
+   `pandite.spec` and the `LAYOUT` table in `packaging/check.mjs`.
+5. If the portable zip gets a new file, add it to `[Files]` in
+   `pandite.iss`.
 
 ## Release
 
-1. Set the new version in `[workspace.package]` in `Cargo.toml`.
+1. Set the new version in `[workspace.package]` in `Cargo.toml` and in
+   `packaging/npm/package.json`.
 2. Commit the change and push it to `main`.
 3. Make a tag that is `v` plus the version, and push it:
 
@@ -251,9 +354,21 @@ After you change a file in this table, do the related step:
    `SHA256SUMS.txt` and publishes the GitHub release.
 
 If the tag and the `Cargo.toml` version are different, the workflow stops
-before it builds. To test the packaging without a release, start the
-Release workflow manually on a branch (Actions, Release, Run workflow). The
-packages are then workflow artifacts.
+before it builds. If `packaging/npm/package.json` has a different version,
+the workflow stops at the npm package. To test the packaging without a
+release, start the Release workflow manually on a branch (Actions, Release,
+Run workflow). The packages are then workflow artifacts.
+
+The workflow builds the setup program with Inno Setup. If the runner has no
+Inno Setup 6, the workflow downloads the version in `INNO_SETUP_VERSION`
+and compares it with `INNO_SETUP_SHA256` in `release.yml`. To change the
+version, change both values.
+
+To publish the npm launcher to the npm registry, add the repository secret
+`NPM_TOKEN` (Settings, Secrets and variables, Actions). Use an npm access
+token that can publish the package `pandite`. The workflow publishes to npm
+after the GitHub release, because the launcher downloads its files from
+that release. Without the secret, the npm package is a release file only.
 
 ## Continuous integration cost
 

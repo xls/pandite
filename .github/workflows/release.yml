@@ -1,11 +1,15 @@
 # Release: build, package and publish pandite for every release target.
 #
 # A tag v<version> (equal to the Cargo.toml workspace version) builds:
-#   Windows x64 and ARM64   portable .zip, Store-ready unsigned .msix, and
+#   Windows x64 and ARM64   portable .zip, unsigned per-user setup program
+#                           (Inno Setup), Store-ready unsigned .msix, and
 #                           one .msixbundle with both architectures
 #   macOS                   universal .app (arm64 + x86_64), ad hoc signed,
 #                           in a .dmg and a .zip
-#   Linux x64               .tar.gz with desktop entry, icons, install script
+#   Linux x64               .tar.gz with desktop entry, icons, install script,
+#                           and a .deb and an .rpm with the same files
+#   npm                     launcher package (npx pandite) that downloads
+#                           the file for its system and checks its SHA-256
 # then writes SHA256SUMS.txt and publishes a GitHub release with all files.
 #
 # A manual run on a branch is a dry run: it builds every package and keeps
@@ -18,6 +22,9 @@
 # Optional secrets add sideload-signed copies of the MSIX packages:
 #   PANDITE_SIGNING_CERT_BASE64 (a .pfx file, base64), PANDITE_SIGNING_CERT_PASSWORD
 # See docs/store-submission.md.
+# Optional secret NPM_TOKEN (an npm token with publish rights): a tag build
+# also publishes the npm launcher to the npm registry. Without it, the npm
+# package is a release file only.
 
 name: Release
 
@@ -122,6 +129,69 @@ jobs:
           cp "dist/pandite-$VERSION-$TARGET.msix" "dist/pandite-$VERSION-$TARGET-sideload.msix"
           node packaging/windows/sign-msix.mjs --pfx "$cert" \
             --timestamp http://timestamp.digicert.com "dist/pandite-$VERSION-$TARGET-sideload.msix"
+
+      - name: Find Inno Setup 6, or install a pinned copy
+        shell: pwsh
+        env:
+          # Used only when the runner image has no Inno Setup 6.
+          INNO_SETUP_VERSION: "6.7.4"
+          INNO_SETUP_SHA256: a549929319f9120716677c685535ca4671e4b937b5fdc87e2585f32d8eb30e8c
+        run: |
+          $iscc = ./packaging/windows/build-setup.ps1 -FindIscc
+          if (-not $iscc) {
+            $tag = 'is-' + ($env:INNO_SETUP_VERSION -replace '\.', '_')
+            $url = "https://github.com/jrsoftware/issrc/releases/download/$tag/innosetup-$env:INNO_SETUP_VERSION.exe"
+            $installer = Join-Path $env:RUNNER_TEMP "innosetup-$env:INNO_SETUP_VERSION.exe"
+            Write-Output "The runner has no Inno Setup 6. Downloading $url"
+            Invoke-WebRequest -Uri $url -OutFile $installer -MaximumRetryCount 3 -RetryIntervalSec 10
+            $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($hash -ne $env:INNO_SETUP_SHA256) {
+              throw "SHA-256 of $installer is $hash, expected $env:INNO_SETUP_SHA256"
+            }
+            $dir = Join-Path $env:RUNNER_TEMP 'inno-setup-6'
+            $log = Join-Path $env:RUNNER_TEMP 'inno-setup-install.log'
+            $p = Start-Process -FilePath $installer -Wait -PassThru -ArgumentList @(
+              '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/NOICONS', "/DIR=$dir", "/LOG=$log")
+            if ($p.ExitCode -ne 0) { Get-Content -LiteralPath $log; throw "the Inno Setup installer failed with exit code $($p.ExitCode)" }
+            $iscc = Join-Path $dir 'ISCC.exe'
+            if (-not (Test-Path -LiteralPath $iscc -PathType Leaf)) { throw "ISCC.exe is not in $dir after the install" }
+          }
+          Write-Output "ISCC.exe: $iscc"
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "PANDITE_ISCC=$iscc"
+
+      - name: Setup program (unsigned, per-user)
+        shell: pwsh
+        run: >-
+          ./packaging/windows/build-setup.ps1
+          -Exe "target/$env:TARGET/release/pandite.exe"
+          -Version $env:VERSION -Target $env:TARGET -OutDir dist
+
+      - name: Install and uninstall the setup program (x64 runner only)
+        if: matrix.arch == 'x64'
+        shell: pwsh
+        run: |
+          $setup = "dist/pandite-$env:VERSION-$env:TARGET-setup.exe"
+          $dir = Join-Path $env:RUNNER_TEMP 'pandite-setup-test'
+          $log = Join-Path $env:RUNNER_TEMP 'pandite-setup.log'
+          # No file associations and no desktop shortcut on the runner.
+          $p = Start-Process -FilePath $setup -Wait -PassThru -ArgumentList @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/DIR=$dir",
+            '/MERGETASKS=!associate,!desktopicon', "/LOG=$log")
+          if ($p.ExitCode -ne 0) { Get-Content -LiteralPath $log; throw "setup failed with exit code $($p.ExitCode)" }
+          foreach ($file in 'pandite.exe', 'LICENSE.txt', 'README.md', 'THIRD-PARTY-NOTICES.md', 'unins000.exe') {
+            if (-not (Test-Path -LiteralPath (Join-Path $dir $file))) { throw "setup did not install $file" }
+          }
+          $link = Join-Path ([Environment]::GetFolderPath('Programs')) 'Pandite.lnk'
+          if (-not (Test-Path -LiteralPath $link)) { throw "setup did not create $link" }
+          $u = Start-Process -FilePath (Join-Path $dir 'unins000.exe') -Wait -PassThru -ArgumentList @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART')
+          if ($u.ExitCode -ne 0) { throw "uninstall failed with exit code $($u.ExitCode)" }
+          # The uninstaller finishes in a copy of itself: wait for the files to go.
+          $exe = Join-Path $dir 'pandite.exe'
+          for ($i = 0; $i -lt 60 -and (Test-Path -LiteralPath $exe); $i++) { Start-Sleep -Seconds 1 }
+          if (Test-Path -LiteralPath $exe) { throw 'uninstall left pandite.exe behind' }
+          if (Test-Path -LiteralPath $link) { throw 'uninstall left the Start menu shortcut behind' }
+          Write-Output 'The setup program installed and uninstalled Pandite.'
 
       - uses: actions/upload-artifact@v4
         with:
@@ -235,6 +305,38 @@ jobs:
             bash packaging/linux/build-tarball.sh "$VERSION" dist \
             target/x86_64-unknown-linux-gnu/release/pandite
 
+      - name: Install packaging tools
+        run: |
+          sudo apt-get install -y --no-install-recommends -o Acquire::Retries=3 \
+            dpkg-dev rpm lintian
+
+      - name: Debian package (from the tarball)
+        run: |
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) \
+            bash packaging/linux/build-deb.sh "$VERSION" dist \
+            "dist/pandite-$VERSION-x86_64-unknown-linux-gnu.tar.gz"
+
+      - name: RPM package (from the tarball)
+        run: |
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) \
+            bash packaging/linux/build-rpm.sh "$VERSION" dist \
+            "dist/pandite-$VERSION-x86_64-unknown-linux-gnu.tar.gz"
+
+      - name: Lint the Debian package (findings do not stop the release)
+        continue-on-error: true
+        run: lintian --no-tag-display-limit "dist/pandite_${VERSION}_amd64.deb" || true
+
+      - name: Install and remove the Debian package
+        run: |
+          sudo apt-get install -y --no-install-recommends -o Acquire::Retries=3 \
+            "./dist/pandite_${VERSION}_amd64.deb"
+          test "$(pandite --version)" = "pandite $VERSION"
+          desktop-file-validate /usr/share/applications/pandite.desktop
+          test -f /usr/share/icons/hicolor/256x256/apps/pandite.png
+          sudo apt-get remove -y pandite
+          test ! -e /usr/bin/pandite
+          test ! -e /usr/share/applications/pandite.desktop
+
       - uses: actions/upload-artifact@v4
         with:
           name: linux
@@ -243,16 +345,29 @@ jobs:
           retention-days: 7
 
   checksums:
-    name: Checksums
+    name: npm launcher and checksums
     needs: [version, windows, windows-bundle, macos, linux]
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
     steps:
+      - uses: actions/checkout@v5
+
       - uses: actions/download-artifact@v4
         with:
           pattern: "{windows-*,macos,linux}"
           path: dist
           merge-multiple: true
+
+      - name: Test the npm launcher (offline)
+        run: node packaging/npm/test.mjs
+
+      - name: npm launcher with the SHA-256 of the packages
+        run: |
+          (cd dist && sha256sum -- *) > "$RUNNER_TEMP/packages.sha256"
+          node packaging/npm/build.mjs --version "$VERSION" \
+            --sums "$RUNNER_TEMP/packages.sha256" --out dist
 
       - name: SHA-256 of every file
         working-directory: dist
@@ -281,6 +396,7 @@ jobs:
       TAG: ${{ needs.version.outputs.tag }}
       VERSION: ${{ needs.version.outputs.version }}
       PRERELEASE: ${{ needs.version.outputs.prerelease }}
+      HAS_NPM_TOKEN: ${{ secrets.NPM_TOKEN != '' }}
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -290,12 +406,18 @@ jobs:
       - name: Create or update the release
         run: |
           cat > notes.md <<EOF
-          Downloads:
+          Which file to download:
 
-          - Windows: \`pandite-$VERSION-x86_64-pc-windows-msvc.zip\` (x64) or \`pandite-$VERSION-aarch64-pc-windows-msvc.zip\` (ARM64), portable.
-          - Windows MSIX: \`pandite-$VERSION-windows.msixbundle\` holds both architectures for Microsoft Store submission. The MSIX files are unsigned and do not install by double-click.
+          - Windows, to install: \`pandite-$VERSION-x86_64-pc-windows-msvc-setup.exe\` (x64) or \`pandite-$VERSION-aarch64-pc-windows-msvc-setup.exe\` (ARM64). It installs Pandite for your user account, without administrator rights, adds it to the Start menu and opens image files with it. The setup programs are not code-signed, so Windows SmartScreen warns when you start one: select More info, then Run anyway.
+          - Windows, portable: \`pandite-$VERSION-x86_64-pc-windows-msvc.zip\` (x64) or \`pandite-$VERSION-aarch64-pc-windows-msvc.zip\` (ARM64). Extract it and run \`pandite.exe\`. Nothing is installed.
+          - Windows, Microsoft Store: \`pandite-$VERSION-windows.msixbundle\` holds both architectures for Store submission. The MSIX files are unsigned and do not install by double-click.
           - macOS 11 or later: \`pandite-$VERSION-universal-apple-darwin.dmg\` (Apple Silicon and Intel).
-          - Linux x64: \`pandite-$VERSION-x86_64-unknown-linux-gnu.tar.gz\`.
+          - Debian and Ubuntu (x64): \`pandite_${VERSION}_amd64.deb\`. Install it with \`sudo apt install ./pandite_${VERSION}_amd64.deb\`.
+          - Fedora, openSUSE and other RPM systems (x64): \`pandite-$VERSION-1.x86_64.rpm\`. Install it with \`sudo dnf install ./pandite-$VERSION-1.x86_64.rpm\`.
+          - Other Linux (x64): \`pandite-$VERSION-x86_64-unknown-linux-gnu.tar.gz\`. Extract it and run \`./install.sh\` to install it for your user.
+          - Node.js 18 or later: \`npx pandite photo.jpg\` downloads the file for your system from this page on the first run, checks its SHA-256 and starts Pandite. \`pandite-$VERSION-npm.tgz\` is that npm package.
+
+          The Linux packages need glibc 2.35 or later. The macOS zip and the Linux tarball are also the files that the npm launcher downloads.
 
           Check downloads against \`SHA256SUMS.txt\`.
           EOF
@@ -304,6 +426,25 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/* --clobber
           else
-            gh release create "$TAG" dist/* --verify-tag --title "pandite $VERSION" \
+            gh release create "$TAG" dist/* --verify-tag --title "Pandite $VERSION" \
               --notes-file notes.md --generate-notes "${flags[@]}"
           fi
+
+      # After the GitHub release: the launcher downloads its files from there.
+      - name: Publish the npm launcher (only when the NPM_TOKEN secret exists)
+        if: env.HAS_NPM_TOKEN == 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npmrc="$RUNNER_TEMP/npmrc"
+          trap 'rm -f "$npmrc"' EXIT
+          # npm reads the token from the environment; the file holds no secret.
+          printf '//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}\n' > "$npmrc"
+          export NPM_CONFIG_USERCONFIG="$npmrc"
+          if npm view "pandite@$VERSION" version >/dev/null 2>&1; then
+            echo "pandite@$VERSION is on npm already"
+            exit 0
+          fi
+          tag=latest
+          if [ "$PRERELEASE" = "true" ]; then tag=next; fi
+          npm publish "dist/pandite-$VERSION-npm.tgz" --access public --tag "$tag"

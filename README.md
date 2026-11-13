@@ -119,9 +119,13 @@ Release packages come from the
 
 | System | Package | Steps |
 |---|---|---|
-| Windows x64, ARM64 | `pandite-<version>-<target>.zip` | Extract. Run `pandite.exe --register` once to add Pandite to Open with and Default apps. |
+| Windows x64, ARM64 | `pandite-<version>-<target>-setup.exe` | Run it. It installs for your user, without administrator rights, and associates image files. It is not code-signed: at the SmartScreen warning, select More info, then Run anyway. |
+| Windows x64, ARM64, portable | `pandite-<version>-<target>.zip` | Extract. Run `pandite.exe --register` once to add Pandite to Open with and Default apps. |
 | macOS 11+, universal | `pandite-<version>-universal-apple-darwin.dmg` | Drag to Applications. The app is not notarized: allow it in Privacy and Security. |
+| Debian, Ubuntu x86_64, glibc 2.35+ | `pandite_<version>_amd64.deb` | `sudo apt install ./pandite_<version>_amd64.deb` |
+| Fedora, openSUSE x86_64, glibc 2.35+ | `pandite-<version>-1.x86_64.rpm` | `sudo dnf install ./pandite-<version>-1.x86_64.rpm` |
 | Linux x86_64, glibc 2.35+ | `pandite-<version>-x86_64-unknown-linux-gnu.tar.gz` | Extract. Run `./install.sh` to install for your user. |
+| Node.js 18+ | npm package `pandite` | `npx pandite photo.jpg`. The first run downloads the release file for your system and checks its SHA-256. |
 
 On Windows, HEIC needs "HEIF Image Extensions" and "HEVC Video
 Extensions" from the Microsoft Store.
