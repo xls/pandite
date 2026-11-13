@@ -7,9 +7,10 @@
 
 mod sched;
 
-use crate::cache::{Cache, Rank, NO_INDEX};
+use crate::cache::{Cache, Entry, Rank, NO_INDEX};
 use crate::folder::FolderList;
-use crate::fs::Stamp;
+use crate::fs::{FileInfo, Stamp};
+use crate::kept::{KeptThumbnail, KeptThumbnails};
 use crate::{Event, Fetch, LoadTimings, Reduced, Stats};
 use pandite_core::{CancelToken, Content, Error, ImageBuf, Result};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -240,6 +241,9 @@ pub(crate) struct State {
     /// Screen-resolution images (read-ahead and quick first stages).
     screen: Cache<Reduced>,
     thumbs: Cache<ImageBuf>,
+    /// Thumbnails kept from an earlier library, waiting for the folder
+    /// listing to check their files.
+    kept: Option<KeptThumbnails>,
     full_errors: HashMap<PathBuf, ErrorEntry>,
     thumb_errors: HashMap<PathBuf, ErrorEntry>,
     /// Decoded byte size seen for a path, to skip read-ahead that cannot fit.
@@ -283,6 +287,7 @@ impl State {
             full: Cache::new(full_budget),
             screen: Cache::new(screen_budget),
             thumbs: Cache::new(thumb_budget),
+            kept: None,
             full_errors: HashMap::new(),
             thumb_errors: HashMap::new(),
             full_sizes: HashMap::new(),
@@ -380,6 +385,10 @@ impl State {
 
     /// Show `path` at once as a one-item list and list its folder on a worker.
     pub fn open(&mut self, path: PathBuf) {
+        if self.kept.as_ref().is_some_and(|k| !k.serves(&path)) {
+            // Another folder: free the kept thumbnails now.
+            self.kept = None;
+        }
         self.cancel_listing();
         self.list_gen += 1;
         self.list_pending = Some((self.list_gen, path.clone()));
@@ -402,6 +411,7 @@ impl State {
     }
 
     pub fn set_items(&mut self, paths: Vec<PathBuf>) -> Option<usize> {
+        self.kept = None;
         self.cancel_listing();
         self.list_pending = None;
         self.list_gen += 1;
@@ -456,6 +466,9 @@ impl State {
         self.screen.remove(path);
         self.screen_failed.remove(path);
         self.thumbs.remove(path);
+        if let Some(kept) = &mut self.kept {
+            kept.entries.remove(path);
+        }
         self.full_errors.remove(path);
         self.thumb_errors.remove(path);
         self.full_sizes.remove(path);
@@ -564,6 +577,8 @@ impl State {
             thumb_bytes: self.thumbs.used(),
             thumb_entries: self.thumbs.len(),
             thumb_budget: self.thumbs.budget(),
+            kept_bytes: self.kept.as_ref().map_or(0, KeptThumbnails::bytes),
+            kept_entries: self.kept.as_ref().map_or(0, KeptThumbnails::len),
             running: self.running_full.len()
                 + self.running_screen.len()
                 + self.running_thumb.len()
@@ -616,8 +631,10 @@ impl State {
     }
 
     /// Fold a finished folder listing in: drop cached data whose file
-    /// changed, record which files are not local, and keep the current
-    /// image selected by path.
+    /// changed, record which files are not local, keep the current image
+    /// selected by path, and cache the kept thumbnails whose file did not
+    /// change (each announced with [`Event::ThumbnailReady`] after
+    /// [`Event::Listed`]).
     fn merge_listing(&mut self, list: FolderList) {
         let current_path = self.current.and_then(|c| self.items.get(c).cloned());
         let new_current = current_path.as_ref().and_then(|p| {
@@ -649,13 +666,116 @@ impl State {
                 .map(|(_, p)| p.clone())
                 .collect();
         }
-        let (dir, paths, _) = list.into_parts();
+        let (dir, paths, info) = list.into_parts();
+        // Kept thumbnails of another folder are dropped here.
+        let kept = self.kept.take().filter(|k| k.folder == dir);
         self.last_dir = Some(dir);
         self.replace_items(paths, new_current, true);
+        let seeded = kept.map(|k| self.seed_thumbnails(k, &info));
         self.push(Event::Listed {
             len: self.items.len(),
             current: self.current,
         });
+        for (index, path) in seeded.into_iter().flatten() {
+            self.push(Event::ThumbnailReady { index, path });
+        }
+    }
+
+    /// Hold thumbnails kept from an earlier library until the folder
+    /// listing checks their files. Thumbnails of another size are dropped.
+    pub fn keep_thumbnails(&mut self, kept: KeptThumbnails) {
+        if kept.thumb_size == self.cfg.thumb_size && !kept.is_empty() {
+            self.kept = Some(kept);
+        }
+    }
+
+    /// Cache the kept thumbnails whose file still has the stamp it had
+    /// when the thumbnail was made, best ranked first, within the budget.
+    /// `info` holds the listing's facts by index. Returns the index and
+    /// path of each thumbnail cached.
+    fn seed_thumbnails(
+        &mut self,
+        kept: KeptThumbnails,
+        info: &[FileInfo],
+    ) -> Vec<(usize, PathBuf)> {
+        let ranker = self.thumb_ranker();
+        let mut fresh: Vec<(Rank, usize, PathBuf, KeptThumbnail)> = kept
+            .entries
+            .into_iter()
+            .filter_map(|(path, entry)| {
+                let index = *self.index_of.get(&path)?;
+                let unchanged = entry.stamp.modified.is_some()
+                    && info.get(index).is_some_and(|f| f.stamp == entry.stamp);
+                // A thumbnail made in this session is newer.
+                let known = self.thumbs.contains(&path) || self.thumb_errors.contains_key(&path);
+                (unchanged && !known).then(|| (ranker.rank(index), index, path, entry))
+            })
+            .collect();
+        fresh.sort_by_key(|a| (a.0, a.1));
+        let mut seeded = Vec::new();
+        for (rank, index, path, entry) in fresh {
+            let cached = Entry {
+                bytes: entry.image.byte_size(),
+                value: entry.image,
+                index,
+                stamp: Some(entry.stamp),
+            };
+            if self
+                .thumbs
+                .insert(path.clone(), cached, rank, rank.0 == 0, |i| ranker.rank(i))
+            {
+                seeded.push((index, path));
+            }
+        }
+        seeded
+    }
+
+    /// The thumbnails of the folder for the next library, best ranked
+    /// first (visible range, then nearest the current image) within the
+    /// thumbnail budget. Kept thumbnails not used yet come last.
+    pub fn export_thumbnails(&self) -> Option<KeptThumbnails> {
+        let folder = self
+            .last_dir
+            .clone()
+            .or_else(|| self.kept.as_ref().map(|k| k.folder.clone()))?;
+        let thumbs = self.thumb_ranker();
+        let full = self.full_ranker();
+        let worst = ((usize::MAX, true), (usize::MAX, true));
+        let mut candidates: Vec<((Rank, Rank), &Path, KeptThumbnail)> = self
+            .thumbs
+            .iter()
+            .filter(|(path, _)| path.parent() == Some(folder.as_path()))
+            .filter_map(|(path, e)| {
+                let stamp = e.stamp.filter(|s| s.modified.is_some())?;
+                let key = (thumbs.rank(e.index), full.rank(e.index));
+                let image = e.value.clone();
+                Some((key, path, KeptThumbnail { stamp, image }))
+            })
+            .collect();
+        if let Some(kept) = self.kept.as_ref().filter(|k| k.folder == folder) {
+            candidates.extend(
+                kept.entries
+                    .iter()
+                    .filter(|(path, _)| !self.thumbs.contains(path))
+                    .map(|(path, entry)| (worst, path.as_path(), entry.clone())),
+            );
+        }
+        candidates.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)));
+        let budget = self.thumbs.budget();
+        let mut used = 0usize;
+        let mut entries = HashMap::new();
+        for (_, path, entry) in candidates {
+            let total = used.saturating_add(entry.image.byte_size());
+            if total <= budget {
+                used = total;
+                entries.insert(path.to_path_buf(), entry);
+            }
+        }
+        (!entries.is_empty()).then_some(KeptThumbnails {
+            folder,
+            thumb_size: self.cfg.thumb_size,
+            entries,
+        })
     }
 
     // ----- worker thread bookkeeping -----
@@ -783,6 +903,9 @@ impl State {
     pub fn begin_shutdown(&mut self) {
         self.shutdown = true;
         self.list_pending = None;
+        // A worker stuck in a read keeps this state alive: do not keep
+        // the pixels with it.
+        self.kept = None;
         for running in self
             .running_full
             .values()

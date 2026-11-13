@@ -2,6 +2,7 @@
 
 use crate::downscale::box_downscale;
 use crate::fs::{FileAccess, StdFiles};
+use crate::kept::KeptThumbnails;
 use crate::state::{Settings, State};
 use crate::worker::replenish;
 use pandite_core::{Content, Error, ImageBuf, Registry, Result};
@@ -69,6 +70,13 @@ pub struct LibraryConfig {
     pub downscale: DownscaleFn,
     /// File system access. Default: [`StdFiles`].
     pub files: Arc<dyn FileAccess>,
+    /// Thumbnails kept from an earlier library (default `None`). They wait
+    /// for the folder listing; then each one whose file still has the same
+    /// size and modification time becomes a cached thumbnail and is not
+    /// decoded again. The others are dropped and made again. Thumbnails of
+    /// another folder than the one opened, or of another thumbnail size,
+    /// are dropped at once.
+    pub kept_thumbnails: Option<KeptThumbnails>,
 }
 
 impl Default for LibraryConfig {
@@ -88,6 +96,7 @@ impl Default for LibraryConfig {
             shutdown_grace: Duration::from_millis(250),
             downscale: Arc::new(box_downscale),
             files: Arc::new(StdFiles),
+            kept_thumbnails: None,
         }
     }
 }
@@ -106,6 +115,7 @@ impl fmt::Debug for LibraryConfig {
             .field("background_thumbnails", &self.background_thumbnails)
             .field("screen_size", &self.screen_size)
             .field("shutdown_grace", &self.shutdown_grace)
+            .field("kept_thumbnails", &self.kept_thumbnails)
             .finish_non_exhaustive()
     }
 }
@@ -264,6 +274,12 @@ pub struct Stats {
     pub thumb_entries: usize,
     /// Byte budget for thumbnails.
     pub thumb_budget: usize,
+    /// Bytes of thumbnails kept from an earlier library that wait for the
+    /// folder listing (not counted in `thumb_bytes`).
+    pub kept_bytes: usize,
+    /// Number of thumbnails kept from an earlier library that wait for the
+    /// folder listing.
+    pub kept_entries: usize,
     /// Jobs in flight (decodes, thumbnails, folder listing).
     pub running: usize,
     /// Live worker threads in the pool.
@@ -358,8 +374,12 @@ impl Library {
             thumb_budget: config.thumb_budget,
             screen: config.screen_size.map(|(w, h)| (w.max(1), h.max(1))),
         };
+        let mut state = State::new(settings);
+        if let Some(kept) = config.kept_thumbnails {
+            state.keep_thumbnails(kept);
+        }
         let shared = Arc::new(Shared {
-            state: Mutex::new(State::new(settings)),
+            state: Mutex::new(state),
             work_cv: Condvar::new(),
             idle_cv: Condvar::new(),
             exit_cv: Condvar::new(),
@@ -404,7 +424,9 @@ impl Library {
     /// Open `path`: it becomes a one-image list with itself current and
     /// starts decoding at once. Its folder is listed on a worker; when the
     /// listing arrives the list is replaced and [`Event::Listed`] is sent.
-    /// The file is read even when it is not stored locally.
+    /// The file is read even when it is not stored locally. Kept
+    /// thumbnails ([`LibraryConfig::kept_thumbnails`]) of another folder
+    /// are dropped here.
     pub fn open(&self, path: impl Into<PathBuf>) {
         let path = path.into();
         self.update(|st| st.open(path));
@@ -418,7 +440,9 @@ impl Library {
     }
 
     /// Replace the list with `paths` (no disk access). Cached data follows
-    /// its path. Returns the new index of the current image, if it stayed.
+    /// its path. Kept thumbnails not used yet are dropped: without a
+    /// listing their files cannot be checked. Returns the new index of the
+    /// current image, if it stayed.
     pub fn set_items(&self, paths: Vec<PathBuf>) -> Option<usize> {
         self.update(|st| st.set_items(paths))
     }
@@ -516,6 +540,17 @@ impl Library {
     /// Cache and thread figures.
     pub fn stats(&self) -> Stats {
         self.shared.lock().stats()
+    }
+
+    /// The thumbnails of the folder, for the next library
+    /// ([`LibraryConfig::kept_thumbnails`]). Thumbnails in the visible
+    /// gallery range come first, then those nearest the current image; the
+    /// total stays within the thumbnail budget. Only thumbnails whose file
+    /// size and modification time are known are taken. Kept thumbnails
+    /// this library did not use yet are passed on. The pixels are shared,
+    /// not copied. `None` when no folder is known or nothing is cached.
+    pub fn export_thumbnails(&self) -> Option<KeptThumbnails> {
+        self.shared.lock().export_thumbnails()
     }
 
     /// Block until no job runs or can start and no written-off thread is

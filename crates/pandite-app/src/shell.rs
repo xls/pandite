@@ -11,9 +11,10 @@
 //!
 //! On Windows the first pandite of a user session stays when its window
 //! closes (see [`crate::resident`]): it ends the core, drops the renderer
-//! and with them every image, thumbnail and texture, hides the window and
-//! keeps only the open GPU device. The next image opens in that process
-//! without the start-up cost.
+//! and with them every image and texture, hides the window and keeps the
+//! open GPU device and the thumbnail pixels of the last folder (for at
+//! most 30 minutes). The next image opens in that process without the
+//! start-up cost, and its folder's gallery without decoding again.
 
 mod input;
 mod native;
@@ -28,6 +29,7 @@ use crate::platform::Waker;
 use crate::resident::{self, Reply, Request};
 use crate::settings::{self, ensure_on_screen, first_open_rect, Settings, ThemeChoice};
 use pandite_core::{Content, DrawList, Point, Rect, Size};
+use pandite_library::KeptThumbnails;
 use pandite_render::{
     Checkerboard, FrameStatus, Gpu, GpuOptions, PreparedContent, RenderInput, RenderSettings,
     Renderer, TextMeasurer,
@@ -56,6 +58,10 @@ const SHOW_WAIT: Duration = Duration::from_millis(150);
 
 /// How long writing the settings at exit may take.
 const SETTINGS_SAVE_WAIT: Duration = Duration::from_secs(2);
+
+/// How long the program in the background keeps the thumbnails of the
+/// last folder when no image opens.
+const KEEP_THUMBNAILS: Duration = Duration::from_secs(30 * 60);
 
 /// Events sent to the event loop from other threads.
 pub enum UserEvent {
@@ -281,6 +287,10 @@ struct Shell {
     dormant: Arc<AtomicBool>,
     /// Decoders and encoders, kept between window sessions.
     registry: Option<Arc<pandite_core::Registry>>,
+    /// Thumbnails of the last folder, kept between window sessions.
+    kept: Option<KeptThumbnails>,
+    /// When the kept thumbnails are freed if no image opens before.
+    kept_until: Option<Instant>,
     /// When the process that asked for the current image started.
     launched: Option<SystemTime>,
     image_presented: bool,
@@ -365,6 +375,8 @@ impl Shell {
             resident: false,
             dormant: Arc::new(AtomicBool::new(false)),
             registry: None,
+            kept: None,
+            kept_until: None,
             launched: Some(resident::launch_time()),
             image_presented: false,
             early_load: false,
@@ -568,7 +580,10 @@ impl Shell {
                 fullscreen,
             },
             size_to_image,
+            // The library drops them when the image is in another folder.
+            thumbnails: self.kept.take(),
         };
+        self.kept_until = None;
         let platform = Platform {
             disk,
             clipboard: Box::new(native::SystemClipboard::default()),
@@ -710,8 +725,8 @@ impl Shell {
     }
 
     /// The window closed and the process stays: end the core, free every
-    /// image, thumbnail and texture, hide the window and keep the GPU
-    /// device for the next image.
+    /// image and texture, hide the window and keep the GPU device and the
+    /// thumbnails of the last folder for the next image.
     fn sleep(&mut self) {
         if let Some(window) = &self.window {
             window.set_visible(false);
@@ -720,7 +735,8 @@ impl Shell {
         self.sync_gpu_seen();
         if let Some(app) = self.app.take() {
             self.settings = app.settings();
-            let _ = app.shutdown(SETTINGS_SAVE_WAIT);
+            self.kept = app.shutdown(SETTINGS_SAVE_WAIT).thumbnails;
+            self.kept_until = self.kept.as_ref().map(|_| Instant::now() + KEEP_THUMBNAILS);
         }
         self.measurer = None;
         self.content = None;
@@ -749,6 +765,8 @@ impl Shell {
         self.early_load = false;
         self.show_at = None;
         self.focus_on_show = false;
+        // The kept thumbnails stay allocated through the trim: the system
+        // only moves their pages out of the working set.
         resident::trim_memory();
         self.trace("waiting in the background");
         self.dormant.store(true, Ordering::Release);
@@ -1138,8 +1156,19 @@ impl Shell {
         }
     }
 
+    /// Free the thumbnails kept for the next window session.
+    fn drop_kept(&mut self) {
+        self.kept_until = None;
+        if self.kept.take().is_some() {
+            self.trace("kept thumbnails freed");
+            resident::trim_memory();
+        }
+    }
+
     /// Report a finished smoke run and decide the exit code.
     fn finish(mut self) -> i32 {
+        // The process ends: nothing is kept for a next session.
+        self.kept = None;
         self.sync_gpu_seen();
         if let Some(app) = self.app.take() {
             let _ = app.shutdown(SETTINGS_SAVE_WAIT);
@@ -1378,6 +1407,10 @@ impl ApplicationHandler<UserEvent> for Shell {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let now = self.now();
+        if self.kept_until.is_some_and(|at| at <= Instant::now()) {
+            // No image opened in time: the background program frees them.
+            self.drop_kept();
+        }
         if let Some(path) = self.pending_drop.take() {
             if let Some(app) = self.app.as_mut() {
                 app.open(path, now);
@@ -1405,8 +1438,12 @@ impl ApplicationHandler<UserEvent> for Shell {
             return;
         };
         if self.renderer.is_none() {
-            // Waiting for the GPU: nothing to draw yet.
-            event_loop.set_control_flow(ControlFlow::Wait);
+            // Waiting for the GPU, or in the background: nothing to draw.
+            // In the background, wake when the kept thumbnails expire.
+            event_loop.set_control_flow(match self.kept_until {
+                Some(at) => ControlFlow::WaitUntil(at),
+                None => ControlFlow::Wait,
+            });
             return;
         }
         let app_wants = self.app.as_ref().is_some_and(App::needs_frame)

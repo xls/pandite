@@ -21,6 +21,9 @@
 //!   the user opens them.
 //! - [`box_downscale`] is the built-in thumbnail filter; the application
 //!   may inject a better one through [`LibraryConfig::downscale`].
+//! - [`Library::export_thumbnails`] hands the thumbnails of the folder to
+//!   the next library ([`LibraryConfig::kept_thumbnails`]), which uses each
+//!   one whose file did not change instead of decoding it again.
 //!
 //! The crate uses only the standard library.
 //!
@@ -32,6 +35,7 @@ mod cache;
 mod downscale;
 mod folder;
 mod fs;
+mod kept;
 mod library;
 mod state;
 mod worker;
@@ -43,6 +47,7 @@ pub use fs::{
     FILE_ATTRIBUTE_OFFLINE, FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS, FILE_ATTRIBUTE_RECALL_ON_OPEN,
     READ_CHUNK,
 };
+pub use kept::{KeptThumbnail, KeptThumbnails};
 pub use library::{
     DownscaleFn, Event, Fetch, Library, LibraryConfig, LoadTimings, Reduced, Stats, WakeFn,
 };
