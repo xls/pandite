@@ -29,9 +29,8 @@ Pandite is a GPU image viewer for Windows, macOS and Linux, written in
 Rust with wgpu. It is one executable of 12 MiB. It has no account, no
 telemetry and no network code.
 
-**Made for** photographers who page through folders of 60 MP camera
-files, and for anyone who wants a picture on screen the moment they
-open it.
+**Made for** people who are sick of image viewers that lock up and take
+their time to show a picture.
 
 ## Performance
 
