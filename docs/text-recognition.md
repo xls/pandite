@@ -15,6 +15,16 @@ move to another image, pandite stops the recognition. pandite keeps the
 text of recently viewed images until it closes, so an image that you come
 back to has its text at once.
 
+The recognizer reads upright text best. Sideways or upside-down text gives
+little or no text. When you rotate or flip the image, pandite reads the
+text again the way the image now stands. The new text replaces the old
+text. So a photo that opens on its side gets its text when you turn it
+upright. The same rules apply: the turned image comes first, stays on
+screen for a quarter of a second, and then pandite reads it in the
+background. A crop or a resize does not start a new reading. pandite also
+keeps the text of each way you turned the image, so when you turn the
+image back, or undo a turn, the earlier text returns at once.
+
 ## Select and copy text
 
 1. Open an image that shows text.
@@ -25,6 +35,12 @@ back to has its text at once.
      reading order, from line to line.
    - Double-click a word to select the word.
    - Triple-click a word to select its line.
+   - Double-click a word and keep the button down after the second click.
+     Drag to add whole words, from that word to the word at the pointer.
+     Release the button to stop.
+   - Triple-click a word and keep the button down after the third click.
+     Drag to add whole lines, from that line to the line at the pointer.
+     Release the button to stop.
    - Press Ctrl+A to select all the text in the image.
 4. Press Ctrl+C to copy the selected text. Or right-click and select Copy
    selected text.
@@ -36,8 +52,10 @@ A drag that starts on the image away from the text pans the image, as
 before. Click the image away from the text to clear the selection. Esc
 closes pandite, also while text is selected.
 
-The selection stays on the words when you zoom, pan, rotate, flip or crop
-the image. Words that a crop removes are not selected and not copied.
+The selection stays on the words when you zoom, pan or crop the image.
+Words that a crop removes are not selected and not copied. When you rotate
+or flip the image, the selection stays on the words until the text of the
+turned image replaces them. Then the selection clears.
 
 ## Shortcuts
 
@@ -46,6 +64,8 @@ the image. Words that a crop removes are not selected and not copied.
 | Drag from a word | Select words from that word to the pointer |
 | Double-click a word | Select the word |
 | Triple-click a word | Select the line |
+| Double-click a word, keep the button down and drag | Select whole words from that word to the pointer |
+| Triple-click a word, keep the button down and drag | Select whole lines from that line to the pointer |
 | Ctrl+A | Select all the text in the image |
 | Ctrl+C | Copy the selected text. Without a selection: copy the image |
 | Ctrl+Shift+C | Copy the file path, also while text is selected |
@@ -60,6 +80,8 @@ the image. Words that a crop removes are not selected and not copied.
   installs one with most display languages.
 - Without an OCR language, pandite shows no text features and no error.
 - pandite reads still images. It does not read animations.
+- Text that is not upright gives little or no text. Rotate or flip the
+  image until the text is upright. pandite then reads it again.
 - pandite reads large images at 6000 pixels on the long side. Very small
   print in a very large photo can be lost. Zooming in does not change
   this.

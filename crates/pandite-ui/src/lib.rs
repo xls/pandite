@@ -53,12 +53,14 @@
 //! When [`UiContext::text`] carries the words of the image on screen, the
 //! pointer over a word is a text cursor, a left drag that starts on a word
 //! selects words in reading order, a double click selects a word and a
-//! triple click its line. Ctrl+A selects everything, Ctrl+C copies the
-//! selection as [`Action::CopyText`] (lines joined with `"\n"`, words with
-//! one space). Without a selection Ctrl+C copies the image
-//! ([`Action::CopyImage`]). Drags that start off text pan as before.
-//! Highlights are drawn over the image with the same placement as the
-//! image itself.
+//! triple click its line. With the button held after the second or third
+//! press, a drag extends that selection by whole words or whole lines, and
+//! the release ends it. A double click off text toggles fit and 1:1.
+//! Ctrl+A selects everything, Ctrl+C copies the selection as
+//! [`Action::CopyText`] (lines joined with `"\n"`, words with one space).
+//! Without a selection Ctrl+C copies the image ([`Action::CopyImage`]).
+//! Drags that start off text pan as before. Highlights are drawn over the
+//! image with the same placement as the image itself.
 //!
 //! # Information panel
 //!

@@ -84,9 +84,10 @@ pub(crate) struct TextJobSpec {
     pub cancel: CancelToken,
 }
 
-/// Read the text in the image with the first provider that works here.
-/// Reports [`Error::Unavailable`] when none does. The event loop never
-/// waits for this thread.
+/// Read the text in the image, turned as `key.turn` says, with the first
+/// provider that works here. The word outlines come back in pixels of the
+/// image as it was handed in. Reports [`Error::Unavailable`] when no
+/// provider works. The event loop never waits for this thread.
 pub(crate) fn recognize(out: Outbox, job: TextJobSpec) -> std::io::Result<()> {
     spawn("pandite-text", move || {
         let TextJobSpec {
@@ -101,7 +102,12 @@ pub(crate) fn recognize(out: Outbox, job: TextJobSpec) -> std::io::Result<()> {
             for provider in &providers {
                 cancel.check()?;
                 if provider.available() {
-                    return provider.recognize(&image, &cancel);
+                    // The turn copies every pixel: here, never on the
+                    // event loop.
+                    let turned = key.turn.apply(&image);
+                    cancel.check()?;
+                    let layout = provider.recognize(&turned, &cancel)?;
+                    return Ok(key.turn.unturn(layout, (image.width(), image.height())));
                 }
             }
             Err(Error::Unavailable(

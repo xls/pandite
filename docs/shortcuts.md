@@ -120,6 +120,8 @@ editor, a document or a chat.
 | Drag from a word with the left button | Select the words from that word to the word nearest the pointer, in reading order |
 | Double-click a word | Select the word |
 | Triple-click a word | Select the line of the word |
+| Double-click a word, keep the button down and drag | Select whole words from that word to the word nearest the pointer, in reading order |
+| Triple-click a word, keep the button down and drag | Select whole lines from the line of that word to the line nearest the pointer |
 | Click the image away from the text | Clear the text selection |
 | Double-click the image away from the text | In fit to window: 1:1 at the pointer. In other modes: fit to window. |
 | Right-click | Context menu |

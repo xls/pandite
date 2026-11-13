@@ -91,6 +91,16 @@ impl<'a> TextGeom<'a> {
         Some((first, last))
     }
 
+    /// The words on the image of the lines from the line of word `anchor`
+    /// to the line of word `focus` (either order), for a drag after a
+    /// triple click: the end on `anchor`'s side first, then the end on
+    /// `focus`'s side.
+    pub fn line_span(&self, anchor: usize, focus: usize) -> Option<(usize, usize)> {
+        let (a0, a1) = self.line_bounds(anchor)?;
+        let (f0, f1) = self.line_bounds(focus)?;
+        Some(if f0 < a0 { (a1, f0) } else { (a0, f1) })
+    }
+
     /// Word quads on screen, in reading order, with their index and line;
     /// words off the image are skipped.
     fn screen_words(&self) -> impl Iterator<Item = (usize, usize, Quad)> + '_ {
@@ -307,6 +317,11 @@ mod tests {
         assert_eq!(as_rect(&all[1]), Some(Rect::new(120.0, 200.0, 180.0, 24.0)));
         assert_eq!(g.text_of(1, 3), "b\nc d");
         assert_eq!(g.visible_bounds(), Some((0, 3)));
+        // Whole lines between two words, in either direction.
+        assert_eq!(g.line_span(0, 3), Some((0, 3)));
+        assert_eq!(g.line_span(3, 1), Some((3, 0)));
+        assert_eq!(g.line_span(2, 3), Some((2, 3)));
+        assert_eq!(g.line_span(1, 9), None);
     }
 
     #[test]

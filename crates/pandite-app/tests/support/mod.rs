@@ -916,6 +916,9 @@ struct FakeTextState {
     /// Words per line: text and box as fractions of the image size, so
     /// the layout fits any image it is given.
     lines: Vec<Vec<(String, [f32; 4])>>,
+    /// When set, words are found only in an image whose top-left pixel
+    /// has this RGBA8 value.
+    upright: Option<[u8; 4]>,
     calls: Vec<TextCall>,
     started: usize,
     cancelled: usize,
@@ -946,6 +949,15 @@ impl FakeText {
                 .collect();
         }
         Arc::new(fake)
+    }
+
+    /// A recognizer that reads only upright text, like the platform one
+    /// reads sideways text poorly: it finds `lines` only in an image whose
+    /// top-left pixel is `marker` (RGBA8), and nothing in any other image.
+    pub fn upright_only(lines: &[&[(&str, [f32; 4])]], marker: [u8; 4]) -> Arc<Self> {
+        let fake = Self::new(lines);
+        lock(&fake.state).upright = Some(marker);
+        fake
     }
 
     /// A recognizer that reports itself missing (no OCR language).
@@ -1064,9 +1076,14 @@ impl TextProvider for FakeText {
                 .0;
         }
         let (fw, fh) = (w as f32, h as f32);
+        let upright = match g.upright {
+            Some(marker) => image.data().get(..4) == Some(&marker[..]),
+            None => true,
+        };
         let lines = g
             .lines
             .iter()
+            .filter(|_| upright)
             .map(|l| TextLine {
                 words: l
                     .iter()

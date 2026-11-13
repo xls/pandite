@@ -63,18 +63,23 @@ into the program on any platform.
 On Windows, pandite reads the text in the image on screen. Point at a word
 and the pointer becomes a text cursor. Drag across words to select them,
 double-click a word or triple-click a line, or press Ctrl+A for all the
-text. Ctrl+C then copies the text, with one line for each line in the
-image. Without a selection, Ctrl+C copies the image itself. Esc closes
-pandite, also while text is selected. Click the image away from the text
-to clear a selection.
+text. Keep the button down after a double-click or a triple-click and drag
+to add whole words or whole lines. Ctrl+C then copies the text, with one
+line for each line in the image. Without a selection, Ctrl+C copies the
+image itself. Esc closes pandite, also while text is selected. Click the
+image away from the text to clear a selection.
 
 The reading happens on your computer, with the text recognizer that comes
 with Windows, so it works offline. It starts in the background once the
-image is on screen, so the image always comes first. It needs an OCR
-language, and Windows installs one with most display languages. Without
-one, pandite shows no text features. macOS and Linux have no text
-features yet. To turn the feature off, set `ocr = off` in the settings
-file. [docs/text-recognition.md](docs/text-recognition.md) has the details.
+image is on screen, so the image always comes first. The recognizer reads
+upright text best. When you rotate or flip the image, pandite reads it
+again the way it now stands, so a photo that opens on its side gets its
+text when you turn it upright. Turn it back and the earlier text returns
+at once. The recognizer needs an OCR language, and Windows installs one
+with most display languages. Without one, pandite shows no text features.
+macOS and Linux have no text features yet. To turn the feature off, set
+`ocr = off` in the settings file.
+[docs/text-recognition.md](docs/text-recognition.md) has the details.
 
 ## Image information
 

@@ -89,6 +89,37 @@ fn timed(mut ctx: UiContext<'_>, t: std::time::Duration) -> UiContext<'_> {
     ctx
 }
 
+/// Click at `p` at time `t`, then press again at `p` 120 ms later and keep
+/// the button down: the held second press of a double click. Returns
+/// every action.
+fn double_press(ui: &mut Ui, ctx: &UiContext<'_>, t: std::time::Duration, p: Point) -> Vec<Action> {
+    let mut out = click(ui, &timed(*ctx, t), p);
+    let second = timed(*ctx, t + ms(120));
+    out.extend(move_to(ui, &second, p));
+    out.extend(press(ui, &second, p, PointerButton::Left));
+    out
+}
+
+/// The held third press of a triple click at `p`, starting at time `t`.
+fn triple_press(ui: &mut Ui, ctx: &UiContext<'_>, t: std::time::Duration, p: Point) -> Vec<Action> {
+    let mut out = click(ui, &timed(*ctx, t), p);
+    out.extend(click(ui, &timed(*ctx, t + ms(120)), p));
+    let third = timed(*ctx, t + ms(240));
+    out.extend(move_to(ui, &third, p));
+    out.extend(press(ui, &third, p, PointerButton::Left));
+    out
+}
+
+/// True when `out` holds a zoom or a pan.
+fn zooms_or_pans(out: &[Action]) -> bool {
+    kinds(out).iter().any(|k| {
+        matches!(
+            k,
+            ActionKind::OneToOne | ActionKind::FitToWindow | ActionKind::PanBy
+        )
+    })
+}
+
 /// The unedited image fitted into the window.
 fn fit_ctx(layout: &TextLayout) -> UiContext<'_> {
     ctx_with(layout, W, H, ViewState::default(), Affine::IDENTITY)
@@ -632,4 +663,264 @@ fn ctrl_c_copies_selected_text() {
         key(&mut ui, &ctx, Key::C, Modifiers::CTRL),
         vec![Action::CopyImage]
     );
+}
+
+#[test]
+fn double_click_drag_selects_words() {
+    let l = layout();
+    let t = ms(10_000);
+    let held = timed(fit_ctx(&l), t + ms(200));
+    let mut ui = Ui::new();
+    frame(&mut ui, &held);
+
+    // The second press of a double click on "beta" selects the word at
+    // once, before the release.
+    let mut out = double_press(&mut ui, &held, t, word_center(&held, 1));
+    assert_eq!(ui.selected_text(&held).as_deref(), Some("beta"));
+    assert_eq!(ui.cursor(), CursorShape::Text);
+
+    // With the button held, a drag grows the selection by whole words.
+    out.extend(move_to(&mut ui, &held, word_center(&held, 2)));
+    assert_eq!(ui.selected_text(&held).as_deref(), Some("beta gamma"));
+    out.extend(move_to(&mut ui, &held, word_center(&held, 4)));
+    assert_eq!(
+        ui.selected_text(&held).as_deref(),
+        Some("beta gamma\ndelta epsilon")
+    );
+    // The pointer near the start of "epsilon" still takes the whole word.
+    let start_of_epsilon = on_screen(&held, Point::new(460.0, 330.0));
+    out.extend(move_to(&mut ui, &held, start_of_epsilon));
+    assert_eq!(
+        ui.selected_text(&held).as_deref(),
+        Some("beta gamma\ndelta epsilon")
+    );
+    // One band per line, each over whole words.
+    let bands = highlights(&frame(&mut ui, &held));
+    assert_eq!(bands.len(), 2, "{bands:?}");
+    assert!(near(
+        bounds(&bands[0]),
+        screen_rect_of(&held, Rect::new(450.0, 100.0, 650.0, 60.0))
+    ));
+    assert!(near(
+        bounds(&bands[1]),
+        screen_rect_of(&held, Rect::new(100.0, 300.0, 800.0, 60.0))
+    ));
+    // Back onto the first word: only that word stays selected.
+    out.extend(move_to(&mut ui, &held, word_center(&held, 1)));
+    assert_eq!(ui.selected_text(&held).as_deref(), Some("beta"));
+
+    // The release ends the drag and keeps what it selected.
+    out.extend(move_to(&mut ui, &held, word_center(&held, 3)));
+    out.extend(release(
+        &mut ui,
+        &held,
+        word_center(&held, 3),
+        PointerButton::Left,
+    ));
+    assert_eq!(
+        ui.selected_text(&held).as_deref(),
+        Some("beta gamma\ndelta")
+    );
+    out.extend(move_to(&mut ui, &held, word_center(&held, 5)));
+    assert_eq!(
+        ui.selected_text(&held).as_deref(),
+        Some("beta gamma\ndelta")
+    );
+    assert!(!zooms_or_pans(&out), "{out:?}");
+    assert_eq!(
+        key(&mut ui, &held, Key::C, Modifiers::CTRL),
+        vec![Action::CopyText("beta gamma\ndelta".into())]
+    );
+}
+
+#[test]
+fn double_click_drag_backwards() {
+    let l = layout();
+    let t = ms(10_000);
+    let held = timed(fit_ctx(&l), t + ms(200));
+    let mut ui = Ui::new();
+    frame(&mut ui, &held);
+
+    let mut out = double_press(&mut ui, &held, t, word_center(&held, 4));
+    assert_eq!(ui.selected_text(&held).as_deref(), Some("epsilon"));
+    // Back against the reading order: the double-clicked word stays
+    // selected, and whole words before it join.
+    out.extend(move_to(&mut ui, &held, word_center(&held, 1)));
+    assert_eq!(
+        ui.selected_text(&held).as_deref(),
+        Some("beta gamma\ndelta epsilon")
+    );
+    out.extend(move_to(&mut ui, &held, word_center(&held, 0)));
+    assert_eq!(
+        ui.selected_text(&held).as_deref(),
+        Some("alpha beta gamma\ndelta epsilon")
+    );
+    // Left of the first word, the nearest word is still the first one.
+    out.extend(move_to(
+        &mut ui,
+        &held,
+        on_screen(&held, Point::new(20.0, 130.0)),
+    ));
+    assert_eq!(
+        ui.selected_text(&held).as_deref(),
+        Some("alpha beta gamma\ndelta epsilon")
+    );
+    // Forward past the double-clicked word: it stays the first one.
+    out.extend(move_to(&mut ui, &held, word_center(&held, 5)));
+    assert_eq!(ui.selected_text(&held).as_deref(), Some("epsilon\nzeta"));
+    out.extend(move_to(&mut ui, &held, word_center(&held, 3)));
+    assert_eq!(ui.selected_text(&held).as_deref(), Some("delta epsilon"));
+    out.extend(release(
+        &mut ui,
+        &held,
+        word_center(&held, 3),
+        PointerButton::Left,
+    ));
+    assert_eq!(ui.selected_text(&held).as_deref(), Some("delta epsilon"));
+    assert!(!zooms_or_pans(&out), "{out:?}");
+}
+
+#[test]
+fn triple_click_drag_selects_lines() {
+    let l = layout();
+    let t = ms(10_000);
+    let held = timed(fit_ctx(&l), t + ms(300));
+    let mut ui = Ui::new();
+    frame(&mut ui, &held);
+
+    // The third press on "epsilon" selects its line.
+    let mut out = triple_press(&mut ui, &held, t, word_center(&held, 4));
+    assert_eq!(ui.selected_text(&held).as_deref(), Some("delta epsilon"));
+    // With the button held, a drag grows the selection by whole lines.
+    out.extend(move_to(&mut ui, &held, word_center(&held, 5)));
+    assert_eq!(
+        ui.selected_text(&held).as_deref(),
+        Some("delta epsilon\nzeta")
+    );
+    // Up, against the reading order: the triple-clicked line stays.
+    out.extend(move_to(&mut ui, &held, word_center(&held, 1)));
+    assert_eq!(
+        ui.selected_text(&held).as_deref(),
+        Some("alpha beta gamma\ndelta epsilon")
+    );
+    assert_eq!(highlights(&frame(&mut ui, &held)).len(), 2);
+    // Back on the first word of the triple-clicked line: only that line.
+    out.extend(move_to(&mut ui, &held, word_center(&held, 3)));
+    assert_eq!(ui.selected_text(&held).as_deref(), Some("delta epsilon"));
+    // The release ends the drag and keeps what it selected.
+    out.extend(move_to(&mut ui, &held, word_center(&held, 0)));
+    out.extend(release(
+        &mut ui,
+        &held,
+        word_center(&held, 0),
+        PointerButton::Left,
+    ));
+    assert_eq!(
+        ui.selected_text(&held).as_deref(),
+        Some("alpha beta gamma\ndelta epsilon")
+    );
+    out.extend(move_to(&mut ui, &held, word_center(&held, 5)));
+    assert_eq!(
+        ui.selected_text(&held).as_deref(),
+        Some("alpha beta gamma\ndelta epsilon")
+    );
+    assert!(!zooms_or_pans(&out), "{out:?}");
+}
+
+#[test]
+fn double_click_selects_one_word() {
+    let l = layout();
+    let t = ms(10_000);
+    let held = timed(fit_ctx(&l), t + ms(200));
+    let mut ui = Ui::new();
+    frame(&mut ui, &held);
+
+    let p = word_center(&held, 2);
+    let mut out = double_press(&mut ui, &held, t, p);
+    assert_eq!(ui.selected_text(&held).as_deref(), Some("gamma"));
+    // A hand that shakes a little while the button is down changes
+    // nothing.
+    out.extend(move_to(&mut ui, &held, Point::new(p.x + 2.0, p.y - 1.0)));
+    assert_eq!(ui.selected_text(&held).as_deref(), Some("gamma"));
+    out.extend(release(
+        &mut ui,
+        &held,
+        Point::new(p.x + 2.0, p.y - 1.0),
+        PointerButton::Left,
+    ));
+    // Exactly the word, after the release too, and no zoom.
+    assert_eq!(ui.selected_text(&held).as_deref(), Some("gamma"));
+    assert!(
+        !zooms_or_pans(&out),
+        "a double click on text is not a zoom: {out:?}"
+    );
+    let bands = highlights(&frame(&mut ui, &held));
+    assert_eq!(bands.len(), 1);
+    assert!(near(
+        bounds(&bands[0]),
+        screen_rect_of(&held, Rect::new(750.0, 100.0, 350.0, 60.0))
+    ));
+    // A plain click on a word later still clears the selection.
+    let later = timed(fit_ctx(&l), t + ms(2_000));
+    click(&mut ui, &later, word_center(&later, 0));
+    assert_eq!(ui.selected_text(&later), None);
+}
+
+#[test]
+fn double_click_off_text_zooms() {
+    let l = layout();
+    let t = ms(10_000);
+    let ctx = timed(fit_ctx(&l), t + ms(200));
+    let mut ui = Ui::new();
+    frame(&mut ui, &ctx);
+
+    // A double click on the image away from the words: the interface
+    // does not take it as text. It asks for 1:1 at the pointer, selects
+    // nothing and the held button pans.
+    let blank = on_screen(&ctx, Point::new(1500.0, 800.0));
+    move_to(&mut ui, &ctx, blank);
+    assert_ne!(ui.cursor(), CursorShape::Text);
+    let out = double_press(&mut ui, &ctx, t, blank);
+    assert!(
+        out.contains(&Action::OneToOne {
+            anchor: Some(blank)
+        }),
+        "{out:?}"
+    );
+    assert_eq!(ui.selected_text(&ctx), None);
+    let out = move_to(&mut ui, &ctx, Point::new(blank.x - 30.0, blank.y));
+    assert_eq!(out, vec![Action::PanBy { dx: -30.0, dy: 0.0 }]);
+    assert_eq!(ui.cursor(), CursorShape::Grabbing);
+    release(
+        &mut ui,
+        &ctx,
+        Point::new(blank.x - 30.0, blank.y),
+        PointerButton::Left,
+    );
+    assert_eq!(ui.selected_text(&ctx), None);
+
+    // At 1:1 a double click away from the words fits the image again.
+    let view = ViewState {
+        mode: DisplayMode::OneToOne,
+        ..ViewState::default()
+    };
+    let t = ms(20_000);
+    let one = timed(ctx_with(&l, W, H, view, Affine::IDENTITY), t + ms(200));
+    let blank = on_screen(&one, Point::new(1300.0, 700.0));
+    let out = double_press(&mut ui, &one, t, blank);
+    assert!(kinds(&out).contains(&ActionKind::FitToWindow), "{out:?}");
+    release(&mut ui, &one, blank, PointerButton::Left);
+    assert_eq!(ui.selected_text(&one), None);
+
+    // A double click off text also clears a selection, as a single click
+    // off text does, and still zooms.
+    let t = ms(30_000);
+    key(&mut ui, &ctx, Key::A, Modifiers::CTRL);
+    assert_eq!(ui.selected_text(&ctx).as_deref(), Some(ALL_TEXT));
+    let fit = timed(fit_ctx(&l), t + ms(200));
+    let blank = on_screen(&fit, Point::new(1500.0, 800.0));
+    let out = double_press(&mut ui, &fit, t, blank);
+    assert!(kinds(&out).contains(&ActionKind::OneToOne), "{out:?}");
+    release(&mut ui, &fit, blank, PointerButton::Left);
+    assert_eq!(ui.selected_text(&fit), None);
 }

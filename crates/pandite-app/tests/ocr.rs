@@ -2,13 +2,15 @@
 //! after the full-resolution image was presented and runs off the event
 //! loop; navigating away cancels it; selected text reaches the clipboard;
 //! `ocr = off` disables it; without a working recognizer no text feature
-//! shows. A fake recognizer stands in for the platform one.
+//! shows. A turn of the picture reads the text again in the new turn, a
+//! crop does not, and turning back uses the stored reading. A fake
+//! recognizer stands in for the platform one.
 
 mod support;
 
 use pandite_app::settings::{Settings, TextRecognition};
-use pandite_core::{DecoderProvider, DrawList, Point, Size};
-use pandite_ui::{CursorShape, InputEvent, Key, Modifiers, PointerButton};
+use pandite_core::{DecoderProvider, DrawList, ImageBuf, Point, Rect, Size, TextLayout};
+use pandite_ui::{Action, CursorShape, InputEvent, Key, Modifiers, PixelRect, PointerButton};
 use std::sync::Arc;
 use std::time::Duration;
 use support::*;
@@ -265,7 +267,8 @@ fn copy_selected_text_reaches_clipboard() {
     drag(&mut h, a, b);
     h.key(Key::C, Modifiers::CTRL);
     assert_eq!(h.clipboard().as_deref(), Some("hello world"));
-    // The edit read nothing again.
+    // Within the start delay after the turn nothing is read again; the
+    // words read before it follow the picture.
     assert_eq!(fake.recognitions().len(), 1);
 }
 
@@ -427,4 +430,384 @@ fn no_provider_hides_text_features() {
     std::thread::sleep(Duration::from_millis(30));
     h.pump();
     assert_eq!(fake.calls().len(), asked);
+}
+
+// ----- reading again after a turn ---------------------------------------------
+
+/// The top-left pixel [`FakeText::upright_only`] looks for.
+const MARK: [u8; 4] = [255, 0, 255, 255];
+
+/// A `w` x `h` photo stored on its side: a quarter turn to the right
+/// brings its marked bottom-left pixel to the top-left corner.
+fn sideways(w: u32, h: u32) -> ImageBuf {
+    image(w, h, |x, y| {
+        if (x, y) == (0, h - 1) {
+            MARK
+        } else {
+            [(x * 9) as u8, (y * 9) as u8, 60, 255]
+        }
+    })
+}
+
+/// A harness on `path` with `fake` as the recognizer, its text read once.
+fn read_once(path: &std::path::Path, fake: &Arc<FakeText>) -> Harness {
+    let mut h = Harness::new(Config {
+        open: Some(path.to_path_buf()),
+        registry: Some(fake.registry(&[])),
+        ..Config::default()
+    });
+    h.start();
+    assert!(h.wait_shown(path));
+    settle(&mut h);
+    assert!(h.wait_until(|app| app.shown_text().is_some() && !app.text_pending()));
+    h.frame();
+    h
+}
+
+/// The text on screen, once read.
+fn words(h: &mut Harness) -> Option<TextLayout> {
+    h.app().shown_text().cloned()
+}
+
+/// Press `key`, wait for the edit and draw a frame: the new picture is
+/// presented.
+fn edit(h: &mut Harness, key: Key, mods: Modifiers) {
+    h.key(key, mods);
+    assert!(h.wait_idle());
+    h.frame();
+}
+
+/// Let the start delay pass and wait until the reading it starts is on
+/// screen; `n` readings ran by then.
+fn read_turned(h: &mut Harness, fake: &FakeText, n: usize) {
+    assert!(h.app().text_pending(), "a new reading waits");
+    h.advance(300);
+    h.pump();
+    h.frame();
+    assert!(h.wait_until(|app| !app.text_pending()));
+    h.frame();
+    assert_eq!(fake.recognitions().len(), n);
+}
+
+/// The sizes of the images the recognizer read, in order.
+fn reads(fake: &FakeText) -> Vec<(u32, u32)> {
+    fake.recognitions().iter().map(|c| c.dims).collect()
+}
+
+/// Clear the text clipboard, press Ctrl+C and wait for an image copy to
+/// end. The text on the clipboard: `None` when Ctrl+C copied the image
+/// because no text was selected.
+fn ctrl_c(h: &mut Harness) -> Option<String> {
+    *lock(&h.clipboard) = None;
+    h.key(Key::C, Modifiers::CTRL);
+    assert!(h.wait_until(|a| !a.copying_image()));
+    h.clipboard()
+}
+
+/// The window position of word `i` when the text was read from the
+/// picture on screen as it stands: its box is a fraction of that picture.
+fn shown_word(h: &mut Harness, i: usize) -> Point {
+    let (w, hh) = h.app().display_dims().unwrap();
+    word_at(h, i, w, hh)
+}
+
+/// Select from word `a` to word `b` of the picture on screen and copy.
+fn copy_words(h: &mut Harness, a: usize, b: usize) -> Option<String> {
+    let (pa, pb) = (shown_word(h, a), shown_word(h, b));
+    drag(h, pa, pb);
+    ctrl_c(h)
+}
+
+fn near(a: Rect, b: Rect) -> bool {
+    (a.x - b.x).abs() < 0.01
+        && (a.y - b.y).abs() < 0.01
+        && (a.w - b.w).abs() < 0.01
+        && (a.h - b.h).abs() < 0.01
+}
+
+#[test]
+fn text_read_again_after_rotation() {
+    // A photo stored on its side and a recognizer that reads only upright
+    // text: as stored, nothing is found.
+    let dir = TempDir::new("ocr-turn");
+    let path = dir.join("sideways.png");
+    write_png(&path, &sideways(300, 600));
+    let fake = FakeText::upright_only(LINES, MARK);
+    let mut h = read_once(&path, &fake);
+    assert!(
+        words(&mut h).unwrap().is_empty(),
+        "sideways text is not read"
+    );
+    assert_eq!(reads(&fake), vec![(300, 600)]);
+
+    // Turned upright: the new picture comes first and stays for the start
+    // delay, then the image is read again, turned the way it is on screen.
+    h.key(Key::R, Modifiers::NONE);
+    assert!(h.wait_idle());
+    assert_eq!(h.app().display_dims(), Some((600, 300)));
+    h.frame();
+    let presented = h.now;
+    assert!(h.app().text_pending(), "a new reading waits");
+    let due = h.app().next_frame_at().expect("a frame is scheduled");
+    assert!(
+        due <= presented + Duration::from_millis(250),
+        "the start is scheduled: {due:?}"
+    );
+    h.pump();
+    std::thread::sleep(Duration::from_millis(30));
+    h.pump();
+    assert_eq!(fake.recognitions().len(), 1, "nothing before the delay");
+    read_turned(&mut h, &fake, 2);
+    assert_eq!(
+        reads(&fake),
+        vec![(300, 600), (600, 300)],
+        "the turned image is read"
+    );
+    assert_eq!(words(&mut h).unwrap().text(), ALL_TEXT);
+    let main = std::thread::current().id();
+    let calls = fake.calls();
+    assert!(
+        calls.iter().all(|c| c.thread != main),
+        "a recognizer call ran on the event-loop thread: {calls:?}"
+    );
+
+    // The new text is there to use: a text cursor over a word, and the
+    // words copy.
+    let p = shown_word(&mut h, 2);
+    h.input(InputEvent::PointerMove { pos: p });
+    assert_eq!(last_cursor(&h), Some(CursorShape::Text));
+    h.key(Key::A, Modifiers::CTRL);
+    assert_eq!(ctrl_c(&mut h).as_deref(), Some(ALL_TEXT));
+    // Later frames read nothing again.
+    for _ in 0..3 {
+        h.advance(500);
+        h.pump();
+        h.frame();
+    }
+    assert_eq!(fake.recognitions().len(), 2);
+}
+
+#[test]
+fn text_boxes_match_turned_image() {
+    // Upright only: the boxes read from the turned picture land on it.
+    let dir = TempDir::new("ocr-boxes");
+    let path = dir.join("sideways.png");
+    write_png(&path, &sideways(300, 600));
+    let fake = FakeText::upright_only(LINES, MARK);
+    let mut h = read_once(&path, &fake);
+    edit(&mut h, Key::R, Modifiers::NONE);
+    read_turned(&mut h, &fake, 2);
+    // The layout stays in pixels of the image as decoded: "hello", read at
+    // (60, 60) to (210, 105) of the 600 x 300 turned picture, lies at
+    // (60, 390) to (105, 540) of the 300 x 600 image.
+    let layout = words(&mut h).unwrap();
+    assert_eq!((layout.width, layout.height), (300, 600));
+    let hello = layout.lines[0].words[0].quad.bounds();
+    assert!(
+        near(hello, Rect::new(60.0, 390.0, 45.0, 150.0)),
+        "{hello:?}"
+    );
+    // On screen every word is where the recognizer saw it.
+    assert_eq!(copy_words(&mut h, 0, 1).as_deref(), Some("hello world"));
+    assert_eq!(copy_words(&mut h, 1, 2).as_deref(), Some("world\nsecond"));
+    assert_eq!(copy_words(&mut h, 3, 2).as_deref(), Some("second line"));
+    let gap = screen(&mut h, Point::new(300.0, 0.42 * 300.0));
+    h.input(InputEvent::PointerMove { pos: gap });
+    assert_ne!(last_cursor(&h), Some(CursorShape::Text), "between lines");
+
+    // Every turn: each reading's boxes land on the picture it was read
+    // from, mirrored or not.
+    let (_dir, paths) = folder("ocr-boxes-all", &["page.png"], 600, 300);
+    let fake = FakeText::new(LINES);
+    let mut h = read_once(&paths[0], &fake);
+    let steps = [
+        (Key::R, (300, 600)),
+        (Key::H, (300, 600)),
+        (Key::V, (300, 600)),
+        (Key::L, (600, 300)),
+    ];
+    for (n, (key, dims)) in steps.into_iter().enumerate() {
+        edit(&mut h, key, Modifiers::NONE);
+        read_turned(&mut h, &fake, n + 2);
+        assert_eq!(h.app().display_dims(), Some(dims), "{key:?}");
+        assert_eq!(reads(&fake)[n + 1], dims, "{key:?}: read turned");
+        let layout = words(&mut h).unwrap();
+        assert_eq!((layout.width, layout.height), (600, 300), "{key:?}");
+        assert_eq!(
+            copy_words(&mut h, 0, 1).as_deref(),
+            Some("hello world"),
+            "{key:?}"
+        );
+        assert_eq!(
+            copy_words(&mut h, 1, 2).as_deref(),
+            Some("world\nsecond"),
+            "{key:?}"
+        );
+    }
+}
+
+#[test]
+fn text_turn_back_uses_stored_reading() {
+    let (_dir, paths) = folder("ocr-back", &["page.png"], 600, 300);
+    let fake = FakeText::new(LINES);
+    let mut h = read_once(&paths[0], &fake);
+    let upright = words(&mut h).unwrap();
+    assert_eq!(fake.recognitions().len(), 1);
+    edit(&mut h, Key::R, Modifiers::NONE);
+    read_turned(&mut h, &fake, 2);
+    let right = words(&mut h).unwrap();
+    assert_ne!(right, upright, "read again, turned");
+
+    // Turning back shows the stored reading as soon as the picture is on
+    // screen, without a new reading; so does turning forward again.
+    edit(&mut h, Key::L, Modifiers::NONE);
+    assert_eq!(words(&mut h).as_ref(), Some(&upright));
+    assert!(!h.app().text_pending());
+    edit(&mut h, Key::R, Modifiers::NONE);
+    assert_eq!(words(&mut h).as_ref(), Some(&right));
+    assert!(!h.app().text_pending());
+    // Undo of a turn follows the same rule.
+    edit(&mut h, Key::Z, Modifiers::CTRL);
+    assert_eq!(words(&mut h).as_ref(), Some(&upright));
+    edit(&mut h, Key::Z, Modifiers::CTRL);
+    assert_eq!(words(&mut h).as_ref(), Some(&right));
+    edit(&mut h, Key::Z, Modifiers::CTRL);
+    assert_eq!(words(&mut h).as_ref(), Some(&upright));
+    assert!(!h.app().is_edited());
+    assert_eq!(fake.recognitions().len(), 2);
+
+    // Four quick quarter turns, none on screen for the start delay: the
+    // turns on the way are not read, and the last one is upright again.
+    for _ in 0..4 {
+        edit(&mut h, Key::R, Modifiers::NONE);
+    }
+    assert_eq!(words(&mut h).as_ref(), Some(&upright));
+    assert!(!h.app().text_pending());
+
+    // A mirror changes the turn: read again. Mirroring back and undoing
+    // that use the stored readings.
+    edit(&mut h, Key::H, Modifiers::NONE);
+    read_turned(&mut h, &fake, 3);
+    let mirrored = words(&mut h).unwrap();
+    assert_ne!(mirrored, upright);
+    edit(&mut h, Key::H, Modifiers::NONE);
+    assert_eq!(words(&mut h).as_ref(), Some(&upright));
+    edit(&mut h, Key::Z, Modifiers::CTRL);
+    assert_eq!(words(&mut h).as_ref(), Some(&mirrored));
+    // A flip top to bottom and a half turn undo a mirror, and mirror
+    // again: both pictures were read before.
+    for want in [&upright, &mirrored] {
+        edit(&mut h, Key::V, Modifiers::NONE);
+        edit(&mut h, Key::R, Modifiers::NONE);
+        edit(&mut h, Key::R, Modifiers::NONE);
+        assert_eq!(words(&mut h).as_ref(), Some(want));
+        assert!(!h.app().text_pending());
+    }
+
+    for _ in 0..3 {
+        h.advance(500);
+        h.pump();
+        h.frame();
+    }
+    assert_eq!(reads(&fake), vec![(600, 300), (300, 600), (600, 300)]);
+}
+
+#[test]
+fn text_crop_starts_no_reading() {
+    let (_dir, paths) = folder("ocr-crop", &["page.png"], 600, 300);
+    let fake = FakeText::new(LINES);
+    let mut h = read_once(&paths[0], &fake);
+    let read = words(&mut h).unwrap();
+
+    // Keep x 200 to 600: "world" and "line" stay on the picture.
+    h.act(Action::ApplyCrop(PixelRect {
+        x: 200,
+        y: 0,
+        width: 400,
+        height: 300,
+    }));
+    assert!(h.wait_idle());
+    h.frame();
+    assert_eq!(h.app().display_dims(), Some((400, 300)));
+    assert!(!h.app().text_pending(), "a crop keeps the turn");
+    for _ in 0..3 {
+        h.advance(500);
+        h.pump();
+        h.frame();
+    }
+    std::thread::sleep(Duration::from_millis(30));
+    h.pump();
+    assert_eq!(fake.recognitions().len(), 1, "a crop reads nothing");
+    assert_eq!(words(&mut h).as_ref(), Some(&read));
+    // The words still land on the cropped picture: "world" is centered at
+    // (130, 82.5) of it and "line" at (130, 172.5).
+    let a = screen(&mut h, Point::new(130.0, 82.5));
+    let b = screen(&mut h, Point::new(130.0, 172.5));
+    drag(&mut h, a, b);
+    assert_eq!(ctrl_c(&mut h).as_deref(), Some("world\nline"));
+
+    // A turn after the crop reads the whole image turned, not only the
+    // part the crop keeps. Its words land on the cropped and turned
+    // picture: only "second" and "line" lie in it.
+    edit(&mut h, Key::R, Modifiers::NONE);
+    read_turned(&mut h, &fake, 2);
+    assert_eq!(reads(&fake), vec![(600, 300), (300, 600)]);
+    assert_eq!(h.app().display_dims(), Some((300, 400)));
+    h.key(Key::A, Modifiers::CTRL);
+    assert_eq!(ctrl_c(&mut h).as_deref(), Some("second line"));
+
+    // Cropping the turned picture reads nothing either.
+    h.act(Action::ApplyCrop(PixelRect {
+        x: 0,
+        y: 0,
+        width: 300,
+        height: 200,
+    }));
+    assert!(h.wait_idle());
+    h.frame();
+    assert_eq!(h.app().display_dims(), Some((300, 200)));
+    assert!(!h.app().text_pending());
+    for _ in 0..3 {
+        h.advance(500);
+        h.pump();
+        h.frame();
+    }
+    assert_eq!(fake.recognitions().len(), 2);
+    h.key(Key::A, Modifiers::CTRL);
+    assert_eq!(ctrl_c(&mut h).as_deref(), Some("second line"));
+}
+
+#[test]
+fn text_selection_cleared_on_new_reading() {
+    let (_dir, paths) = folder("ocr-sel", &["page.png"], 600, 300);
+    let fake = FakeText::new(LINES);
+    let mut h = read_once(&paths[0], &fake);
+    h.key(Key::A, Modifiers::CTRL);
+    assert_eq!(ctrl_c(&mut h).as_deref(), Some(ALL_TEXT));
+
+    // A turn keeps the selection on the words read before it until the
+    // new reading arrives.
+    edit(&mut h, Key::R, Modifiers::NONE);
+    assert!(h.app().text_pending());
+    assert_eq!(
+        ctrl_c(&mut h).as_deref(),
+        Some(ALL_TEXT),
+        "the old words are still selected"
+    );
+    assert!(h.images.images().is_empty());
+    read_turned(&mut h, &fake, 2);
+    // The new words replaced the old ones, and the selection went with
+    // them: Ctrl+C copies the image.
+    assert_eq!(ctrl_c(&mut h), None);
+    assert_eq!(h.images.images().len(), 1);
+    // A selection on the new words works as before.
+    h.key(Key::A, Modifiers::CTRL);
+    assert_eq!(ctrl_c(&mut h).as_deref(), Some(ALL_TEXT));
+    assert_eq!(copy_words(&mut h, 2, 3).as_deref(), Some("second line"));
+
+    // A stored reading that replaces the text clears the selection too.
+    edit(&mut h, Key::L, Modifiers::NONE);
+    assert_eq!(fake.recognitions().len(), 2);
+    assert_eq!(ctrl_c(&mut h), None);
+    assert_eq!(h.images.images().len(), 2);
 }

@@ -252,6 +252,19 @@ impl TextLayout {
         }
     }
 
+    /// The layout for a `width` x `height` image, with every word outline
+    /// moved by `f`. Lines, words and their order stay as they are. Words
+    /// read from a turned copy of an image, for example, are turned back
+    /// onto the image this way.
+    pub fn mapped(mut self, width: u32, height: u32, f: impl Fn(Point) -> Point) -> TextLayout {
+        for word in self.lines.iter_mut().flat_map(|l| l.words.iter_mut()) {
+            word.quad = word.quad.map(&f);
+        }
+        self.width = width;
+        self.height = height;
+        self
+    }
+
     /// Approximate memory held, for cache budgets.
     pub fn byte_size(&self) -> usize {
         std::mem::size_of::<Self>()
@@ -365,5 +378,24 @@ mod tests {
         assert_eq!(d.bounds(), Rect::new(0.0, 0.0, 10.0, 10.0));
         let moved = q.map(|p| Point::new(p.x * 2.0, p.y + 1.0));
         assert_eq!(moved.bounds(), Rect::new(20.0, 11.0, 40.0, 10.0));
+    }
+
+    #[test]
+    fn layout_maps_onto_another_image() {
+        // Read from a 100 x 50 copy of a 50 x 100 image turned a quarter
+        // clockwise, mapped back onto the image: (x, y) goes to
+        // (y, 100 - x).
+        let back = layout().mapped(50, 100, |p| Point::new(p.y, 100.0 - p.x));
+        assert_eq!((back.width, back.height), (50, 100));
+        assert_eq!(back.text(), "one two\nthree four five");
+        assert_eq!(back.word_count(), 5);
+        // "two" covered (20..30, 0..5) of the turned copy.
+        let two = &back.lines[0].words[1];
+        assert_eq!(two.text, "two");
+        assert_eq!(two.quad.bounds(), Rect::new(0.0, 70.0, 5.0, 10.0));
+        // The corners keep their reading order: the word starts at the
+        // bottom and reads upward.
+        assert_eq!(two.quad.points[0], Point::new(0.0, 80.0));
+        assert_eq!(two.quad.points[1], Point::new(0.0, 70.0));
     }
 }

@@ -36,7 +36,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::time::Duration;
-use text::{TextKey, TextState, TEXT_DELAY};
+use text::{TextKey, TextState, Turn, TEXT_DELAY};
 use thumbs::Thumbs;
 
 /// Messages from job threads to the core.
@@ -235,13 +235,15 @@ struct Shown {
     /// The full image's size while `content` is a reduced stand-in. Edits
     /// and saves wait until the full image replaces it.
     standin: Option<(u32, u32)>,
-    /// The content generation that first carried this image at full
-    /// resolution.
+    /// The content generation that first carried the picture on screen at
+    /// full resolution: the image, or the result of its latest edit or
+    /// undo.
     full_gen: Option<u64>,
     /// When a frame with that content was first presented.
     presented_at: Option<Duration>,
     /// The text read from `base`, once recognition ended (an empty layout
-    /// when it found nothing or failed).
+    /// when it found nothing or failed). Word outlines are in pixels of
+    /// `base`, also when the text was read turned.
     text: Option<ShownText>,
 }
 
@@ -250,6 +252,8 @@ struct ShownText {
     /// Names this layout on this image for the interface.
     id: u64,
     layout: Arc<TextLayout>,
+    /// The turn the text was read in.
+    turn: Turn,
 }
 
 impl Shown {
@@ -259,6 +263,18 @@ impl Shown {
 
     fn current(&self) -> &ImageBuf {
         self.edits.current(&self.base)
+    }
+
+    /// How the picture on screen is turned against `base`: the applied
+    /// quarter turns and mirrors.
+    fn turn(&self) -> Turn {
+        Turn::of(self.edits.edits())
+    }
+
+    /// The reading the picture on screen wants: `base` in the turn on
+    /// screen.
+    fn text_key(&self) -> TextKey {
+        TextKey::new(&self.path, &self.base, self.turn())
     }
 
     /// The size the view works with: the full image's, also while a
@@ -679,7 +695,9 @@ impl App {
 
     /// The text recognized in the image on screen, once recognition ended
     /// (empty when it found none). Word outlines are in pixels of the
-    /// full-resolution image as decoded, before view edits.
+    /// full-resolution image as decoded, before view edits. A quarter turn
+    /// or mirror that changes the turn on screen reads the text again in
+    /// the new turn; that reading then replaces this one.
     pub fn shown_text(&self) -> Option<&TextLayout> {
         self.st.shown.as_ref()?.text.as_ref().map(|t| &*t.layout)
     }
@@ -714,7 +732,7 @@ impl App {
     }
 
     /// True while text recognition of the image on screen runs or waits
-    /// for its start time.
+    /// for its start time (also a new reading after a turn).
     pub fn text_pending(&self) -> bool {
         self.st.text.job.is_some() || self.st.text_due().is_some()
     }
@@ -1830,8 +1848,9 @@ impl State {
         }
     }
 
-    /// The content just pushed is the image on screen at full resolution:
-    /// once a frame with it is presented, its text may be read.
+    /// The content just pushed is the picture on screen at full
+    /// resolution (the image, or an edit of it): once a frame with it is
+    /// presented, its text may be read.
     fn mark_full_resolution(&mut self) {
         let generation = self.content_gen;
         if let Some(shown) = self.shown.as_mut() {
@@ -2115,13 +2134,16 @@ impl State {
             && self.target.as_ref().is_some_and(|t| t.path == shown.path)
     }
 
-    /// When recognition of the shown image may start, if it is waiting.
+    /// When recognition of the shown image may start, if it is waiting:
+    /// it has no text yet, or text read in another turn than the one on
+    /// screen.
     fn text_due(&self) -> Option<Duration> {
         if !self.text.active() || self.text.job.is_some() {
             return None;
         }
         let shown = self.shown.as_ref()?;
-        if shown.text.is_some() || !self.text_wanted(shown) {
+        let read = shown.text.as_ref().is_some_and(|t| t.turn == shown.turn());
+        if read || !self.text_wanted(shown) {
             return None;
         }
         Some(shown.presented_at? + TEXT_DELAY)
@@ -2132,14 +2154,15 @@ impl State {
         self.shown.as_ref()?.text.as_ref().map(|t| t.id)
     }
 
-    /// Stop a recognition nobody waits for any more, and start the one
-    /// that is due.
+    /// Stop a recognition nobody waits for any more (another image, or
+    /// another turn of this one), and start the one that is due. Text
+    /// read earlier in the turn on screen replaces the text shown at once.
     fn poll_text(&mut self, now: Duration) {
         if let Some(job) = &self.text.job {
             let wanted = self
                 .shown
                 .as_ref()
-                .is_some_and(|s| s.id == job.image && self.text_wanted(s));
+                .is_some_and(|s| s.id == job.image && s.turn() == job.turn && self.text_wanted(s));
             if !wanted || !self.text.active() {
                 self.text.cancel_job();
             }
@@ -2150,12 +2173,16 @@ impl State {
         let Some(shown) = self.shown.as_ref() else {
             return;
         };
-        let key = TextKey::new(&shown.path, &shown.base);
+        let key = shown.text_key();
         if let Some(layout) = self.text.cached(&key) {
             // Read earlier this session: show it at once.
             let id = self.text.next_id();
             if let Some(shown) = self.shown.as_mut() {
-                shown.text = Some(ShownText { id, layout });
+                shown.text = Some(ShownText {
+                    id,
+                    layout,
+                    turn: key.turn,
+                });
             }
             self.dirty = true;
             return;
@@ -2174,19 +2201,31 @@ impl State {
         }
     }
 
-    /// Attach `layout` to the shown image when it is still `image_id` read
-    /// from the same pixels and has no text yet (a selection on text that
-    /// is already there stays).
+    /// Attach `layout` to the shown image when it is still `image_id`, its
+    /// pixels and turn are the ones `key` names, and it has no text read
+    /// in that turn yet (a selection on text that is already there stays).
+    /// Text read in another turn is replaced.
     fn attach_text(&mut self, image_id: u64, key: &TextKey, layout: Arc<TextLayout>) {
         let id = self.text.next_id();
         if let Some(shown) = self.shown.as_mut().filter(|s| {
-            s.id == image_id && s.text.is_none() && TextKey::new(&s.path, &s.base) == *key
+            s.id == image_id
+                && s.text.as_ref().is_none_or(|t| t.turn != key.turn)
+                && s.text_key() == *key
         }) {
-            shown.text = Some(ShownText { id, layout });
+            shown.text = Some(ShownText {
+                id,
+                layout,
+                turn: key.turn,
+            });
             self.dirty = true;
-            // An earlier job answered for the same pixels: a later one
-            // for them is not needed.
-            if self.text.job.as_ref().is_some_and(|j| j.image == image_id) {
+            // An earlier job answered for the same pixels and turn: a
+            // later one for them is not needed.
+            if self
+                .text
+                .job
+                .as_ref()
+                .is_some_and(|j| j.image == image_id && j.turn == key.turn)
+            {
                 self.text.cancel_job();
             }
         }
@@ -2326,6 +2365,9 @@ impl State {
                     self.view.pan = Point::default();
                 }
                 self.push_content(Some(still));
+                // Text read for another turn waits for the new picture,
+                // as it waited for the first one.
+                self.mark_full_resolution();
             }
             Ok(false) => {}
             Err(err) => ui.toast(edit::describe_error(&edit, &err), now),
@@ -2348,7 +2390,12 @@ impl State {
             Undo::Reverted => {
                 let (content, logical) = shown.update();
                 self.view.pan = Point::default();
+                let full = logical.is_none();
                 self.push_staged(Some(content), logical);
+                if full {
+                    // An undone turn reads text like an edit does.
+                    self.mark_full_resolution();
+                }
                 Handled::Done
             }
         }
@@ -2551,7 +2598,7 @@ impl State {
             }
         } else if let Some(text) = &shown.text {
             // The same pixels under a new name keep their words.
-            let key = TextKey::new(&shown.path, &shown.base);
+            let key = TextKey::new(&shown.path, &shown.base, text.turn);
             self.text.store(key, Arc::clone(&text.layout));
         }
         self.forget_info(&save.target);

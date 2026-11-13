@@ -1,6 +1,6 @@
 //! Input handling: pointer, wheel, keyboard and text.
 
-use super::{Capture, CropButton, Dialog, Target, Ui};
+use super::{Capture, CropButton, Dialog, Target, TextGrip, Ui};
 use crate::action::{Action, WHEEL_ZOOM_STEP};
 use crate::command::{command_for_key, Command};
 use crate::confirm::{Answer, ConfirmOwner};
@@ -15,6 +15,25 @@ use pandite_core::Point;
 
 /// Wheel lines per pixel of precise scrolling, before scaling.
 const PIXELS_PER_LINE: f32 = 50.0;
+
+/// The selection of a text drag from word `anchor` of layout `id` with
+/// the pointer at `pos`: whole words from the anchor to the word nearest
+/// the pointer, or whole lines after a triple click. The anchor stays
+/// selected in either direction.
+fn drag_selection(
+    geom: &TextGeom<'_>,
+    id: u64,
+    anchor: usize,
+    grip: TextGrip,
+    pos: Point,
+) -> Option<TextSelection> {
+    let focus = geom.nearest(pos)?;
+    let (anchor, focus) = match grip {
+        TextGrip::Click | TextGrip::Words => (anchor, focus),
+        TextGrip::Lines => geom.line_span(anchor, focus)?,
+    };
+    Some(TextSelection { id, anchor, focus })
+}
 
 impl Ui {
     /// Feed one input event. Returns what the user asked for, in order.
@@ -118,14 +137,17 @@ impl Ui {
                     anchor,
                     start,
                     dragging,
+                    grip,
                 },
                 button,
             )) => {
                 let moved = (pos.x - start.x).abs().max((pos.y - start.y).abs());
                 let dragging = dragging || moved > m.drag_threshold();
                 if dragging {
-                    if let Some(focus) = TextGeom::new(ctx).and_then(|g| g.nearest(pos)) {
-                        self.text_sel = Some(TextSelection { id, anchor, focus });
+                    if let Some(sel) =
+                        TextGeom::new(ctx).and_then(|g| drag_selection(&g, id, anchor, grip, pos))
+                    {
+                        self.text_sel = Some(sel);
                     }
                 }
                 self.capture = Some((
@@ -134,6 +156,7 @@ impl Ui {
                         anchor,
                         start,
                         dragging,
+                        grip,
                     },
                     button,
                 ));
@@ -356,7 +379,9 @@ impl Ui {
 
     /// A left press on the image: on a recognized word it starts a text
     /// selection (one click), selects the word (two) or its line (three).
-    /// Returns `None` when the press is off text.
+    /// While the button stays down, a drag selects from the word, by whole
+    /// words, or by whole lines after three clicks. Returns `None` when the
+    /// press is off text.
     fn text_press(&mut self, pos: Point, ctx: &UiContext<'_>, m: &Metrics) -> Option<Capture> {
         let word = self.word_at(pos, ctx, m)?;
         let geom = TextGeom::new(ctx)?;
@@ -378,22 +403,24 @@ impl Ui {
             anchor,
             focus,
         };
-        Some(match count {
-            1 => Capture::Text {
-                id: geom.id,
-                anchor: word,
-                start: pos,
-                dragging: false,
-            },
+        let grip = match count {
+            1 => TextGrip::Click,
             2 => {
                 self.text_sel = Some(select(word, word));
-                Capture::Swallow
+                TextGrip::Words
             }
             _ => {
                 let (first, last) = geom.line_bounds(word)?;
                 self.text_sel = Some(select(first, last));
-                Capture::Swallow
+                TextGrip::Lines
             }
+        };
+        Some(Capture::Text {
+            id: geom.id,
+            anchor: word,
+            start: pos,
+            dragging: false,
+            grip,
         })
     }
 
@@ -548,10 +575,12 @@ impl Ui {
                     crop.end();
                 }
             }
-            Capture::Text { dragging, .. } => {
+            Capture::Text { dragging, grip, .. } => {
                 // A click on text without a drag places no selection, like
-                // a click in a document.
-                if !dragging {
+                // a click in a document. A double or triple click keeps the
+                // word or line it selected, and a drag after it keeps what
+                // the drag selected.
+                if !dragging && grip == TextGrip::Click {
                     self.text_sel = None;
                 }
             }

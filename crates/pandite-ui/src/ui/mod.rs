@@ -121,14 +121,30 @@ pub(crate) enum Capture {
     /// A left press on a recognized word: a drag from it selects text.
     Text {
         id: u64,
+        /// The pressed word.
         anchor: usize,
         start: Point,
         dragging: bool,
+        grip: TextGrip,
     },
     Crop,
     RightPress,
     EmptyOpen,
     Swallow,
+}
+
+/// What a held left press on text selects while the pointer moves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TextGrip {
+    /// A single press: a drag selects from the pressed word to the word
+    /// under the pointer. A release without a drag clears the selection.
+    Click,
+    /// The second press of a double click: the pressed word is selected,
+    /// and a drag extends the selection by whole words.
+    Words,
+    /// The third press of a triple click: the pressed word's line is
+    /// selected, and a drag extends the selection by whole lines.
+    Lines,
 }
 
 /// A transient message.
