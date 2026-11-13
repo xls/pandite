@@ -7,8 +7,8 @@
 use crate::texture::{self, Tex};
 use crate::util::{check_size, corrupt, le32, unsupported};
 use pandite_core::{
-    Content, ContentKind, DecodeOptions, DecoderProvider, Error, ImageMeta, Orientation,
-    PixelFormat, Result, Source,
+    Content, ContentKind, DecodeOptions, DecoderProvider, Error, ImageFacts, ImageMeta,
+    Orientation, PixelFormat, Result, Source,
 };
 use std::io::Read;
 
@@ -203,6 +203,22 @@ impl DecoderProvider for Ktx2Decoder {
             has_alpha: h.format.has_alpha(),
             orientation: Orientation::Normal,
         })
+    }
+
+    fn facts(&self, source: &Source) -> Result<ImageFacts> {
+        let h = header(source.bytes())?;
+        let mut f = ImageFacts::named("KTX2");
+        h.format.describe(&mut f);
+        let scheme = match h.scheme {
+            1 => Some("BasisLZ"),
+            2 => Some("Zstandard"),
+            3 => Some("ZLIB"),
+            _ => None,
+        };
+        if let Some(s) = scheme {
+            f.compression = f.compression.map(|c| format!("{c}, {s} supercompression"));
+        }
+        Ok(f)
     }
 
     fn decode(&self, source: &Source, options: &DecodeOptions) -> Result<Content> {

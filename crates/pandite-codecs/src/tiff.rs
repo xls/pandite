@@ -16,8 +16,8 @@ use crate::jpeg::oriented;
 use crate::util::{self, check_size, corrupt, guard, unsupported};
 use crate::{icc, orient};
 use pandite_core::{
-    Content, ContentKind, DecodeOptions, DecoderProvider, Error, ImageBuf, ImageMeta, Orientation,
-    PixelFormat, Result, Source,
+    Content, ContentKind, DecodeOptions, DecoderProvider, Error, ImageBuf, ImageFacts, ImageMeta,
+    Orientation, PixelFormat, Result, Source,
 };
 use std::io::{Cursor, Read};
 use tiff::decoder::{Decoder, DecodingResult, Limits};
@@ -105,6 +105,78 @@ impl DecoderProvider for TiffDecoder {
         let image = guard(FORMAT, || decode(source.bytes(), options))?;
         Ok(Content::Still(image))
     }
+
+    fn facts(&self, source: &Source) -> Result<ImageFacts> {
+        #[cfg(feature = "raw")]
+        if crate::raw::is_camera_raw(source) {
+            return crate::raw::RawDecoder.facts(source);
+        }
+        let d = source.bytes();
+        if d.starts_with(b"II+\0") || d.starts_with(b"MM\0+") {
+            return Ok(ImageFacts::named("BigTIFF"));
+        }
+        let t = Tiff::new(d).ok_or_else(|| corrupt(FORMAT, "not a TIFF file"))?;
+        Ok(header_facts(&t))
+    }
+}
+
+/// The facts of the first directory: compression and predictor, sample
+/// layout, chroma subsampling, ICC profile, and the EXIF camera settings.
+fn header_facts(t: &Tiff<'_>) -> ImageFacts {
+    let mut f = ImageFacts::named("TIFF");
+    f.camera = crate::facts::camera(t);
+    let Some((e, _)) = t.first_ifd().and_then(|o| t.ifd(o)) else {
+        return f;
+    };
+    let compression = t.get(&e, tag::COMPRESSION).unwrap_or(1);
+    f.compression = crate::facts::tiff_compression(compression).map(|name| {
+        match (t.get(&e, 317), compression) {
+            (Some(2), 5 | 8 | 32946 | 34925 | 50000) => format!("{name}, horizontal predictor"),
+            (Some(3), _) => format!("{name}, floating point predictor"),
+            _ => name.to_string(),
+        }
+    });
+    let spp = t.get(&e, 277).unwrap_or(1);
+    let bits = t.get(&e, 258).unwrap_or(1);
+    let base = match t.get(&e, tag::PHOTOMETRIC) {
+        Some(0 | 1) => Some(("Gray", 1)),
+        Some(2) => Some(("RGB", 3)),
+        Some(3) => Some(("Indexed", 1)),
+        Some(5) => Some(("CMYK", 4)),
+        Some(6) => Some(("YCbCr", 3)),
+        Some(8) => Some(("CIELab", 3)),
+        _ => None,
+    };
+    if let Some((name, color)) = base {
+        let name = match (name, spp.saturating_sub(color)) {
+            ("RGB", 1) => "RGBA".to_string(),
+            (_, 0) => name.to_string(),
+            (_, 1) => format!("{name} + alpha"),
+            (_, n) => format!("{name} + {n} extra"),
+        };
+        f.channels = Some(if t.get(&e, 339) == Some(3) {
+            format!("{name}, floating point")
+        } else {
+            name
+        });
+    }
+    f.channel_count = u8::try_from(spp).ok().filter(|&n| n > 0);
+    f.bits_per_channel = u8::try_from(bits).ok().filter(|&b| b > 0);
+    if t.get(&e, tag::PHOTOMETRIC) == Some(6) {
+        if let [h, v] = t.values(&e, 530, 2)[..] {
+            f.subsampling = u8::try_from(h)
+                .ok()
+                .zip(u8::try_from(v).ok())
+                .and_then(|(h, v)| crate::facts::subsampling(h, v))
+                .map(str::to_string);
+        }
+    }
+    f.icc_profile = e
+        .iter()
+        .find(|x| x.tag == 34675)
+        .and_then(|x| t.bytes(x))
+        .and_then(crate::facts::icc_description);
+    f
 }
 
 fn open(data: &[u8]) -> Result<Decoder<Cursor<&[u8]>>> {

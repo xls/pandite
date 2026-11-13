@@ -11,6 +11,11 @@
 //! Windows and macOS only). `svg-text` adds text rendering with system
 //! fonts to SVG. The `icc` feature converts embedded ICC profiles to sRGB.
 //!
+//! Every provider also reports the facts its headers state
+//! ([`pandite_core::DecoderProvider::facts`]: container, codec, FourCC,
+//! channels, bit depth, chroma subsampling, color profile and EXIF camera
+//! settings) without decoding pixels and without touching the decode path.
+//!
 //! All decoders return upright pixels (EXIF orientation applied), compose
 //! animation frames onto full canvases, honor [`pandite_core::DecodeOptions`]
 //! and refuse images above the [`pandite_core::ImageBuf`] limits. Hostile
@@ -51,6 +56,7 @@ mod bmp;
 mod compose;
 mod encode;
 mod exif;
+mod facts;
 mod gif;
 mod icc;
 mod jpeg;

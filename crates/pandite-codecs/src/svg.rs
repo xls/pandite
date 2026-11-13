@@ -8,8 +8,8 @@
 
 use crate::util::{self, check_size, corrupt, fit_into, guard};
 use pandite_core::{
-    Content, ContentKind, DecodeOptions, DecoderProvider, Error, ImageMeta, Orientation,
-    PixelFormat, Result, Source,
+    Content, ContentKind, DecodeOptions, DecoderProvider, Error, ImageFacts, ImageMeta,
+    Orientation, PixelFormat, Result, Source,
 };
 use resvg::{tiny_skia, usvg};
 #[cfg(feature = "svg-text")]
@@ -86,6 +86,20 @@ impl DecoderProvider for SvgDecoder {
 
     fn reduced_decode(&self, _source: &Source) -> bool {
         true
+    }
+
+    fn facts(&self, source: &Source) -> Result<ImageFacts> {
+        // A vector drawing has no stored pixels: no channels or depth.
+        let mut f = ImageFacts::named("SVG");
+        f.compression = Some(
+            if source.bytes().starts_with(&[0x1F, 0x8B]) {
+                "gzip"
+            } else {
+                "None (XML text)"
+            }
+            .to_string(),
+        );
+        Ok(f)
     }
 
     fn probe(&self, source: &Source) -> Result<ImageMeta> {

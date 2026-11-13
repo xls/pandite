@@ -87,6 +87,7 @@ pub(crate) enum Target {
     ToolbarBar,
     CropBar(CropButton),
     CropBarPanel,
+    InfoPanel,
     Gallery(Option<usize>),
     EmptyOpen,
     Content,
@@ -173,6 +174,8 @@ pub struct Ui {
     /// Time, place and count of the last press on a word, for double and
     /// triple clicks.
     text_clicks: Option<(Duration, Point, u32)>,
+    /// Where the information panel was drawn in the last frame.
+    info_rect: Option<Rect>,
 }
 
 impl Default for Ui {
@@ -215,6 +218,7 @@ impl Ui {
             next_redraw: None,
             text_sel: None,
             text_clicks: None,
+            info_rect: None,
         }
     }
 
@@ -265,6 +269,14 @@ impl Ui {
     /// The pointer shape wanted at the pointer position.
     pub fn cursor(&self) -> CursorShape {
         self.cursor
+    }
+
+    /// Where the information panel was drawn by the last [`Ui::build`], in
+    /// window pixels: anchored to the bottom right corner of
+    /// [`Ui::content_rect`] with a margin. `None` when it was not drawn
+    /// (hidden, no rows, crop mode, or a window too small for one row).
+    pub fn info_panel_rect(&self) -> Option<Rect> {
+        self.info_rect
     }
 
     /// True while a text field has keyboard focus. Enable the input method
@@ -716,6 +728,9 @@ impl Ui {
             }
             return Target::ToolbarBar;
         }
+        if self.info_shown(ctx).is_some_and(|r| r.contains(p)) {
+            return Target::InfoPanel;
+        }
         if let Some(layout) = self.gallery_layout(ctx, m) {
             if layout.panel.contains(p) {
                 return Target::Gallery(layout.hit(p, self.gallery.scroll));
@@ -731,6 +746,18 @@ impl Ui {
             return Target::Content;
         }
         Target::None
+    }
+
+    /// True when the context asks for the information panel and the mode
+    /// allows it (crop mode hides it, so the whole image stays editable).
+    pub(crate) fn info_wanted(&self, ctx: &UiContext<'_>) -> bool {
+        ctx.info_visible && !ctx.info.is_empty() && self.crop.is_none()
+    }
+
+    /// The information panel rectangle of the last frame, while the panel
+    /// still shows.
+    fn info_shown(&self, ctx: &UiContext<'_>) -> Option<Rect> {
+        self.info_rect.filter(|_| self.info_wanted(ctx))
     }
 
     /// The crop mapping for the current image.
@@ -813,6 +840,7 @@ impl Ui {
     fn menu_entry(&self, cmd: Command, ctx: &UiContext<'_>) -> MenuItem {
         let checked = match cmd {
             Command::ToggleGallery => ctx.gallery_visible,
+            Command::ToggleInfo => ctx.info_visible,
             Command::Fullscreen => ctx.fullscreen,
             _ => false,
         };
@@ -948,6 +976,7 @@ impl Ui {
             Command::First => out.push(Action::GoTo(0)),
             Command::Last => out.push(Action::GoTo(ctx.count - 1)),
             Command::ToggleGallery => out.push(Action::ToggleGallery),
+            Command::ToggleInfo => out.push(Action::ToggleInfo),
             Command::Fullscreen => out.push(Action::ToggleFullscreen),
             Command::ContextMenu => {
                 let content = self.content_rect(ctx);

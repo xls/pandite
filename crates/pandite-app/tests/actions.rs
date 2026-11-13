@@ -62,6 +62,7 @@ fn sample(kind: ActionKind, dir: &std::path::Path) -> Action {
         ActionKind::Previous => Action::Previous,
         ActionKind::GoTo => Action::GoTo(0),
         ActionKind::ToggleGallery => Action::ToggleGallery,
+        ActionKind::ToggleInfo => Action::ToggleInfo,
         ActionKind::ConfirmResult => Action::ConfirmResult {
             id: 999,
             accepted: true,
@@ -107,6 +108,7 @@ fn kind_of(action: &Action) -> ActionKind {
         Action::Previous => ActionKind::Previous,
         Action::GoTo(_) => ActionKind::GoTo,
         Action::ToggleGallery => ActionKind::ToggleGallery,
+        Action::ToggleInfo => ActionKind::ToggleInfo,
         Action::ConfirmResult { .. } => ActionKind::ConfirmResult,
         Action::Quit => ActionKind::Quit,
     }
@@ -129,6 +131,7 @@ fn every_action_has_a_handler() {
         let action = sample(kind, dir.path());
         assert_eq!(kind_of(&action), kind);
         let gallery = h.app().settings().gallery_visible;
+        let info = h.app().info_visible();
         let fullscreen = h.app().fullscreen();
         let result = h.act(action);
         // Some actions have an effect that can be checked right here.
@@ -136,6 +139,7 @@ fn every_action_has_a_handler() {
             ActionKind::ToggleGallery => {
                 assert_ne!(h.app().settings().gallery_visible, gallery)
             }
+            ActionKind::ToggleInfo => assert_ne!(h.app().info_visible(), info),
             ActionKind::ToggleFullscreen => assert_ne!(h.app().fullscreen(), fullscreen),
             ActionKind::CopyPath => {
                 assert_eq!(h.clipboard().as_deref(), Some(paths[0].to_str().unwrap()))
@@ -165,7 +169,7 @@ fn every_action_has_a_handler() {
         handled.push(kind);
         h.pump();
     }
-    assert_eq!(handled.len(), 35);
+    assert_eq!(handled.len(), 36);
     // The dialogs asked for: open, save, bulk files, bulk folder and bulk
     // destination.
     assert_eq!(lock(&h.dialogs).shown.len(), 5);

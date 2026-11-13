@@ -257,6 +257,9 @@ pub enum Action {
     /// Show or hide the gallery strip
     /// (flip [`crate::UiContext::gallery_visible`]).
     ToggleGallery,
+    /// Show or hide the information panel
+    /// (flip [`crate::UiContext::info_visible`]).
+    ToggleInfo,
     /// The answer to a [`crate::ConfirmRequest`].
     ConfirmResult {
         /// The request id.
@@ -338,6 +341,8 @@ pub enum ActionKind {
     GoTo,
     /// [`Action::ToggleGallery`].
     ToggleGallery,
+    /// [`Action::ToggleInfo`].
+    ToggleInfo,
     /// [`Action::ConfirmResult`].
     ConfirmResult,
     /// [`Action::Quit`].
@@ -346,7 +351,7 @@ pub enum ActionKind {
 
 impl ActionKind {
     /// Every kind, in declaration order.
-    pub const ALL: [ActionKind; 35] = [
+    pub const ALL: [ActionKind; 36] = [
         ActionKind::Open,
         ActionKind::SaveAs,
         ActionKind::CopyPath,
@@ -380,6 +385,7 @@ impl ActionKind {
         ActionKind::Previous,
         ActionKind::GoTo,
         ActionKind::ToggleGallery,
+        ActionKind::ToggleInfo,
         ActionKind::ConfirmResult,
         ActionKind::Quit,
     ];
@@ -421,8 +427,9 @@ impl ActionKind {
             ActionKind::Previous => 30,
             ActionKind::GoTo => 31,
             ActionKind::ToggleGallery => 32,
-            ActionKind::ConfirmResult => 33,
-            ActionKind::Quit => 34,
+            ActionKind::ToggleInfo => 33,
+            ActionKind::ConfirmResult => 34,
+            ActionKind::Quit => 35,
         }
     }
 }
@@ -464,6 +471,7 @@ impl Action {
             Action::Previous => ActionKind::Previous,
             Action::GoTo(_) => ActionKind::GoTo,
             Action::ToggleGallery => ActionKind::ToggleGallery,
+            Action::ToggleInfo => ActionKind::ToggleInfo,
             Action::ConfirmResult { .. } => ActionKind::ConfirmResult,
             Action::Quit => ActionKind::Quit,
         }

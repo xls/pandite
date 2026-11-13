@@ -60,11 +60,20 @@
 //! Highlights are drawn over the image with the same placement as the
 //! image itself.
 //!
+//! # Information panel
+//!
+//! I emits [`Action::ToggleInfo`]. While [`UiContext::info_visible`] is
+//! set and [`UiContext::info`] has rows, a panel of label and value rows
+//! shows in the bottom right corner of the content area, above the
+//! gallery strip ([`Ui::info_panel_rect`]). It is not a dialog: keys,
+//! Escape included, act as without it, and it hides in crop mode.
+//!
 //! # Escape
 //!
 //! Escape closes the topmost menu, shortcut overlay or dialog. When none
 //! is open it emits [`Action::Quit`], also in full screen, in crop mode,
-//! with a text selection and while a file loads.
+//! with a text selection, with the information panel and while a file
+//! loads.
 
 #![forbid(unsafe_code)]
 
@@ -95,7 +104,9 @@ pub use action::{
 };
 pub use command::{command_for_key, Command, Shortcut, SHORTCUTS};
 pub use confirm::ConfirmRequest;
-pub use context::{EncoderInfo, ImageInfo, Loading, Progress, TextView, ThumbState, UiContext};
+pub use context::{
+    EncoderInfo, ImageInfo, InfoRow, Loading, Progress, TextView, ThumbState, UiContext,
+};
 pub use icon::{Icon, ICON_TEXTURE_BASE};
 pub use input::{CursorShape, InputEvent, Key, Modifiers, PointerButton, WheelDelta};
 pub use text_field::{CharFilter, FieldResponse, TextField};

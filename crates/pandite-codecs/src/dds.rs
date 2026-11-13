@@ -5,8 +5,8 @@
 use crate::texture::{self, Tex};
 use crate::util::{check_size, corrupt, le32, unsupported};
 use pandite_core::{
-    Content, ContentKind, DecodeOptions, DecoderProvider, ImageMeta, Orientation, PixelFormat,
-    Result, Source,
+    Content, ContentKind, DecodeOptions, DecoderProvider, ImageFacts, ImageMeta, Orientation,
+    PixelFormat, Result, Source,
 };
 
 const FORMAT: &str = "dds";
@@ -189,6 +189,25 @@ impl DecoderProvider for DdsDecoder {
             has_alpha: h.format.has_alpha(),
             orientation: Orientation::Normal,
         })
+    }
+
+    fn facts(&self, source: &Source) -> Result<ImageFacts> {
+        let d = source.bytes();
+        let h = header(d)?;
+        let mut f = ImageFacts::named("DDS");
+        h.format.describe(&mut f);
+        if le32(d, 80).unwrap_or(0) & DDPF_FOURCC != 0 {
+            let code = &d[84..88];
+            if code.iter().all(|b| b.is_ascii_graphic() || *b == b' ') {
+                f.fourcc = Some(String::from_utf8_lossy(code).trim_end().to_string());
+            }
+            if code == b"DX10" {
+                if let Some(dxgi) = le32(d, 128) {
+                    f.compression = f.compression.map(|c| format!("{c}, DXGI format {dxgi}"));
+                }
+            }
+        }
+        Ok(f)
     }
 
     fn decode(&self, source: &Source, options: &DecodeOptions) -> Result<Content> {

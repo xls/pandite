@@ -62,6 +62,8 @@ pub enum Command {
     Last,
     /// Show or hide the gallery strip.
     ToggleGallery,
+    /// Show or hide the information panel.
+    ToggleInfo,
     /// Enter or leave full screen.
     Fullscreen,
     /// Open the context menu from the keyboard.
@@ -87,7 +89,7 @@ pub enum Command {
 
 impl Command {
     /// Every command, in the order the shortcut overlay lists them.
-    pub const ALL: [Command; 35] = [
+    pub const ALL: [Command; 36] = [
         Command::Open,
         Command::SaveAs,
         Command::CopyImage,
@@ -115,6 +117,7 @@ impl Command {
         Command::First,
         Command::Last,
         Command::ToggleGallery,
+        Command::ToggleInfo,
         Command::Fullscreen,
         Command::ContextMenu,
         Command::Help,
@@ -153,6 +156,7 @@ impl Command {
             Command::First => "First image",
             Command::Last => "Last image",
             Command::ToggleGallery => "Gallery strip",
+            Command::ToggleInfo => "Image information",
             Command::Fullscreen => "Full screen",
             Command::ContextMenu => "Context menu",
             Command::Help => "Keyboard shortcuts",
@@ -259,6 +263,7 @@ impl Command {
                 | Command::PanRight
                 | Command::Fullscreen
                 | Command::ToggleGallery
+                | Command::ToggleInfo
                 | Command::ContextMenu
                 | Command::Help
                 | Command::Cancel
@@ -390,6 +395,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
     Shortcut::new(Key::Home, N, Command::First),
     Shortcut::new(Key::End, N, Command::Last),
     Shortcut::new(Key::G, N, Command::ToggleGallery),
+    Shortcut::new(Key::I, N, Command::ToggleInfo),
     Shortcut::new(Key::F11, N, Command::Fullscreen),
     Shortcut::new(Key::Enter, ALT, Command::Fullscreen),
     Shortcut::new(Key::ContextMenu, N, Command::ContextMenu),
@@ -444,6 +450,13 @@ mod tests {
             command_for_key(Key::R, Modifiers::CTRL, false),
             Some(Command::Resize)
         );
+        // I shows the information panel, with no modifier only.
+        assert_eq!(
+            command_for_key(Key::I, Modifiers::NONE, false),
+            Some(Command::ToggleInfo)
+        );
+        assert_eq!(command_for_key(Key::I, Modifiers::SHIFT, false), None);
+        assert_eq!(command_for_key(Key::I, Modifiers::CTRL, false), None);
         assert_eq!(command_for_key(Key::Enter, Modifiers::NONE, false), None);
         assert_eq!(
             command_for_key(Key::Enter, Modifiers::NONE, true),

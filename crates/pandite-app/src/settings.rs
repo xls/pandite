@@ -122,6 +122,8 @@ pub struct Settings {
     pub window: Option<WindowPlacement>,
     /// Show the gallery strip.
     pub gallery_visible: bool,
+    /// Show the information panel (`info_panel = on | off`).
+    pub info_panel: bool,
     /// Interface colors.
     pub theme: ThemeChoice,
     /// Share of the screen (0.1 to 1.0 on each axis) a first-open window
@@ -155,6 +157,7 @@ impl Default for Settings {
         Self {
             window: None,
             gallery_visible: true,
+            info_panel: false,
             theme: ThemeChoice::System,
             first_open_fraction: 0.8,
             size_window_to_image: false,
@@ -198,6 +201,12 @@ impl Settings {
         }
         let _ = writeln!(s, "\n# Interface.");
         let _ = writeln!(s, "gallery_visible = {}", self.gallery_visible);
+        let _ = writeln!(s, "# The information panel (key I): on or off.");
+        let _ = writeln!(
+            s,
+            "info_panel = {}",
+            if self.info_panel { "on" } else { "off" }
+        );
         let _ = writeln!(s, "# system, dark or light");
         let _ = writeln!(s, "theme = {}", self.theme.as_str());
         let _ = writeln!(
@@ -269,6 +278,7 @@ impl Settings {
                 "window_maximized" => maximized = parse_bool(value).ok_or_else(bad)?,
                 "window_fullscreen" => fullscreen = parse_bool(value).ok_or_else(bad)?,
                 "gallery_visible" => s.gallery_visible = parse_bool(value).ok_or_else(bad)?,
+                "info_panel" => s.info_panel = parse_bool(value).ok_or_else(bad)?,
                 "theme" => s.theme = ThemeChoice::parse(value).ok_or_else(bad)?,
                 "first_open_fraction" => {
                     let f: f32 = parse_num(value).ok_or_else(bad)?;
@@ -524,6 +534,7 @@ mod tests {
                 fullscreen: false,
             }),
             gallery_visible: false,
+            info_panel: true,
             theme: ThemeChoice::Light,
             first_open_fraction: 0.65,
             size_window_to_image: true,

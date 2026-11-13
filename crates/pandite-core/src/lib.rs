@@ -7,6 +7,7 @@
 //!
 //! Layout:
 //! - [`error`]: the shared error type.
+//! - [`facts`]: what a file states about itself (codec, channels, camera).
 //! - [`geom`]: points, sizes, rectangles and fit math.
 //! - [`image`]: pixel buffers, animations and decoded content.
 //! - [`provider`]: decoder, encoder and text recognizer registration.
@@ -19,6 +20,7 @@
 
 pub mod draw;
 pub mod error;
+pub mod facts;
 pub mod geom;
 pub mod image;
 pub mod provider;
@@ -27,6 +29,7 @@ pub mod view;
 
 pub use draw::{Color, DrawCmd, DrawList, TextMeasure, TextureId, TextureSink};
 pub use error::{Error, Result};
+pub use facts::{CameraFacts, ImageFacts};
 pub use geom::{Affine, Point, Rect, Size};
 pub use image::{
     Animation, Content, ContentKind, Frame, ImageBuf, ImageMeta, LoopCount, Orientation,

@@ -2,8 +2,8 @@
 
 use crate::util::{self, check_size, corrupt, guard};
 use pandite_core::{
-    Content, ContentKind, DecodeOptions, DecoderProvider, ImageMeta, Orientation, PixelFormat,
-    Result, Source,
+    Content, ContentKind, DecodeOptions, DecoderProvider, ImageFacts, ImageMeta, Orientation,
+    PixelFormat, Result, Source,
 };
 
 const FORMAT: &str = "qoi";
@@ -40,6 +40,25 @@ impl DecoderProvider for QoiDecoder {
             has_alpha: h.channels == qoi::Channels::Rgba,
             orientation: Orientation::Normal,
         })
+    }
+
+    fn facts(&self, source: &Source) -> Result<ImageFacts> {
+        let h = qoi::decode_header(source.bytes()).map_err(|e| corrupt(FORMAT, e))?;
+        let mut f = ImageFacts::named("QOI");
+        f.compression = Some("QOI".to_string());
+        if h.channels == qoi::Channels::Rgba {
+            f.set_channels("RGBA", 4, 8);
+        } else {
+            f.set_channels("RGB", 3, 8);
+        }
+        f.color_space = Some(
+            match h.colorspace {
+                qoi::ColorSpace::Srgb => "sRGB, linear alpha",
+                qoi::ColorSpace::Linear => "Linear",
+            }
+            .to_string(),
+        );
+        Ok(f)
     }
 
     fn decode(&self, source: &Source, options: &DecodeOptions) -> Result<Content> {

@@ -24,6 +24,7 @@ pub mod console;
 pub mod disk;
 pub mod edit;
 pub mod icon;
+pub mod info;
 pub mod platform;
 pub mod register;
 pub mod resident;

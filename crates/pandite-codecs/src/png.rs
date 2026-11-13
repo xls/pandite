@@ -12,12 +12,13 @@
 
 use crate::compose::{self, Region};
 use crate::exif::orientation_from_exif;
+use crate::facts::{camera_from_exif, icc_description};
 use crate::jpeg::oriented;
 use crate::util::{self, check_size, corrupt, guard, FrameCollector};
 use crate::{icc, orient};
 use pandite_core::{
-    Content, ContentKind, DecodeOptions, DecoderProvider, ImageBuf, ImageMeta, LoopCount,
-    Orientation, PixelFormat, Result, Source,
+    Content, ContentKind, DecodeOptions, DecoderProvider, ImageBuf, ImageFacts, ImageMeta,
+    LoopCount, Orientation, PixelFormat, Result, Source,
 };
 use png::{BitDepth, ColorType, Transformations};
 use std::io::Cursor;
@@ -80,6 +81,59 @@ impl DecoderProvider for PngDecoder {
         options.cancel.check()?;
         guard(FORMAT, || decode(source.bytes(), options))
     }
+
+    fn facts(&self, source: &Source) -> Result<ImageFacts> {
+        guard(FORMAT, || header_facts(source.bytes()))
+    }
+}
+
+/// The chunks before the image data: IHDR, PLTE, acTL, iCCP, sRGB, eXIf.
+/// Also used for PNG payloads inside ICO files.
+pub(crate) fn header_facts(data: &[u8]) -> Result<ImageFacts> {
+    let limits = png::Limits {
+        bytes: util::decoder_memory_limit(),
+    };
+    let mut decoder = png::Decoder::new_with_limits(Cursor::new(data), limits);
+    decoder.set_ignore_text_chunk(true);
+    let reader = decoder.read_info().map_err(map_err)?;
+    let info = reader.info();
+    let mut f = ImageFacts::named(if info.animation_control.is_some() {
+        "APNG"
+    } else {
+        "PNG"
+    });
+    f.compression = Some(
+        if info.interlaced {
+            "Deflate, Adam7 interlaced"
+        } else {
+            "Deflate"
+        }
+        .to_string(),
+    );
+    let bits = info.bit_depth as u8;
+    match info.color_type {
+        ColorType::Grayscale => f.set_channels("Gray", 1, bits),
+        ColorType::GrayscaleAlpha => f.set_channels("Gray + alpha", 2, bits),
+        ColorType::Rgb => f.set_channels("RGB", 3, bits),
+        ColorType::Rgba => f.set_channels("RGBA", 4, bits),
+        ColorType::Indexed => {
+            let colors = info.palette.as_ref().map_or(0, |p| p.len() / 3);
+            let name = if colors > 0 {
+                format!("Indexed, {colors} colors")
+            } else {
+                "Indexed".to_string()
+            };
+            f.set_channels(name, 1, bits);
+        }
+    }
+    f.icc_profile = info.icc_profile.as_deref().and_then(icc_description);
+    if info.srgb.is_some() {
+        f.color_space = Some("sRGB".to_string());
+    }
+    if let Some(exif) = info.exif_metadata.as_deref() {
+        f.camera = camera_from_exif(exif);
+    }
+    Ok(f)
 }
 
 fn exif_orientation(info: &png::Info<'_>) -> Orientation {

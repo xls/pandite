@@ -28,8 +28,8 @@ use crate::exif::{tag, Entry, Tiff};
 use crate::util::{self, check_size, corrupt, guard, unsupported};
 use crate::{jpeg, ljpeg, orient};
 use pandite_core::{
-    CancelToken, Content, ContentKind, DecodeOptions, DecoderProvider, Error, ImageBuf, ImageMeta,
-    Orientation, PixelFormat, Result, Source,
+    CancelToken, Content, ContentKind, DecodeOptions, DecoderProvider, Error, ImageBuf, ImageFacts,
+    ImageMeta, Orientation, PixelFormat, Result, Source,
 };
 
 const FORMAT: &str = "raw";
@@ -163,6 +163,105 @@ impl DecoderProvider for RawDecoder {
         })
         .map(Content::Still)
     }
+
+    fn facts(&self, source: &Source) -> Result<ImageFacts> {
+        guard(FORMAT, || {
+            if use_arw(source) {
+                if let Some(f) = arw::facts(source.bytes()) {
+                    return Ok(f);
+                }
+            }
+            Ok(other_facts(source))
+        })
+    }
+}
+
+/// The maker's name of a RAW container, from its signature or extension.
+fn container_name(source: &Source) -> &'static str {
+    let d = source.bytes();
+    if d.starts_with(b"FUJIFILMCCD-RAW") {
+        return "Fujifilm RAF";
+    }
+    if d.get(4..12) == Some(b"ftypcrx ") {
+        return "Canon CR3";
+    }
+    if d.starts_with(b"IIRO") || d.starts_with(b"IIRS") || d.starts_with(b"MMOR") {
+        return "Olympus ORF";
+    }
+    if d.starts_with(b"IIU\0") {
+        return "Panasonic RW2";
+    }
+    if d.starts_with(b"II*\0") && d.get(8..12) == Some(b"CR\x02\0") {
+        return "Canon CR2";
+    }
+    match source.extension().as_deref() {
+        Some("dng") => "DNG",
+        Some("nef") => "Nikon NEF",
+        Some("pef") => "Pentax PEF",
+        Some("srw") => "Samsung SRW",
+        Some("arw") => "Sony ARW",
+        Some("cr2") => "Canon CR2",
+        Some("orf") => "Olympus ORF",
+        Some("rw2") => "Panasonic RW2",
+        Some("raf") => "Fujifilm RAF",
+        Some("cr3") => "Canon CR3",
+        _ => "Camera RAW",
+    }
+}
+
+/// Facts of DNG and the RAW formats shown through their previews: the
+/// container name, the DNG sensor data layout, and the camera settings
+/// (from the TIFF structure, the CR3 CMT1 box or the RAF preview's EXIF).
+fn other_facts(source: &Source) -> ImageFacts {
+    let d = source.bytes();
+    let mut f = ImageFacts::named(container_name(source));
+    if let Some(t) = Tiff::new(d) {
+        f.camera = crate::facts::camera(&t);
+    } else if d.get(4..12) == Some(b"ftypcrx ") {
+        let cmt1 = d.windows(4).take(1 << 20).position(|w| w == b"CMT1");
+        if let Some(t) = cmt1.and_then(|p| d.get(p + 4..)).and_then(Tiff::new) {
+            f.camera = crate::facts::camera(&t);
+        }
+    } else if d.starts_with(b"FUJIFILMCCD-RAW") {
+        // The header names the embedded JPEG: offset and length at 84.
+        let preview = util::be32(d, 84).and_then(|o| d.get(o as usize..));
+        if let Some(jpeg) = preview.and_then(jpeg::header_facts) {
+            f.camera = jpeg.camera;
+        }
+    }
+    let Some(info) = dng_info(d) else {
+        return f;
+    };
+    f.container = Some("DNG".to_string());
+    f.compression = match info.compression {
+        1 => Some("Uncompressed"),
+        7 => Some("Lossless JPEG"),
+        34892 => Some("Lossy JPEG"),
+        52546 => Some("JPEG XL"),
+        _ => None,
+    }
+    .map(str::to_string);
+    f.bits_per_channel = u8::try_from(info.bits).ok().filter(|&b| b > 0);
+    if info.cfa {
+        let names = ["R", "G", "B", "C", "M", "Y"];
+        let pattern: Option<String> = (info.pattern_dim == (2, 2) && info.pattern.len() == 4)
+            .then(|| {
+                info.pattern
+                    .iter()
+                    .map(|&c| names.get(usize::from(c)).copied())
+                    .collect()
+            })
+            .flatten();
+        f.channels = Some(match pattern {
+            Some(p) => format!("Bayer {p}"),
+            None => "Color filter array".to_string(),
+        });
+        f.channel_count = Some(1);
+    } else {
+        f.channels = Some("Linear RGB".to_string());
+        f.channel_count = u8::try_from(info.spp).ok();
+    }
+    f
 }
 
 /// True when the ARW decoder handles the source: not a DNG, and either the

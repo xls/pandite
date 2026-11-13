@@ -43,6 +43,7 @@ impl Ui {
         if let Some(l) = loading.filter(|l| l.over_image) {
             self.draw_loading_pill(ctx, &l, measure, &m, theme, out);
         }
+        self.draw_info(ctx, measure, &m, theme, content, out);
         self.draw_bottom(ctx, measure, &m, theme, content, out);
         self.draw_dialogs(ctx, measure, &m, theme, out);
         if self.help {
@@ -632,6 +633,54 @@ impl Ui {
         }
     }
 
+    /// The information panel: label and value rows in the bottom right
+    /// corner of the content area, so above the gallery strip. Rows that
+    /// do not fit the height are left out; long values are shortened in
+    /// the middle, so file extensions and units stay visible.
+    fn draw_info(
+        &mut self,
+        ctx: &UiContext<'_>,
+        measure: &dyn TextMeasure,
+        m: &Metrics,
+        t: &Theme,
+        content: Rect,
+        out: &mut DrawList,
+    ) {
+        self.info_rect = None;
+        if !self.info_wanted(ctx) {
+            return;
+        }
+        let Some(layout) = InfoLayout::new(ctx.info, measure, m, content) else {
+            return;
+        };
+        let panel = layout.panel;
+        self.info_rect = Some(panel);
+        paint::panel(
+            out,
+            panel,
+            t.panel,
+            t.border,
+            t.shadow,
+            m.radius(),
+            m.hairline(),
+        );
+        let inner_w = (panel.w - 2.0 * layout.pad - layout.gap).max(0.0);
+        let label_w = layout.label_w.min((inner_w * 0.45).floor());
+        let value_x = panel.x + layout.pad + label_w + layout.gap;
+        let value_w = (panel.right() - layout.pad - value_x).max(0.0);
+        out.clip(Some(panel));
+        for (i, row) in ctx.info.iter().take(layout.rows).enumerate() {
+            let y = panel.y + layout.pad + i as f32 * layout.row_h;
+            let lr = Rect::new(panel.x + layout.pad, y, label_w, layout.row_h);
+            let label = paint::elide_end(measure, &row.label, layout.label_font, lr.w);
+            paint::text_left(out, measure, lr, &label, layout.label_font, t.text_dim);
+            let vr = Rect::new(value_x, y, value_w, layout.row_h);
+            let value = paint::elide_middle(measure, &row.value, layout.value_font, vr.w);
+            paint::text_left(out, measure, vr, &value, layout.value_font, t.text);
+        }
+        out.clip(None);
+    }
+
     /// Toasts, the notice, and background progress, along the bottom of
     /// the content area.
     fn draw_bottom(
@@ -1031,5 +1080,86 @@ impl Ui {
         );
         out.rect(r, t.tooltip, m.radius_small());
         paint::text_center(out, measure, r, &text, font, t.tooltip_text);
+    }
+}
+
+/// Geometry of the information panel for one frame.
+struct InfoLayout {
+    /// The panel, anchored to the bottom right corner of the content area.
+    panel: Rect,
+    /// Rows that fit, counted from the first.
+    rows: usize,
+    /// Width of the widest label.
+    label_w: f32,
+    pad: f32,
+    gap: f32,
+    row_h: f32,
+    label_font: f32,
+    value_font: f32,
+}
+
+impl InfoLayout {
+    /// The layout for `rows` in `content`, or `None` when not even one row
+    /// fits. The panel keeps a margin to the content edges (less in a very
+    /// small window) and stays below the toolbar when the window is tall
+    /// enough for both.
+    fn new(
+        rows: &[crate::context::InfoRow],
+        measure: &dyn TextMeasure,
+        m: &Metrics,
+        content: Rect,
+    ) -> Option<Self> {
+        let label_font = m.text_small();
+        let value_font = m.text();
+        let pad = m.px(10.0);
+        let gap = m.px(12.0);
+        let row_h = m.px(20.0);
+        let margin = m
+            .margin()
+            .min((content.w * 0.25).floor())
+            .min((content.h * 0.25).floor())
+            .max(0.0);
+        let top = if content.h >= m.px(240.0) {
+            m.toolbar_h()
+        } else {
+            0.0
+        };
+        let avail_w = content.w - 2.0 * margin;
+        let avail_h = content.h - 2.0 * margin - top;
+        let fit = ((avail_h - 2.0 * pad) / row_h).floor();
+        // NaN-safe: a degenerate window draws no panel.
+        if !(fit >= 1.0 && avail_w >= 2.0 * pad + gap + m.px(40.0)) {
+            return None;
+        }
+        let shown = (fit as usize).min(rows.len());
+        let widest = |font: f32, pick: fn(&crate::context::InfoRow) -> &str| {
+            rows.iter()
+                .map(|r| measure.measure(pick(r), font).w)
+                .fold(0.0f32, f32::max)
+                .ceil()
+        };
+        let label_w = widest(label_font, |r| &r.label);
+        let value_w = widest(value_font, |r| &r.value);
+        let w = (2.0 * pad + label_w + gap + value_w)
+            .min(m.px(460.0))
+            .min(avail_w)
+            .floor();
+        let h = 2.0 * pad + shown as f32 * row_h;
+        let panel = Rect::new(
+            (content.right() - margin - w).round(),
+            (content.bottom() - margin - h).round(),
+            w,
+            h,
+        );
+        Some(Self {
+            panel,
+            rows: shown,
+            label_w,
+            pad,
+            gap,
+            row_h,
+            label_font,
+            value_font,
+        })
     }
 }

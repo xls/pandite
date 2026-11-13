@@ -7,12 +7,13 @@
 
 use crate::compose::{self, Region};
 use crate::exif::orientation_from_exif;
+use crate::facts::{camera_from_exif, icc_description};
 use crate::jpeg::oriented;
 use crate::util::{self, check_size, corrupt, guard, le32, FrameCollector};
 use crate::{icc, orient};
 use pandite_core::{
-    Content, ContentKind, DecodeOptions, DecoderProvider, ImageBuf, ImageMeta, LoopCount,
-    Orientation, PixelFormat, Result, Source,
+    Content, ContentKind, DecodeOptions, DecoderProvider, ImageBuf, ImageFacts, ImageMeta,
+    LoopCount, Orientation, PixelFormat, Result, Source,
 };
 use std::io::Cursor;
 use std::time::Duration;
@@ -69,6 +70,101 @@ impl DecoderProvider for WebpDecoder {
         options.cancel.check()?;
         guard(FORMAT, || decode(source.bytes(), options))
     }
+
+    fn facts(&self, source: &Source) -> Result<ImageFacts> {
+        header_facts(source.bytes()).ok_or_else(|| corrupt(FORMAT, "not a WebP file"))
+    }
+}
+
+/// The chunks of a RIFF body from `pos`: (FourCC, body). A chunk cut short
+/// by the end of the data gives what is there.
+fn chunks(data: &[u8], mut pos: usize) -> Vec<(&[u8], &[u8])> {
+    let mut out = Vec::new();
+    while pos + 8 <= data.len() && out.len() < 4096 {
+        let len = le32(data, pos + 4).unwrap_or(0) as usize;
+        let end = (pos + 8).saturating_add(len).min(data.len());
+        out.push((&data[pos..pos + 4], &data[pos + 8..end]));
+        pos = (pos + 8).saturating_add(len).saturating_add(len & 1);
+    }
+    out
+}
+
+/// The header facts: the first chunk's FourCC (VP8, VP8L or VP8X), the
+/// coding of the image (of the first frame for animations), alpha, the
+/// ICC profile and EXIF.
+fn header_facts(data: &[u8]) -> Option<ImageFacts> {
+    if data.len() < 12 || &data[..4] != b"RIFF" || &data[8..12] != b"WEBP" {
+        return None;
+    }
+    let mut f = ImageFacts::named("WebP");
+    let top = chunks(data, 12);
+    f.fourcc = top
+        .first()
+        .map(|(k, _)| String::from_utf8_lossy(k).trim_end().to_string());
+    /// The first image chunk and the alpha coding among `list`.
+    fn scan<'a>(
+        list: &[(&'a [u8], &'a [u8])],
+        image: &mut Option<(&'a [u8], &'a [u8])>,
+        alph: &mut Option<u8>,
+    ) {
+        for &(k, body) in list {
+            match k {
+                b"ALPH" if alph.is_none() => *alph = body.first().map(|b| b & 3),
+                b"VP8 " | b"VP8L" if image.is_none() => *image = Some((k, body)),
+                _ => {}
+            }
+        }
+    }
+    let mut alpha = false;
+    let mut alph: Option<u8> = None;
+    let mut image: Option<(&[u8], &[u8])> = None;
+    scan(&top, &mut image, &mut alph);
+    for &(k, body) in &top {
+        match k {
+            b"VP8X" => alpha |= body.first().is_some_and(|b| b & 0x10 != 0),
+            b"ANMF" if image.is_none() => {
+                let inner = body.get(16..).map(|b| chunks(b, 0)).unwrap_or_default();
+                scan(&inner, &mut image, &mut alph);
+            }
+            b"ICCP" => f.icc_profile = icc_description(body),
+            b"EXIF" => f.camera = camera_from_exif(body),
+            _ => {}
+        }
+    }
+    match image {
+        Some((b"VP8 ", _)) => {
+            let alpha = alpha || alph.is_some();
+            f.compression = Some(
+                match (alpha, alph) {
+                    (true, Some(1)) => "VP8 lossy, lossless alpha",
+                    (true, Some(0)) => "VP8 lossy, uncompressed alpha",
+                    _ => "VP8 lossy",
+                }
+                .to_string(),
+            );
+            if alpha {
+                f.set_channels("YCbCr + alpha", 4, 8);
+            } else {
+                f.set_channels("YCbCr", 3, 8);
+            }
+            f.subsampling = Some("4:2:0".to_string());
+        }
+        Some((_, body)) => {
+            f.compression = Some("VP8L lossless".to_string());
+            // Signature 0x2F, then 14 + 14 size bits and the alpha hint.
+            let hint = (body.first() == Some(&0x2F))
+                .then(|| le32(body, 1))
+                .flatten()
+                .map(|v| ((v >> 28) & 1) == 1);
+            match hint {
+                Some(true) => f.set_channels("RGBA", 4, 8),
+                Some(false) if !alpha => f.set_channels("RGB", 3, 8),
+                _ => f.set_channels("RGBA", 4, 8),
+            }
+        }
+        None => {}
+    }
+    Some(f)
 }
 
 fn exif(dec: &mut image_webp::WebPDecoder<Cursor<&[u8]>>) -> Orientation {

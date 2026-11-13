@@ -14,7 +14,8 @@
 use crate::util::{self, check_size, corrupt, le16, le32, unsupported};
 use pandite_core::{
     CancelToken, Content, ContentKind, DecodeOptions, DecoderProvider, EncodeOptions,
-    EncoderProvider, Error, ImageBuf, ImageMeta, Orientation, PixelFormat, Result, Source,
+    EncoderProvider, Error, ImageBuf, ImageFacts, ImageMeta, Orientation, PixelFormat, Result,
+    Source,
 };
 use std::io::Write;
 
@@ -510,6 +511,76 @@ impl DecoderProvider for BmpDecoder {
             decode_dib(data, FILE_HEADER, pixels_at, false, &options.cancel).map(Content::Still)
         })
     }
+
+    fn facts(&self, source: &Source) -> Result<ImageFacts> {
+        let data = source.bytes();
+        file_header(data)?;
+        let h = parse_header(data, FILE_HEADER, false)?;
+        Ok(dib_facts(data, FILE_HEADER, &h))
+    }
+}
+
+/// The facts of a DIB header at `at`: compression, pixel layout and the
+/// color space of version 4 and 5 headers.
+pub(crate) fn dib_facts(data: &[u8], at: usize, h: &DibHeader) -> ImageFacts {
+    let mut f = ImageFacts::named("BMP");
+    f.compression = match h.compression {
+        BI_RGB => Some("Uncompressed"),
+        BI_RLE8 => Some("RLE8"),
+        BI_RLE4 => Some("RLE4"),
+        BI_BITFIELDS => Some("Uncompressed, bit fields"),
+        BI_JPEG => Some("JPEG"),
+        BI_PNG => Some("PNG"),
+        BI_ALPHABITFIELDS => Some("Uncompressed, bit fields with alpha"),
+        _ => None,
+    }
+    .map(str::to_string);
+    let bpp = h.bpp;
+    let alpha = h.masks[3] != 0;
+    match bpp {
+        1 | 2 | 4 | 8 => {
+            let colors = if h.colors_used > 0 {
+                h.colors_used.min(1 << bpp)
+            } else {
+                1 << bpp
+            };
+            f.set_channels(format!("Indexed, {colors} colors"), 1, bpp as u8);
+        }
+        16 | 24 | 32 if !matches!(h.compression, BI_JPEG | BI_PNG) => {
+            let width = |m: u32| m.count_ones() as u8;
+            let (name, count) = if alpha { ("RGBA", 4) } else { ("RGB", 3) };
+            f.channels = Some(name.to_string());
+            f.channel_count = Some(count);
+            let (r, g, b) = (width(h.masks[0]), width(h.masks[1]), width(h.masks[2]));
+            if bpp == 24 {
+                f.bits_per_channel = Some(8);
+            } else if r == g && g == b && r > 0 {
+                f.bits_per_channel = Some(r);
+            }
+            f.bits_per_pixel = Some(bpp);
+        }
+        _ => {}
+    }
+    // BITMAPV4HEADER and later: the color space type, and for V5 an
+    // embedded profile (offset from the header start).
+    let size = le32(data, at).unwrap_or(0);
+    if size >= 108 {
+        f.color_space = match le32(data, at + 56) {
+            Some(0x7352_4742) => Some("sRGB".to_string()),
+            Some(0x5769_6E20) => Some("Windows default".to_string()),
+            Some(0) => Some("Calibrated RGB".to_string()),
+            _ => None,
+        };
+    }
+    if size >= 124 && le32(data, at + 56) == Some(0x4D42_4544) {
+        let off = le32(data, at + 112).unwrap_or(0) as usize;
+        let len = le32(data, at + 116).unwrap_or(0) as usize;
+        let start = at.saturating_add(off);
+        f.icc_profile = data
+            .get(start..start.saturating_add(len))
+            .and_then(crate::facts::icc_description);
+    }
+    f
 }
 
 /// Writes BMP files: 24-bit for opaque images, 32-bit with alpha otherwise.

@@ -11,11 +11,11 @@ use crate::util::{self, check_size, corrupt, guard, FrameCollector};
 use jxl::api::{
     AlphaMode, Endianness, Event, ExtraChannel, JxlBitDepth, JxlColorEncoding, JxlColorProfile,
     JxlColorType, JxlDataFormat, JxlDecoder as Decoder, JxlDecoderOptions, JxlOutputBuffer,
-    JxlParallelRunner, JxlParallelRunnerFun, JxlPixelFormat, JxlTransferFunction,
+    JxlParallelRunner, JxlParallelRunnerFun, JxlPixelFormat, JxlPrimaries, JxlTransferFunction,
 };
 use pandite_core::{
-    Content, ContentKind, DecodeOptions, DecoderProvider, Error, ImageBuf, ImageMeta, LoopCount,
-    Orientation, PixelFormat, Result, Source,
+    Content, ContentKind, DecodeOptions, DecoderProvider, Error, ImageBuf, ImageFacts, ImageMeta,
+    LoopCount, Orientation, PixelFormat, Result, Source,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -93,6 +93,122 @@ impl DecoderProvider for JxlDecoder {
         options.cancel.check()?;
         guard(FORMAT, || decode(source.bytes(), options))
     }
+
+    fn facts(&self, source: &Source) -> Result<ImageFacts> {
+        guard(FORMAT, || {
+            let data = source.bytes();
+            let mut dec = Decoder::new(options(true));
+            let mut input = data;
+            loop {
+                match dec
+                    .process(&mut input, None, None)
+                    .map_err(|e| corrupt(FORMAT, e))?
+                {
+                    Event::BasicInfo => break,
+                    Event::NeedMoreInput { .. } if input.is_empty() => {
+                        return Err(corrupt(FORMAT, "truncated header"))
+                    }
+                    Event::Complete => return Err(corrupt(FORMAT, "no image header")),
+                    _ => {}
+                }
+            }
+            let info = dec
+                .basic_info()
+                .ok_or_else(|| corrupt(FORMAT, "no basic info"))?;
+            let mut f = ImageFacts::named("JPEG XL");
+            if data.starts_with(&CONTAINER) && has_box(data, b"jbrd") {
+                f.compression = Some("Recompressed JPEG".to_string());
+            } else if !info.uses_original_profile {
+                // XYB is the color space of lossy coding only.
+                f.compression = Some("Lossy (XYB)".to_string());
+            }
+            let alpha = info
+                .extra_channels
+                .iter()
+                .any(|c| c.ec_type == ExtraChannel::Alpha);
+            let profile = dec.embedded_color_profile();
+            let gray = matches!(
+                profile,
+                Some(JxlColorProfile::Simple(
+                    JxlColorEncoding::GrayscaleColorSpace { .. }
+                ))
+            );
+            let (name, count) = match (gray, alpha) {
+                (true, false) => ("Gray", 1),
+                (true, true) => ("Gray + alpha", 2),
+                (false, false) => ("RGB", 3),
+                (false, true) => ("RGBA", 4),
+            };
+            let bits = u8::try_from(info.bit_depth.bits_per_sample()).unwrap_or(0);
+            let name = match info.bit_depth {
+                JxlBitDepth::Float { .. } => format!("{name}, floating point"),
+                _ => name.to_string(),
+            };
+            f.set_channels(name, count, bits);
+            match profile {
+                Some(JxlColorProfile::Icc(icc)) => {
+                    f.icc_profile = crate::facts::icc_description(icc);
+                }
+                Some(JxlColorProfile::Simple(JxlColorEncoding::RgbColorSpace {
+                    primaries,
+                    transfer_function,
+                    ..
+                })) => {
+                    f.color_space = color_space_name(primaries, transfer_function);
+                }
+                _ => {}
+            }
+            Ok(f)
+        })
+    }
+}
+
+/// A name for the common color encodings of the codestream header.
+fn color_space_name(p: &JxlPrimaries, t: &JxlTransferFunction) -> Option<String> {
+    let gamut = match p {
+        JxlPrimaries::SRGB => "sRGB primaries",
+        JxlPrimaries::P3 => "Display P3",
+        JxlPrimaries::BT2100 => "BT.2100",
+        JxlPrimaries::Chromaticities { .. } => return None,
+    };
+    Some(match (p, t) {
+        (JxlPrimaries::SRGB, JxlTransferFunction::SRGB) => "sRGB".to_string(),
+        (JxlPrimaries::P3, JxlTransferFunction::SRGB) => "Display P3".to_string(),
+        (_, JxlTransferFunction::PQ) => format!("{gamut}, PQ"),
+        (_, JxlTransferFunction::HLG) => format!("{gamut}, HLG"),
+        (_, JxlTransferFunction::Linear) => format!("{gamut}, linear"),
+        _ => gamut.to_string(),
+    })
+}
+
+/// True when the top-level boxes of a container include `kind`.
+fn has_box(data: &[u8], kind: &[u8; 4]) -> bool {
+    let mut pos = 0usize;
+    for _ in 0..1024 {
+        let (Some(size), Some(k)) = (util::be32(data, pos), data.get(pos + 4..pos + 8)) else {
+            return false;
+        };
+        if k == kind {
+            return true;
+        }
+        let size = match size {
+            0 => return false,
+            1 => {
+                let hi = util::be32(data, pos + 8).unwrap_or(0);
+                let lo = util::be32(data, pos + 12).unwrap_or(0);
+                match usize::try_from((u64::from(hi) << 32) | u64::from(lo)) {
+                    Ok(s) => s,
+                    Err(_) => return false,
+                }
+            }
+            s => s as usize,
+        };
+        if size < 8 {
+            return false;
+        }
+        pos = pos.saturating_add(size);
+    }
+    false
 }
 
 fn options(scan_only: bool) -> JxlDecoderOptions {

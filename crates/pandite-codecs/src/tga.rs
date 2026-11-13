@@ -8,8 +8,8 @@
 
 use crate::util::{self, check_size, corrupt, le16, le32, unsupported};
 use pandite_core::{
-    CancelToken, Content, ContentKind, DecodeOptions, DecoderProvider, ImageBuf, ImageMeta,
-    Orientation, PixelFormat, Result, Source,
+    CancelToken, Content, ContentKind, DecodeOptions, DecoderProvider, ImageBuf, ImageFacts,
+    ImageMeta, Orientation, PixelFormat, Result, Source,
 };
 
 const FORMAT: &str = "tga";
@@ -128,6 +128,37 @@ impl DecoderProvider for TgaDecoder {
     fn decode(&self, source: &Source, options: &DecodeOptions) -> Result<Content> {
         options.cancel.check()?;
         util::guard(FORMAT, || decode(source.bytes(), &options.cancel)).map(Content::Still)
+    }
+
+    fn facts(&self, source: &Source) -> Result<ImageFacts> {
+        let h = header(source.bytes())?;
+        let mut f = ImageFacts::named("TGA");
+        f.compression = Some(
+            if h.image_type >= 9 {
+                "RLE"
+            } else {
+                "Uncompressed"
+            }
+            .to_string(),
+        );
+        match h.image_type {
+            1 | 9 => {
+                let name = format!("Indexed, {} colors", h.map_len);
+                f.set_channels(name, 1, h.bits);
+            }
+            3 | 11 => f.set_channels("Gray", 1, h.bits),
+            _ => {
+                let (name, count, bits) = match h.bits {
+                    32 => ("RGBA", 4, 8),
+                    24 => ("RGB", 3, 8),
+                    16 if h.alpha_bits > 0 => ("RGBA", 4, 5),
+                    _ => ("RGB", 3, 5),
+                };
+                f.set_channels(name, count, bits);
+                f.bits_per_pixel = Some(u16::from(h.bits));
+            }
+        }
+        Ok(f)
     }
 }
 

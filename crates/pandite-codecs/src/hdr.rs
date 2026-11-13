@@ -5,8 +5,8 @@
 
 use crate::util::{self, check_size, corrupt, unsupported};
 use pandite_core::{
-    CancelToken, Content, ContentKind, DecodeOptions, DecoderProvider, ImageBuf, ImageMeta,
-    Orientation, PixelFormat, Result, Source,
+    CancelToken, Content, ContentKind, DecodeOptions, DecoderProvider, ImageBuf, ImageFacts,
+    ImageMeta, Orientation, PixelFormat, Result, Source,
 };
 
 const FORMAT: &str = "hdr";
@@ -135,6 +135,28 @@ impl DecoderProvider for HdrDecoder {
     fn decode(&self, source: &Source, options: &DecodeOptions) -> Result<Content> {
         options.cancel.check()?;
         util::guard(FORMAT, || decode(source.bytes(), &options.cancel)).map(Content::Still)
+    }
+
+    fn facts(&self, source: &Source) -> Result<ImageFacts> {
+        let d = source.bytes();
+        let h = header(d)?;
+        let mut f = ImageFacts::named("Radiance HDR");
+        // An adaptive run-length scanline starts with 2, 2 and its width.
+        let adaptive = d.get(h.data_start..h.data_start + 2) == Some(&[2, 2])
+            && (8..32_768).contains(&h.width);
+        f.compression = Some(
+            if adaptive {
+                "Run-length encoded"
+            } else {
+                "Flat or old-style RLE"
+            }
+            .to_string(),
+        );
+        f.set_channels(if h.xyz { "XYZE" } else { "RGBE" }, 4, 8);
+        if h.xyz {
+            f.color_space = Some("CIE XYZ".to_string());
+        }
+        Ok(f)
     }
 }
 

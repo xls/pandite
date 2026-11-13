@@ -20,11 +20,12 @@
 //! sRGB (CMYK through the profile when there is one).
 
 use crate::exif::{orientation_from_exif, Tiff};
+use crate::facts::{camera_from_exif, exif_color_space, icc_description, subsampling};
 use crate::util::{alloc_rgba8, check_size, cmyk_to_rgb, corrupt, guard, scale_to_u16};
 use crate::{icc, orient, util};
 use pandite_core::{
-    Content, ContentKind, DecodeOptions, DecoderProvider, Error, ImageBuf, ImageMeta, Orientation,
-    PixelFormat, Result, Source,
+    Content, ContentKind, DecodeOptions, DecoderProvider, Error, ImageBuf, ImageFacts, ImageMeta,
+    Orientation, PixelFormat, Result, Source,
 };
 
 const FORMAT: &str = "jpeg";
@@ -150,6 +151,134 @@ impl DecoderProvider for JpegDecoder {
         let image = guard(FORMAT, || decode_image(source.bytes(), options))?;
         Ok(Content::Still(image))
     }
+
+    fn facts(&self, source: &Source) -> Result<ImageFacts> {
+        header_facts(source.bytes()).ok_or_else(|| corrupt(FORMAT, "not a JPEG stream"))
+    }
+}
+
+/// The name of a frame marker's coding process (ITU-T T.81 Table B.1).
+fn coding_name(sof: u8) -> &'static str {
+    match sof {
+        0xC0 => "Baseline DCT, Huffman",
+        0xC1 => "Extended sequential DCT, Huffman",
+        0xC2 => "Progressive DCT, Huffman",
+        0xC3 => "Lossless, Huffman",
+        0xC5 => "Differential sequential DCT, Huffman",
+        0xC6 => "Differential progressive DCT, Huffman",
+        0xC7 => "Differential lossless, Huffman",
+        0xC9 => "Extended sequential DCT, arithmetic",
+        0xCA => "Progressive DCT, arithmetic",
+        0xCB => "Lossless, arithmetic",
+        0xCD => "Differential sequential DCT, arithmetic",
+        0xCE => "Differential progressive DCT, arithmetic",
+        _ => "Differential lossless, arithmetic",
+    }
+}
+
+/// The facts of the marker segments before the first scan: coding
+/// process, components with their sampling, precision, the ICC profile
+/// (APP2, in pieces), the Adobe transform (APP14) and EXIF (APP1). `None`
+/// when the data do not start a JPEG stream. A stream cut short reports
+/// what came before the cut.
+pub(crate) fn header_facts(data: &[u8]) -> Option<ImageFacts> {
+    if data.get(..2)? != [0xFF, 0xD8] {
+        return None;
+    }
+    let mut icc: Vec<(u8, &[u8])> = Vec::new();
+    let mut exif: Option<&[u8]> = None;
+    let mut adobe: Option<u8> = None;
+    let mut frame: Option<(u8, &[u8])> = None;
+    let mut pos = 2;
+    'walk: loop {
+        loop {
+            match data.get(pos) {
+                Some(0xFF) => break,
+                Some(_) => pos += 1,
+                None => break 'walk,
+            }
+        }
+        while data.get(pos) == Some(&0xFF) {
+            pos += 1;
+        }
+        let Some(&marker) = data.get(pos) else {
+            break;
+        };
+        pos += 1;
+        match marker {
+            0x01 | 0xD0..=0xD7 => continue,
+            0xD9 | 0xDA => break,
+            _ => {}
+        }
+        let Some(len) = util::be16(data, pos).map(usize::from).filter(|&l| l >= 2) else {
+            break;
+        };
+        let Some(payload) = data.get(pos + 2..pos + len) else {
+            break;
+        };
+        match marker {
+            0xE1 if exif.is_none() && payload.starts_with(b"Exif\0\0") => {
+                exif = Some(&payload[6..]);
+            }
+            0xE2 if payload.len() > 14 && payload.starts_with(b"ICC_PROFILE\0") => {
+                icc.push((payload[12], &payload[14..]));
+            }
+            0xEE if payload.len() >= 12 && payload.starts_with(b"Adobe") => {
+                adobe = Some(payload[11]);
+            }
+            0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF if frame.is_none() => {
+                frame = Some((marker, payload));
+            }
+            _ => {}
+        }
+        pos += len;
+    }
+    let mut f = ImageFacts::named("JPEG");
+    if let Some((sof, p)) = frame {
+        f.compression = Some(coding_name(sof).to_string());
+        let precision = p.first().copied().unwrap_or(8);
+        let n = p.get(5).copied().unwrap_or(0);
+        // (id, horizontal, vertical) of each component.
+        let comps: Vec<(u8, u8, u8)> = p
+            .get(6..)
+            .unwrap_or(&[])
+            .chunks_exact(3)
+            .take(usize::from(n))
+            .map(|c| (c[0], c[1] >> 4, c[1] & 15))
+            .collect();
+        let ids: Vec<u8> = comps.iter().map(|c| c.0).collect();
+        let (name, chroma) = match n {
+            1 => (Some("Gray"), false),
+            3 if adobe == Some(0) || ids == b"RGB" => (Some("RGB"), false),
+            3 => (Some("YCbCr"), true),
+            4 if adobe == Some(2) => (Some("YCCK"), true),
+            4 => (Some("CMYK"), false),
+            _ => (None, false),
+        };
+        match name {
+            Some(name) => f.set_channels(name, n, precision),
+            None => {
+                f.channel_count = (n > 0).then_some(n);
+                f.bits_per_channel = Some(precision);
+            }
+        }
+        if let (true, [y, cb, cr, ..]) = (chroma, comps.as_slice()) {
+            let even = cb.1 == cr.1 && cb.2 == cr.2 && cb.1 > 0 && cb.2 > 0;
+            if even && y.1 % cb.1 == 0 && y.2 % cb.2 == 0 {
+                f.subsampling = subsampling(y.1 / cb.1, y.2 / cb.2).map(str::to_string);
+            }
+        }
+    }
+    if !icc.is_empty() {
+        icc.sort_by_key(|c| c.0);
+        let profile: Vec<u8> = icc.iter().flat_map(|c| c.1.iter().copied()).collect();
+        f.icc_profile = icc_description(&profile);
+    }
+    if let Some(e) = exif {
+        f.camera = camera_from_exif(e);
+        f.color_space = exif_color_space(e);
+    }
+    Some(f)
 }
 
 /// Width and height after applying an orientation.

@@ -98,6 +98,25 @@ pub struct Loading<'a> {
     pub over_image: bool,
 }
 
+/// One line of the information panel: what a fact is and its value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InfoRow {
+    /// What the value is, for example "Pixels".
+    pub label: String,
+    /// The value, for example "6000 x 4000".
+    pub value: String,
+}
+
+impl InfoRow {
+    /// A row from a label and a value.
+    pub fn new(label: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            value: value.into(),
+        }
+    }
+}
+
 /// An encoder the bulk dialog offers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EncoderInfo<'a> {
@@ -157,6 +176,14 @@ pub struct UiContext<'a> {
     /// Words then take a text cursor, drags over them select text, and
     /// Ctrl+A and Ctrl+C select and copy it.
     pub text: Option<TextView<'a>>,
+    /// The user's information panel setting. The panel shows in the
+    /// bottom right corner of the content area when this is set and
+    /// [`UiContext::info`] has rows. It is not a dialog: every key and
+    /// pointer gesture outside it works as before.
+    pub info_visible: bool,
+    /// The rows of the information panel, in display order. Empty when
+    /// nothing is open.
+    pub info: &'a [InfoRow],
 }
 
 impl Default for UiContext<'_> {
@@ -181,6 +208,8 @@ impl Default for UiContext<'_> {
             encoders: &[],
             text_enabled: false,
             text: None,
+            info_visible: false,
+            info: &[],
         }
     }
 }

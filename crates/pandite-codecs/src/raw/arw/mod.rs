@@ -45,7 +45,9 @@ pub(crate) use meta::{Class, Rect, Variant, WbSource};
 use crate::pool;
 use crate::raw::tone::Tone;
 use crate::util::check_size;
-use pandite_core::{CancelToken, DecodeOptions, Error, ImageBuf, Orientation, PixelFormat, Result};
+use pandite_core::{
+    CancelToken, DecodeOptions, Error, ImageBuf, ImageFacts, Orientation, PixelFormat, Result,
+};
 use std::fmt::Display;
 
 /// Results inside the ARW decoder; every error means "fail" in the sense
@@ -145,6 +147,73 @@ pub(crate) fn probe(data: &[u8]) -> Result<Option<(u32, u32, Orientation)>> {
         .ok_or_else(|| fail("no decodable image"))?;
     let (w, h) = p.displayed(o);
     Ok(Some((w, h, orientation)))
+}
+
+/// Header facts of an ARW file: the storage of the sensor data (from the
+/// classification, R-ARW-3), the CFA layout and sample depth of the raw
+/// IFD, and the camera settings of IFD0 and its EXIF IFD. Reads tags only;
+/// no sensor data. `None` when the data are not a little-endian TIFF.
+pub(crate) fn facts(data: &[u8]) -> Option<ImageFacts> {
+    let c = meta::open(data).ok().flatten()?;
+    let mut f = ImageFacts::named("Sony ARW");
+    if let Some(t) = crate::exif::Tiff::new(data) {
+        f.camera = crate::facts::camera(&t);
+    }
+    let Some(raw) = &c.raw else {
+        return Some(f);
+    };
+    let compression = raw.uint(0x0103).ok().flatten();
+    f.compression = match meta::classify(&c).ok() {
+        Some(Class::Sensor(Variant::V1)) => Some("Uncompressed"),
+        Some(Class::Sensor(Variant::V2)) => Some("Sony 12-bit packed"),
+        Some(Class::Sensor(Variant::V3)) => Some("Sony lossy, 8 bits per pixel"),
+        Some(Class::Sensor(Variant::V4)) => Some("Lossless JPEG (ARW)"),
+        Some(Class::Sensor(Variant::V5)) => Some("Lossless JPEG YCbCr (ARW)"),
+        _ => match compression {
+            Some(1) => Some("Uncompressed"),
+            Some(7) => Some("Lossless JPEG (ARW)"),
+            Some(32767) => Some("Sony compressed"),
+            _ => None,
+        },
+    }
+    .map(str::to_string);
+    let bits = raw
+        .uint(0x0102)
+        .ok()
+        .flatten()
+        .and_then(|b| u8::try_from(b).ok())
+        .filter(|&b| b > 0);
+    match raw.uint(0x0106).ok().flatten() {
+        Some(32803) => {
+            let names = ["R", "G", "B"];
+            let pattern: Option<String> = raw
+                .uints(0x828E)
+                .ok()
+                .flatten()
+                .filter(|p| p.len() == 4)
+                .and_then(|p| p.iter().map(|&c| names.get(c as usize).copied()).collect());
+            f.channels = Some(match pattern {
+                Some(p) => format!("Bayer {p}"),
+                None => "Bayer".to_string(),
+            });
+            f.channel_count = Some(1);
+            f.bits_per_channel = bits;
+        }
+        Some(6) => {
+            f.channels = Some("YCbCr".to_string());
+            f.channel_count = Some(3);
+            f.bits_per_channel = bits;
+            if let Some(s) = raw.uints(0x0212).ok().flatten().filter(|s| s.len() >= 2) {
+                f.subsampling = u8::try_from(s[0])
+                    .ok()
+                    .zip(u8::try_from(s[1]).ok())
+                    .and_then(|(h, v)| crate::facts::subsampling(h, v))
+                    .map(str::to_string);
+            }
+        }
+        _ => f.bits_per_channel = bits,
+    }
+    Some(f)
 }
 
 /// How developed sensor data are delivered.

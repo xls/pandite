@@ -10,8 +10,8 @@ use crate::compose::{self, Region};
 use crate::icc;
 use crate::util::{self, check_size, corrupt, guard, FrameCollector};
 use pandite_core::{
-    Content, ContentKind, DecodeOptions, DecoderProvider, ImageBuf, ImageMeta, LoopCount,
-    Orientation, PixelFormat, Result, Source,
+    Content, ContentKind, DecodeOptions, DecoderProvider, ImageBuf, ImageFacts, ImageMeta,
+    LoopCount, Orientation, PixelFormat, Result, Source,
 };
 use std::num::NonZeroU64;
 use std::time::Duration;
@@ -79,6 +79,54 @@ impl DecoderProvider for GifDecoder {
         options.cancel.check()?;
         guard(FORMAT, || decode(source.bytes(), options))
     }
+
+    fn facts(&self, source: &Source) -> Result<ImageFacts> {
+        header_facts(source.bytes()).ok_or_else(|| corrupt(FORMAT, "not a GIF file"))
+    }
+}
+
+/// The header facts: the color table of the first frame (its own table,
+/// else the global one) and whether that frame is interlaced. Extension
+/// blocks before it are skipped; no image data is read.
+fn header_facts(d: &[u8]) -> Option<ImageFacts> {
+    if !matches!(d.get(..6)?, b"GIF87a" | b"GIF89a") {
+        return None;
+    }
+    let packed = *d.get(10)?;
+    let table = |p: u8| (p & 0x80 != 0).then_some((p & 7) + 1);
+    let global = table(packed);
+    let mut pos = 13 + global.map_or(0, |b| 3usize << b);
+    let mut first: Option<u8> = None;
+    for _ in 0..4096 {
+        match d.get(pos) {
+            Some(0x21) => {
+                pos += 2;
+                // Data sub-blocks up to the zero-length terminator.
+                while let Some(&n) = d.get(pos) {
+                    pos += 1 + usize::from(n);
+                    if n == 0 {
+                        break;
+                    }
+                }
+            }
+            Some(0x2C) => {
+                first = d.get(pos + 9).copied();
+                break;
+            }
+            _ => break,
+        }
+    }
+    let mut f = ImageFacts::named("GIF");
+    let interlaced = first.is_some_and(|p| p & 0x40 != 0);
+    f.compression = Some(if interlaced { "LZW, interlaced" } else { "LZW" }.to_string());
+    match first.and_then(table).or(global) {
+        Some(bits) => f.set_channels(format!("Indexed, {} colors", 1u32 << bits), 1, bits),
+        None => {
+            f.channels = Some("Indexed".to_string());
+            f.channel_count = Some(1);
+        }
+    }
+    Some(f)
 }
 
 fn decode_options() -> gif::DecodeOptions {

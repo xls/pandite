@@ -344,7 +344,9 @@ impl Ui {
                 PointerButton::Right => Capture::RightPress,
                 _ => Capture::Swallow,
             },
-            Target::ToolbarBar | Target::CropBarPanel if button == PointerButton::Right => {
+            Target::ToolbarBar | Target::CropBarPanel | Target::InfoPanel
+                if button == PointerButton::Right =>
+            {
                 Capture::RightPress
             }
             _ => Capture::Swallow,
@@ -531,6 +533,7 @@ impl Ui {
                         | Target::Gallery(_)
                         | Target::ToolbarBar
                         | Target::CropBarPanel
+                        | Target::InfoPanel
                 ) {
                     self.open_context_menu(pos, ctx);
                 }

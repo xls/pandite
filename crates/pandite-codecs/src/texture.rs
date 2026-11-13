@@ -111,6 +111,77 @@ impl Tex {
         }
     }
 
+    /// Fill the compression and channel facts of this layout: block
+    /// formats name their codec and give bits per pixel, uncompressed
+    /// layouts their channels and sample depth.
+    pub(crate) fn describe(self, f: &mut pandite_core::ImageFacts) {
+        let (codec, channels, count, bits, bpp): (&str, &str, u8, Option<u8>, Option<u16>) =
+            match self {
+                Tex::Bc1 => ("BC1 (DXT1)", "RGBA", 4, None, Some(4)),
+                Tex::Bc2 => ("BC2 (DXT3)", "RGBA", 4, None, Some(8)),
+                Tex::Bc3 => ("BC3 (DXT5)", "RGBA", 4, None, Some(8)),
+                Tex::Bc4 { .. } => ("BC4", "Red", 1, None, Some(4)),
+                Tex::Bc5 { .. } => ("BC5", "Red, green", 2, None, Some(8)),
+                Tex::Bc6h { .. } => ("BC6H, half float", "RGB", 3, None, Some(8)),
+                Tex::Bc7 => ("BC7", "RGBA", 4, None, Some(8)),
+                Tex::Etc1 => ("ETC1", "RGB", 3, None, Some(4)),
+                Tex::Etc2Rgb => ("ETC2", "RGB", 3, None, Some(4)),
+                Tex::Etc2Rgba1 => ("ETC2, 1-bit alpha", "RGBA", 4, None, Some(4)),
+                Tex::Etc2Rgba8 => ("ETC2 with EAC alpha", "RGBA", 4, None, Some(8)),
+                Tex::EacR11 { .. } => ("EAC R11", "Red", 1, None, Some(4)),
+                Tex::EacRg11 { .. } => ("EAC RG11", "Red, green", 2, None, Some(8)),
+                // ASTC block sizes give fractional bits per pixel.
+                Tex::Astc { .. } => ("ASTC", "RGBA", 4, None, None),
+                Tex::Masked {
+                    bytes,
+                    masks,
+                    luminance,
+                } => {
+                    let alpha = masks[3] != 0;
+                    let (name, count) = match (luminance, alpha) {
+                        (true, false) => ("Gray", 1),
+                        (true, true) => ("Gray + alpha", 2),
+                        (false, _) if masks[0] == 0 && masks[1] == 0 => ("Alpha", 1),
+                        (false, false) if masks[2] == 0 => ("Red, green", 2),
+                        (false, false) => ("RGB", 3),
+                        (false, true) => ("RGBA", 4),
+                    };
+                    let widths: Vec<u32> = masks
+                        .iter()
+                        .filter(|m| **m != 0)
+                        .map(|m| m.count_ones())
+                        .collect();
+                    let even = widths.windows(2).all(|w| w[0] == w[1]);
+                    let bits = widths.first().filter(|_| even).map(|&b| b as u8);
+                    (
+                        "Uncompressed",
+                        name,
+                        count,
+                        bits,
+                        Some(u16::from(bytes) * 8),
+                    )
+                }
+                Tex::Rgba16Unorm => ("Uncompressed", "RGBA", 4, Some(16), None),
+                Tex::Rgba16Float => ("Uncompressed, half float", "RGBA", 4, Some(16), None),
+                Tex::Rgba32Float => ("Uncompressed, float", "RGBA", 4, Some(32), None),
+                Tex::Rgb32Float => ("Uncompressed, float", "RGB", 3, Some(32), None),
+                Tex::R16Float => ("Uncompressed, half float", "Red", 1, Some(16), None),
+                Tex::Rg16Float => ("Uncompressed, half float", "Red, green", 2, Some(16), None),
+                Tex::R32Float => ("Uncompressed, float", "Red", 1, Some(32), None),
+                Tex::Rg32Float => ("Uncompressed, float", "Red, green", 2, Some(32), None),
+                Tex::R11G11B10Float => ("Packed float (R11G11B10)", "RGB", 3, None, Some(32)),
+                Tex::Rgb9E5 => ("Shared exponent (RGB9E5)", "RGB", 3, None, Some(32)),
+            };
+        f.compression = Some(match self {
+            Tex::Astc { bw, bh } => format!("{codec} {bw}x{bh}"),
+            _ => codec.to_string(),
+        });
+        f.channels = Some(channels.to_string());
+        f.channel_count = Some(count);
+        f.bits_per_channel = bits;
+        f.bits_per_pixel = bpp;
+    }
+
     /// Bytes needed for one `w` x `h` image.
     pub(crate) fn size(self, w: u32, h: u32) -> Option<usize> {
         let (bw, bh, bb) = self.block();

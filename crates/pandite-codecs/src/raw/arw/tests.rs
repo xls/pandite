@@ -2727,3 +2727,59 @@ fn raw_default_rendering_matches_preview_brightness() {
     assert!(compared > 0, "no file in scope");
     assert!(failures.is_empty(), "outside tolerance: {failures:#?}");
 }
+
+/// Header facts of every fixture variant: storage, CFA layout, sample
+/// depth and the camera of IFD0, through the provider and through the
+/// registry (the TIFF provider hands ARW files over). Tags only: a head
+/// cut before the sensor data answers the same, and no cut panics.
+#[test]
+fn facts_arw() {
+    use pandite_core::{DecoderProvider, Source};
+    let f = super::facts(&f1()).expect("ARW facts");
+    assert_eq!(f.container.as_deref(), Some("Sony ARW"));
+    assert_eq!(f.compression.as_deref(), Some("Uncompressed"));
+    assert_eq!(f.channels.as_deref(), Some("Bayer RGGB"));
+    assert_eq!((f.channel_count, f.bits_per_channel), (Some(1), Some(14)));
+    assert_eq!(f.stored_bits_per_pixel(), Some(14));
+    assert_eq!(f.subsampling, None);
+    assert_eq!(f.camera.make.as_deref(), Some("SONY"));
+    assert_eq!(f.camera.model.as_deref(), Some("ILCE-7M4"));
+    assert_eq!(f.fourcc, None);
+
+    let compression = |data: &[u8]| super::facts(data).and_then(|f| f.compression);
+    assert_eq!(compression(&f2()).as_deref(), Some("Sony 12-bit packed"));
+    assert_eq!(
+        compression(&f3()).as_deref(),
+        Some("Sony lossy, 8 bits per pixel")
+    );
+    assert_eq!(compression(&f4()).as_deref(), Some("Lossless JPEG (ARW)"));
+    let v5 = super::facts(&f5()).expect("V5 facts");
+    assert_eq!(v5.compression.as_deref(), Some("Lossless JPEG YCbCr (ARW)"));
+    assert_eq!(v5.channels.as_deref(), Some("YCbCr"));
+    assert_eq!((v5.channel_count, v5.bits_per_channel), (Some(3), Some(15)));
+    assert_eq!(v5.subsampling.as_deref(), Some("4:2:0"));
+
+    // Through the registry, by file name: TIFF signature, ARW extension.
+    let reg = crate::default_registry();
+    let via = reg
+        .facts(&Source::from_bytes(f4(), Some("DSC00001.ARW".into())))
+        .expect("registry facts");
+    assert_eq!(via.compression.as_deref(), Some("Lossless JPEG (ARW)"));
+    assert_eq!(
+        crate::raw::RawDecoder
+            .facts(&Source::from_bytes(f1(), Some("a.arw".into())))
+            .expect("provider facts")
+            .channels
+            .as_deref(),
+        Some("Bayer RGGB")
+    );
+
+    // The head of the file: the directories come before the tile.
+    let f4 = f4();
+    let head = super::facts(&f4[..512]).expect("head facts");
+    assert_eq!(head.compression.as_deref(), Some("Lossless JPEG (ARW)"));
+    for n in (0..f4.len().min(4096)).step_by(5) {
+        let _ = super::facts(&f4[..n]);
+    }
+    assert!(super::facts(b"MM\0*\0\0\0\x08").is_none(), "big-endian");
+}

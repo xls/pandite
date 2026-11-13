@@ -12,8 +12,8 @@
 use crate::icc;
 use crate::util::{self, be16, be32, check_size, corrupt, unsupported};
 use pandite_core::{
-    CancelToken, Content, ContentKind, DecodeOptions, DecoderProvider, Error, ImageBuf, ImageMeta,
-    Orientation, PixelFormat, Result, Source,
+    CancelToken, Content, ContentKind, DecodeOptions, DecoderProvider, Error, ImageBuf, ImageFacts,
+    ImageMeta, Orientation, PixelFormat, Result, Source,
 };
 use std::io::Read;
 
@@ -101,6 +101,87 @@ impl DecoderProvider for PsdDecoder {
         options.cancel.check()?;
         util::guard(FORMAT, || decode(source.bytes(), &options.cancel)).map(Content::Still)
     }
+
+    fn facts(&self, source: &Source) -> Result<ImageFacts> {
+        let d = source.bytes();
+        let h = header(d)?;
+        let mut f = ImageFacts::named(if h.psb { "PSB" } else { "PSD" });
+        let mode = match h.mode {
+            0 => Some("Bitmap"),
+            1 => Some("Gray"),
+            2 => Some("Indexed"),
+            3 => Some("RGB"),
+            4 => Some("CMYK"),
+            7 => Some("Multichannel"),
+            8 => Some("Duotone"),
+            9 => Some("Lab"),
+            _ => None,
+        };
+        let count = u8::try_from(h.channels).ok();
+        let extra = color_channels(h.mode).map_or(0, |c| h.channels.saturating_sub(c));
+        f.channels = mode.map(|m| match extra {
+            0 => m.to_string(),
+            1 => format!("{m} + alpha"),
+            n => format!("{m} + {n} extra"),
+        });
+        f.channel_count = count;
+        f.bits_per_channel = u8::try_from(h.depth).ok();
+        let (resources, compression) = sections(d, h.psb);
+        f.compression = match compression {
+            Some(0) => Some("Uncompressed"),
+            Some(1) => Some("PackBits RLE"),
+            Some(2) => Some("ZIP"),
+            Some(3) => Some("ZIP with prediction"),
+            _ => None,
+        }
+        .map(str::to_string);
+        if let Some(res) = resources {
+            f.icc_profile = resource(res, 1039).and_then(crate::facts::icc_description);
+            if let Some(exif) = resource(res, 1058) {
+                f.camera = crate::facts::camera_from_exif(exif);
+            }
+        }
+        Ok(f)
+    }
+}
+
+/// The image resources section and the compression code of the merged
+/// image data, as far as the data reach.
+fn sections(d: &[u8], psb: bool) -> (Option<&[u8]>, Option<u16>) {
+    let mut c = Cur { d, pos: 26 };
+    let mode_data = c.u32().and_then(|n| c.take(n as usize));
+    if mode_data.is_err() {
+        return (None, None);
+    }
+    let Ok(resources) = c.u32().and_then(|n| c.take(n as usize)) else {
+        return (None, None);
+    };
+    let compression = c
+        .len(psb)
+        .and_then(|n| c.take(n))
+        .and_then(|_| c.u16())
+        .ok();
+    (Some(resources), compression)
+}
+
+/// The data of image resource `id`.
+fn resource(res: &[u8], id: u16) -> Option<&[u8]> {
+    let mut pos = 0;
+    while pos + 12 <= res.len() {
+        if &res[pos..pos + 4] != b"8BIM" {
+            return None;
+        }
+        let this = be16(res, pos + 4)?;
+        let name_len = usize::from(res[pos + 6]);
+        let at = pos + 6 + ((1 + name_len + 1) & !1);
+        let size = be32(res, at)? as usize;
+        let data = res.get(at + 4..(at + 4).checked_add(size)?)?;
+        if this == id {
+            return Some(data);
+        }
+        pos = at + 4 + ((size + 1) & !1);
+    }
+    None
 }
 
 /// A cursor over big-endian sections.

@@ -40,6 +40,10 @@ into the program on any platform.
   their EXIF orientation.
 - Fit to window, 1:1, and zoom at the mouse pointer. F11 for full screen.
 - A gallery strip of thumbnails along the bottom. Scroll it with the wheel.
+- Press I for the facts of the image: file size, pixel size, format and
+  codec, channels and bit depth, compression ratio, animation timing,
+  color profile and the camera settings. See
+  [Image information](#image-information).
 - Rotate, flip, crop and resize. Edits change only the view until you
   choose Save as, and pandite asks before it writes over the original.
 - Save as PNG, JPEG, WebP (lossless) or BMP.
@@ -71,6 +75,25 @@ language, and Windows installs one with most display languages. Without
 one, pandite shows no text features. macOS and Linux have no text
 features yet. To turn the feature off, set `ocr = off` in the settings
 file. [docs/text-recognition.md](docs/text-recognition.md) has the details.
+
+## Image information
+
+Press I to show the facts of the image on screen in a panel in the bottom
+right corner of the window. Press I again to hide it. The panel follows
+you to the next image, and pandite remembers whether it was open.
+
+The panel lists the file name, folder, size and modification time, the
+pixel size, megapixels and aspect ratio, the format, codec and FourCC, the
+channels and bits, the chroma subsampling of a JPEG, the size without
+compression and the compression ratio, and the color space and embedded
+color profile. For an animation it adds the frame count, the length, the
+frame rate and the loop count. It also shows how long the decode took, and
+the camera, lens and exposure settings that the file records. A fact that
+the file does not state gets no line. pandite reads these facts from the
+file headers, so the panel does not slow down the image.
+
+The panel is not a dialog. Every key and every mouse action works as
+before, and Esc still closes pandite.
 
 ## Install
 
@@ -166,6 +189,7 @@ On macOS, use Command for Ctrl and Option for Alt.
 | + / - | Zoom in / zoom out |
 | F11 | Full screen |
 | G | Show or hide the gallery strip |
+| I | Show or hide the image information panel |
 | R / Shift+R | Rotate right / rotate left |
 | H / V | Flip horizontal / flip vertical |
 | C | Crop |
@@ -203,7 +227,8 @@ pandite keeps its settings in `%APPDATA%\pandite\settings.ini` on Windows,
 `~/.config/pandite/settings.ini` (or `$XDG_CONFIG_HOME/pandite`) on Linux.
 In the Microsoft Store version, Windows keeps the file in the private
 folder of the app. The file explains each setting. For example,
-`ocr = off` turns off the reading of text in images.
+`ocr = off` turns off the reading of text in images, and
+`info_panel = on` opens the image information panel at start.
 
 ### Instant open on Windows
 

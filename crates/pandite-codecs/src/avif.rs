@@ -16,8 +16,8 @@
 use crate::util::{self, be16, be32, check_size, corrupt, guard, unsupported};
 use crate::{icc, orient};
 use pandite_core::{
-    CancelToken, Content, ContentKind, DecodeOptions, DecoderProvider, Error, ImageBuf, ImageMeta,
-    Orientation, PixelFormat, Result, Source,
+    CancelToken, Content, ContentKind, DecodeOptions, DecoderProvider, Error, ImageBuf, ImageFacts,
+    ImageMeta, Orientation, PixelFormat, Result, Source,
 };
 
 const FORMAT: &str = "avif";
@@ -69,6 +69,10 @@ impl DecoderProvider for AvifDecoder {
         options.cancel.check()?;
         guard(FORMAT, || decode(source.bytes(), &options.cancel)).map(Content::Still)
     }
+
+    fn facts(&self, source: &Source) -> Result<ImageFacts> {
+        guard(FORMAT, || Ok(heif_facts(source.bytes())))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -96,6 +100,20 @@ enum Prop<'a> {
     Imir(u8),
     Clap([i64; 8]),
     AuxC(&'a [u8]),
+    /// HEVC configuration: chroma format (0 to 3) and luma bit depth.
+    Hvcc {
+        chroma: u8,
+        bits: u8,
+    },
+    /// AV1 configuration: bit depth, monochrome, chroma subsampling x, y.
+    Av1c {
+        bits: u8,
+        mono: bool,
+        sub_x: bool,
+        sub_y: bool,
+    },
+    /// Bits per channel of each channel.
+    Pixi(&'a [u8]),
     Other,
 }
 
@@ -533,8 +551,144 @@ fn parse_prop<'a>(kind: &[u8; 4], body: &'a [u8]) -> Result<Prop<'a>> {
             r.full()?;
             Prop::AuxC(r.rest())
         }
+        // ISO/IEC 14496-15: chroma_format_idc and bit_depth_luma_minus8
+        // follow 16 bytes of profile, level and segmentation fields.
+        b"hvcC" => {
+            let b = body
+                .get(16..18)
+                .ok_or_else(|| corrupt(FORMAT, "short box"))?;
+            Prop::Hvcc {
+                chroma: b[0] & 3,
+                bits: (b[1] & 7) + 8,
+            }
+        }
+        // AV1 codec configuration: the third byte holds the flags.
+        b"av1C" => {
+            let b = *body.get(2).ok_or_else(|| corrupt(FORMAT, "short box"))?;
+            let high = b & 0x40 != 0;
+            let twelve = b & 0x20 != 0;
+            Prop::Av1c {
+                bits: match (high, twelve) {
+                    (true, true) => 12,
+                    (true, false) => 10,
+                    _ => 8,
+                },
+                mono: b & 0x10 != 0,
+                sub_x: b & 0x08 != 0,
+                sub_y: b & 0x04 != 0,
+            }
+        }
+        b"pixi" => {
+            r.full()?;
+            let n = usize::from(r.u8()?);
+            Prop::Pixi(
+                r.rest()
+                    .get(..n)
+                    .ok_or_else(|| corrupt(FORMAT, "short box"))?,
+            )
+        }
         _ => Prop::Other,
     })
+}
+
+/// The header facts of a HEIF container (AVIF, HEIC, HEIF): the brand,
+/// the codec of the primary item (of its first tile for grids), chroma
+/// format and bit depth from the codec configuration, the color
+/// description, alpha and the EXIF item. Reads boxes only.
+pub(crate) fn heif_facts(data: &[u8]) -> ImageFacts {
+    let brand = util::ftyp_brands(data).next();
+    let container = match brand.as_ref().map(|b| &b[..]) {
+        Some(b"avif" | b"avis") => "AVIF",
+        Some(b"heic" | b"heix" | b"heim" | b"heis" | b"hevc" | b"hevx") => "HEIC",
+        _ => "HEIF",
+    };
+    let mut f = ImageFacts::named(container);
+    let Ok(heif) = Heif::parse(data) else {
+        return f;
+    };
+    let primary = heif.primary;
+    let mut coded = primary;
+    let mut kind = heif.item_type(primary);
+    if kind == Some(*b"grid") {
+        if let Some(&tile) = heif.refs_from(b"dimg", primary).first() {
+            coded = tile;
+            kind = heif.item_type(tile);
+        }
+    }
+    if let Some(k) = kind {
+        f.fourcc = Some(String::from_utf8_lossy(&k).to_string());
+        f.compression = match &k {
+            b"av01" => Some("AV1"),
+            b"hvc1" | b"hev1" => Some("HEVC"),
+            b"vvc1" => Some("VVC"),
+            b"jpeg" => Some("JPEG"),
+            b"unci" => Some("Uncompressed"),
+            _ => None,
+        }
+        .map(str::to_string);
+    }
+    let alpha = heif.alpha_for(primary).is_some();
+    let config = heif
+        .props_of(coded)
+        .chain(heif.props_of(primary))
+        .find_map(|p| match *p {
+            Prop::Hvcc { chroma, bits } => Some((chroma == 0, chroma, bits)),
+            Prop::Av1c {
+                bits,
+                mono,
+                sub_x,
+                sub_y,
+            } => {
+                let chroma = match (mono, sub_x, sub_y) {
+                    (true, _, _) => 0,
+                    (false, true, true) => 1,
+                    (false, true, false) => 2,
+                    (false, false, _) => 3,
+                };
+                Some((mono, chroma, bits))
+            }
+            _ => None,
+        });
+    if let Some((mono, chroma, bits)) = config {
+        let (name, count) = match (mono, alpha) {
+            (true, false) => ("Gray", 1),
+            (true, true) => ("Gray + alpha", 2),
+            (false, false) => ("YCbCr", 3),
+            (false, true) => ("YCbCr + alpha", 4),
+        };
+        f.set_channels(name, count, bits);
+        f.subsampling = match chroma {
+            1 => Some("4:2:0"),
+            2 => Some("4:2:2"),
+            3 => Some("4:4:4"),
+            _ => None,
+        }
+        .map(str::to_string);
+    }
+    let pixi = heif.props_of(primary).find_map(|p| match p {
+        Prop::Pixi(b) => Some(*b),
+        _ => None,
+    });
+    if let Some(&bits) = pixi.and_then(|b| b.first()) {
+        f.bits_per_channel = Some(bits);
+    }
+    if let Some((primaries, transfer, _, _)) = heif.nclx(primary) {
+        f.color_space = crate::facts::cicp_name(primaries, transfer);
+    }
+    f.icc_profile = heif.icc(primary).and_then(crate::facts::icc_description);
+    // The EXIF item: a 4-byte offset to the TIFF header, then the data.
+    let exif = heif
+        .items
+        .iter()
+        .find(|(_, t)| t == b"Exif")
+        .and_then(|&(id, _)| heif.item_data(id).ok());
+    if let Some(e) = exif {
+        let skip = be32(&e, 0).map_or(0, |s| s as usize);
+        if let Some(tiff) = e.get(4usize.saturating_add(skip)..) {
+            f.camera = crate::facts::camera_from_exif(tiff);
+        }
+    }
+    f
 }
 
 // ---------------------------------------------------------------------------

@@ -272,10 +272,15 @@ impl TestDisk {
     }
 
     pub fn wait_read_started(&self, name: &str) -> bool {
+        self.wait_call("read", name)
+    }
+
+    /// Wait until a call `op` on `name` started.
+    pub fn wait_call(&self, op: &str, name: &str) -> bool {
         let deadline = Instant::now() + WAIT;
         let mut g = lock(&self.state);
         loop {
-            if g.calls.iter().any(|c| c.op == "read" && c.name == name) {
+            if g.calls.iter().any(|c| c.op == op && c.name == name) {
                 return true;
             }
             let now = Instant::now();

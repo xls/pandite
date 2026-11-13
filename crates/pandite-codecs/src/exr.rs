@@ -6,8 +6,8 @@
 use crate::util::{self, check_size, corrupt, guard};
 use exr::prelude::*;
 use pandite_core::{
-    Content, ContentKind, DecodeOptions, DecoderProvider, ImageMeta, Orientation, PixelFormat,
-    Result, Source,
+    Content, ContentKind, DecodeOptions, DecoderProvider, ImageFacts, ImageMeta, Orientation,
+    PixelFormat, Result, Source,
 };
 use std::io::Cursor;
 
@@ -64,6 +64,56 @@ impl DecoderProvider for ExrDecoder {
     fn decode(&self, source: &Source, options: &DecodeOptions) -> Result<Content> {
         options.cancel.check()?;
         guard(FORMAT, || decode(source.bytes(), options)).map(Content::Still)
+    }
+
+    fn facts(&self, source: &Source) -> Result<ImageFacts> {
+        guard(FORMAT, || {
+            let meta = exr::meta::MetaData::read_from_buffered(Cursor::new(source.bytes()), false)
+                .map_err(|e| corrupt(FORMAT, e))?;
+            let header = meta
+                .headers
+                .first()
+                .ok_or_else(|| corrupt(FORMAT, "no layers"))?;
+            let mut f = ImageFacts::named("OpenEXR");
+            f.compression = Some(match header.compression {
+                Compression::Uncompressed => "Uncompressed".to_string(),
+                Compression::RLE => "RLE".to_string(),
+                Compression::ZIP1 => "ZIP, single lines".to_string(),
+                Compression::ZIP16 => "ZIP, 16 lines".to_string(),
+                Compression::PIZ => "PIZ wavelet".to_string(),
+                Compression::PXR24 => "PXR24".to_string(),
+                Compression::B44 => "B44".to_string(),
+                Compression::B44A => "B44A".to_string(),
+                Compression::DWAA(_) => "DWAA".to_string(),
+                Compression::DWAB(_) => "DWAB".to_string(),
+                other => format!("{other:?}"),
+            });
+            let list = &header.channels.list;
+            let mut names: Vec<String> = list.iter().map(|c| c.name.to_string()).collect();
+            names.sort();
+            let name = match names.join(",").as_str() {
+                "B,G,R" => "RGB".to_string(),
+                "A,B,G,R" => "RGBA".to_string(),
+                "Y" => "Luminance".to_string(),
+                "A,Y" => "Luminance + alpha".to_string(),
+                _ => names.join(", "),
+            };
+            let bits = |t: &exr::meta::attribute::SampleType| match t {
+                exr::meta::attribute::SampleType::F16 => 16u8,
+                _ => 32,
+            };
+            let depths: Vec<u8> = list.iter().map(|c| bits(&c.sample_type)).collect();
+            f.channels = (!name.is_empty()).then_some(name);
+            f.channel_count = u8::try_from(list.len()).ok().filter(|&n| n > 0);
+            f.bits_per_channel = depths
+                .first()
+                .copied()
+                .filter(|b| depths.iter().all(|d| d == b));
+            f.bits_per_pixel = u16::try_from(depths.iter().map(|&d| u32::from(d)).sum::<u32>())
+                .ok()
+                .filter(|_| f.bits_per_channel.is_none());
+            Ok(f)
+        })
     }
 }
 

@@ -16,8 +16,8 @@
 use crate::util::{self, check_size, corrupt};
 use crate::{icc, jpeg, orient};
 use pandite_core::{
-    CancelToken, Content, ContentKind, DecodeOptions, DecoderProvider, ImageBuf, ImageMeta,
-    Orientation, PixelFormat, Result, Source,
+    CancelToken, Content, ContentKind, DecodeOptions, DecoderProvider, ImageBuf, ImageFacts,
+    ImageMeta, Orientation, PixelFormat, Result, Source,
 };
 
 const FORMAT: &str = "heic";
@@ -74,6 +74,19 @@ impl DecoderProvider for HeicDecoder {
     fn reduced_decode(&self, _source: &Source) -> bool {
         // Windows Imaging Component hands out the file's thumbnail.
         cfg!(windows)
+    }
+
+    fn facts(&self, source: &Source) -> Result<ImageFacts> {
+        // The container reader lives with the AVIF decoder; the system
+        // codec gives no header facts.
+        #[cfg(feature = "avif")]
+        let facts = util::guard(FORMAT, || Ok(crate::avif::heif_facts(source.bytes())))?;
+        #[cfg(not(feature = "avif"))]
+        let facts = {
+            let _ = source;
+            ImageFacts::named("HEIF")
+        };
+        Ok(facts)
     }
 
     fn decode(&self, source: &Source, options: &DecodeOptions) -> Result<Content> {

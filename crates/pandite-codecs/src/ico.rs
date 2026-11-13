@@ -4,7 +4,8 @@
 
 use crate::util::{self, corrupt, le16, le32};
 use pandite_core::{
-    Content, ContentKind, DecodeOptions, DecoderProvider, ImageMeta, Orientation, Result, Source,
+    Content, ContentKind, DecodeOptions, DecoderProvider, ImageFacts, ImageMeta, Orientation,
+    Result, Source,
 };
 
 const FORMAT: &str = "ico";
@@ -54,6 +55,16 @@ fn entries(d: &[u8]) -> Result<Vec<Entry>> {
     Ok(v)
 }
 
+/// The bytes of one directory entry's image.
+fn payload_of<'a>(d: &'a [u8], e: &Entry) -> &'a [u8] {
+    let end = if e.size == 0 {
+        d.len()
+    } else {
+        e.offset.saturating_add(e.size).min(d.len())
+    };
+    &d[e.offset..end]
+}
+
 fn best(d: &[u8]) -> Result<Entry> {
     let list = entries(d)?;
     Ok(*list
@@ -99,16 +110,33 @@ impl DecoderProvider for IcoDecoder {
         })
     }
 
+    fn facts(&self, source: &Source) -> Result<ImageFacts> {
+        let d = source.bytes();
+        let count = entries(d)?.len();
+        let e = best(d)?;
+        let kind = if le16(d, 2) == Some(2) { "CUR" } else { "ICO" };
+        let images = if count == 1 { "image" } else { "images" };
+        // The facts of the image on screen: the largest one.
+        let payload = payload_of(d, &e);
+        let mut f = if payload.starts_with(&[0x89, b'P', b'N', b'G']) {
+            let mut f =
+                util::guard(FORMAT, || crate::png::header_facts(payload)).unwrap_or_default();
+            f.compression = Some("PNG".to_string());
+            f
+        } else {
+            crate::bmp::parse_header(payload, 0, true)
+                .map(|h| crate::bmp::dib_facts(payload, 0, &h))
+                .unwrap_or_default()
+        };
+        f.container = Some(format!("{kind}, {count} {images}"));
+        Ok(f)
+    }
+
     fn decode(&self, source: &Source, options: &DecodeOptions) -> Result<Content> {
         options.cancel.check()?;
         let d = source.bytes();
         let e = best(d)?;
-        let end = if e.size == 0 {
-            d.len()
-        } else {
-            e.offset.saturating_add(e.size).min(d.len())
-        };
-        let payload = &d[e.offset..end];
+        let payload = payload_of(d, &e);
         let image = util::guard(FORMAT, || {
             if payload.starts_with(&[0x89, b'P', b'N', b'G']) {
                 let opts = DecodeOptions {

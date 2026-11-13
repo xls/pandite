@@ -39,6 +39,7 @@ On macOS, Ctrl is the Command key and Alt is the Option key.
 | First image | Home |
 | Last image | End |
 | Gallery strip | G |
+| Image information | I |
 | Full screen | F11, Alt+Enter |
 | Context menu | Menu, Shift+F10 |
 | Keyboard shortcuts | F1 |
@@ -70,7 +71,11 @@ On macOS, Ctrl is the Command key and Alt is the Option key.
   On other systems, the shortcut overlay does not show them.
 - Esc closes the topmost menu, dialog, question or the shortcut overlay.
   When none of these is open, Esc closes pandite. This is also true in full
-  screen, in crop mode, while text is selected and while a file loads.
+  screen, in crop mode, while text is selected, while the image information
+  panel shows and while a file loads.
+- I shows or hides the image information panel. Shift+I and Ctrl+I do
+  nothing. The panel is not a dialog: all other keys work as before. In
+  crop mode, the panel hides until the crop ends.
 - Esc closes pandite without a question about unsaved edits, the same as
   Ctrl+Q. pandite does not wait for a slow file, a decode, an image copy or
   text recognition.
@@ -80,8 +85,8 @@ On macOS, Ctrl is the Command key and Alt is the Option key.
 - In a dialog, Full screen and Quit stay available. The dialog receives all
   other keys.
 - In crop mode, these commands stay available: fit, 1:1, zoom, pan, full
-  screen, gallery strip, context menu, keyboard shortcuts, Esc, quit and
-  the crop commands.
+  screen, gallery strip, image information, context menu, keyboard
+  shortcuts, Esc, quit and the crop commands.
 - The arrow keys move the selection only when a selection exists.
 
 ## Copy the image

@@ -6,6 +6,7 @@
 //! startup. Nothing loads code at runtime.
 
 use crate::error::{Error, Result};
+use crate::facts::ImageFacts;
 use crate::image::{Content, ImageBuf, ImageMeta};
 use crate::text::TextProvider;
 use std::io::Write;
@@ -169,6 +170,19 @@ pub trait DecoderProvider: Send + Sync {
     /// Decode the file. Pixels come back upright: any stored orientation is
     /// already applied. Must be safe to call from several threads at once.
     fn decode(&self, source: &Source, options: &DecodeOptions) -> Result<Content>;
+
+    /// What the file states about itself in its headers: container, codec,
+    /// channels, color and camera settings, for an information display.
+    /// Never decodes pixels. `source` may hold only the first part of a
+    /// large file; report what that part holds and leave the rest `None`.
+    /// Default: the container name from [`DecoderProvider::name`].
+    fn facts(&self, source: &Source) -> Result<ImageFacts> {
+        let _ = source;
+        let name = self.name();
+        Ok(ImageFacts::named(
+            name.strip_suffix(" image").unwrap_or(name),
+        ))
+    }
 }
 
 /// Settings for one encode call.
@@ -325,6 +339,12 @@ impl Registry {
         self.require_decoder(source)?.decode(source, options)
     }
 
+    /// Read the header facts of a source with the matching decoder. See
+    /// [`DecoderProvider::facts`].
+    pub fn facts(&self, source: &Source) -> Result<ImageFacts> {
+        self.require_decoder(source)?.facts(source)
+    }
+
     fn require_decoder(&self, source: &Source) -> Result<&Arc<dyn DecoderProvider>> {
         self.decoder_for(source).ok_or_else(|| {
             Error::Unsupported(match source.path() {
@@ -401,6 +421,16 @@ mod tests {
         let src = Source::from_bytes(b"????".to_vec(), Some("x.zzz".into()));
         assert!(reg.decoder_for(&src).is_none());
         assert!(matches!(reg.probe(&src), Err(Error::Unsupported(_))));
+        assert!(matches!(reg.facts(&src), Err(Error::Unsupported(_))));
+    }
+
+    #[test]
+    fn default_facts_name_the_container() {
+        let reg = registry();
+        let src = Source::from_bytes(b"AAA....".to_vec(), None);
+        let facts = reg.facts(&src).unwrap();
+        assert_eq!(facts.container.as_deref(), Some("fake"));
+        assert_eq!(facts.compression, None);
     }
 
     #[test]

@@ -18,6 +18,7 @@ mod thumbs;
 
 use crate::disk::Disk;
 use crate::edit::{self, Edit, EditStack, Undo};
+use crate::info::{self, FileReport};
 use crate::platform::{Clipboard, DialogKind, Dialogs, Filter, Waker, WindowControl};
 use crate::settings::{self, Settings, TextRecognition, ThemeChoice, WindowPlacement};
 use jobs::{Copied, CopyJob, Outbox};
@@ -27,8 +28,8 @@ use pandite_core::{
 };
 use pandite_library::{Event, Fetch, FileAccess, Library, LibraryConfig, Reduced};
 use pandite_ui::{
-    Action, ConfirmRequest, CursorShape, EncoderInfo, ImageInfo, InputEvent, Loading, Progress,
-    TextView, ThemeKind, ThumbState, Ui, UiContext, ZOOM_STEP,
+    Action, ConfirmRequest, CursorShape, EncoderInfo, ImageInfo, InfoRow, InputEvent, Loading,
+    Progress, TextView, ThemeKind, ThumbState, Ui, UiContext, ZOOM_STEP,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -78,6 +79,12 @@ pub(crate) enum Msg {
         image: u64,
         key: TextKey,
         result: pandite_core::Result<TextLayout>,
+    },
+    /// File facts job `ticket` for the information panel ended.
+    Facts {
+        ticket: u64,
+        path: PathBuf,
+        report: Box<FileReport>,
     },
 }
 
@@ -268,6 +275,23 @@ impl Shown {
     }
 }
 
+/// The information panel: the file facts of the image on screen and the
+/// rows the interface draws.
+#[derive(Default)]
+struct InfoState {
+    /// The file the report describes, and the report.
+    report: Option<(PathBuf, FileReport)>,
+    /// The facts job whose report is wanted: its ticket and file.
+    job: Option<(u64, PathBuf)>,
+    /// Abandoned facts jobs that have not ended yet.
+    stray: usize,
+    /// The ticket of the next job.
+    next_ticket: u64,
+    /// The rows of the panel, rebuilt before each event and frame while
+    /// the panel is on.
+    rows: Vec<InfoRow>,
+}
+
 /// Why a dialog was opened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DialogPurpose {
@@ -320,6 +344,10 @@ struct CopyRun {
 /// Copies of at least this many pixels say so when they start; smaller
 /// ones finish before a toast could be read.
 const COPY_NOTICE_PIXELS: u64 = 12_000_000;
+
+/// Most abandoned facts reads that may still run (each blocked in a slow
+/// or stuck file read) before a new one waits for one of them to end.
+const MAX_STRAY_FACTS: usize = 4;
 
 /// Largest image (in bytes of pixel data) the edit commands accept.
 const MAX_EDIT_BYTES: usize = 1 << 30;
@@ -385,6 +413,7 @@ struct State {
     notice: Option<String>,
     thumbs: Thumbs,
     text: TextState,
+    info: InfoState,
 
     next_id: u64,
     dialogs_open: HashMap<u64, DialogPurpose>,
@@ -550,6 +579,7 @@ impl App {
             notice: None,
             thumbs: Thumbs::default(),
             text,
+            info: InfoState::default(),
             next_id: 1,
             dialogs_open: HashMap::new(),
             confirms: HashMap::new(),
@@ -642,6 +672,30 @@ impl App {
     /// full-resolution image as decoded, before view edits.
     pub fn shown_text(&self) -> Option<&TextLayout> {
         self.st.shown.as_ref()?.text.as_ref().map(|t| &*t.layout)
+    }
+
+    /// True while the information panel is on (the `info_panel` setting).
+    pub fn info_visible(&self) -> bool {
+        self.st.settings.info_panel
+    }
+
+    /// The rows the information panel shows for the image on screen,
+    /// whether or not the panel is on. Empty when no image is on screen.
+    /// File facts (size, format, codec, camera) are read only while the
+    /// panel is on; until they arrive the rows hold what the decode told.
+    pub fn info_rows(&self) -> Vec<InfoRow> {
+        self.st.info_rows()
+    }
+
+    /// True while the panel is on and the file facts of the image on
+    /// screen are still being read.
+    pub fn info_pending(&self) -> bool {
+        self.st.settings.info_panel
+            && self
+                .st
+                .shown
+                .as_ref()
+                .is_some_and(|s| self.st.info_report(&s.path).is_none())
     }
 
     /// True while text recognition runs for the image on screen.
@@ -803,6 +857,7 @@ impl App {
         let mut queue = vec![event];
         while let Some(event) = queue.pop() {
             self.st.refresh_text();
+            self.st.refresh_info();
             let (actions, rect) = {
                 let ctx = context(&self.st, &self.ui, now);
                 let rect = self.ui.content_rect(&ctx);
@@ -944,6 +999,11 @@ impl App {
                 st.save_settings_soon();
                 Handled::Done
             }
+            Action::ToggleInfo => {
+                st.settings.info_panel = !st.settings.info_panel;
+                st.save_settings_soon();
+                Handled::Done
+            }
             Action::ConfirmResult { id, accepted } => match st.confirms.remove(&id) {
                 Some(save) if accepted => {
                     st.request_save(save, &mut self.ui, now);
@@ -1068,6 +1128,7 @@ impl App {
         // A recognition whose start time came wakes the loop for a frame.
         self.st.poll_text(now);
         self.st.refresh_text();
+        self.st.refresh_info();
         let (viewport, background, range) = {
             let ctx = context(&self.st, &self.ui, now);
             let viewport = self.ui.content_rect(&ctx);
@@ -1165,6 +1226,7 @@ impl App {
         if self.st.copy_wanted.is_some() {
             self.st.start_copy(&mut self.ui, now);
         }
+        self.st.poll_info();
         let st = &mut self.st;
         let cursor = self.ui.cursor();
         if st.cursor != Some(cursor) {
@@ -1293,6 +1355,11 @@ impl App {
                 key,
                 result,
             } => st.text_done(ticket, image, key, result),
+            Msg::Facts {
+                ticket,
+                path,
+                report,
+            } => st.facts_done(ticket, path, *report),
         }
     }
 }
@@ -1351,6 +1418,8 @@ fn context<'a>(st: &'a State, ui: &Ui, now: Duration) -> UiContext<'a> {
         encoders: &st.encoders,
         text_enabled: st.text.active(),
         text: None,
+        info_visible: st.settings.info_panel,
+        info: &st.info.rows,
     };
     if let Some(shown) = &st.shown {
         let content = ui.content_rect(&ctx);
@@ -1898,6 +1967,132 @@ impl State {
         }
     }
 
+    // ----- information panel ------------------------------------------------
+
+    /// The file facts read for `path`, when they are there.
+    fn info_report(&self, path: &Path) -> Option<&FileReport> {
+        self.info
+            .report
+            .as_ref()
+            .filter(|(p, _)| p == path)
+            .map(|(_, r)| r)
+    }
+
+    /// The panel rows for the image on screen: the file's own pixel size
+    /// (upright, before view edits), its animation timing and decode time
+    /// once the full image is there, and the file facts once read.
+    fn info_rows(&self) -> Vec<InfoRow> {
+        let Some(shown) = &self.shown else {
+            return Vec::new();
+        };
+        let (dims, animation, decode_time) = match shown.standin {
+            Some(dims) => (dims, None, None),
+            None => {
+                let animation = match &*shown.content {
+                    Content::Animation(anim) => Some(info::Timing {
+                        frames: anim.frames().len(),
+                        duration: anim.duration(),
+                        loops: anim.loop_count(),
+                    }),
+                    _ => None,
+                };
+                let decode = self
+                    .library
+                    .timings(&shown.path)
+                    .and_then(|t| t.decode_full);
+                (shown.content.dimensions(), animation, decode)
+            }
+        };
+        info::rows(&info::Input {
+            path: Some(&shown.path),
+            dims: Some(dims),
+            report: self.info_report(&shown.path),
+            animation,
+            decode_time,
+        })
+    }
+
+    /// Rebuild the rows the interface draws (none while the panel is off).
+    fn refresh_info(&mut self) {
+        self.info.rows = if self.settings.info_panel {
+            self.info_rows()
+        } else {
+            Vec::new()
+        };
+    }
+
+    /// Start reading the file facts of the image on screen when the panel
+    /// is on and they are missing. When the user moved on from the file a
+    /// job reads, that job is abandoned (a read stuck on a cloud file is
+    /// never waited for) and the new file is read, with at most
+    /// [`MAX_STRAY_FACTS`] abandoned reads still running.
+    fn poll_info(&mut self) {
+        if !self.settings.info_panel {
+            return;
+        }
+        let Some(shown) = &self.shown else {
+            return;
+        };
+        if self.info_report(&shown.path).is_some() {
+            return;
+        }
+        if let Some((_, reading)) = &self.info.job {
+            if *reading == shown.path || self.info.stray >= MAX_STRAY_FACTS {
+                return;
+            }
+            self.info.job = None;
+            self.info.stray += 1;
+        }
+        let path = shown.path.clone();
+        let ticket = self.info.next_ticket;
+        self.info.next_ticket += 1;
+        let out = self.out.clone();
+        let disk = Arc::clone(&self.disk);
+        let registry = Arc::clone(&self.registry);
+        let job_path = path.clone();
+        let spawned = jobs::spawn("pandite-facts", move || {
+            let report = Box::new(info::read(&*disk, &registry, &job_path));
+            out.send(Msg::Facts {
+                ticket,
+                path: job_path,
+                report,
+            });
+        });
+        match spawned {
+            Ok(()) => self.info.job = Some((ticket, path)),
+            // No thread: the panel keeps what the decode told, and this
+            // does not repeat on every event.
+            Err(_) => self.info.report = Some((path, FileReport::default())),
+        }
+    }
+
+    /// A facts job ended. Its report is kept when it is the job that runs
+    /// and its file is still on screen; an abandoned job only frees its
+    /// place.
+    fn facts_done(&mut self, ticket: u64, path: PathBuf, report: FileReport) {
+        if !self.info.job.as_ref().is_some_and(|(t, _)| *t == ticket) {
+            self.info.stray = self.info.stray.saturating_sub(1);
+            return;
+        }
+        self.info.job = None;
+        if self.shown.as_ref().is_some_and(|s| s.path == path) {
+            self.info.report = Some((path, report));
+            self.dirty = true;
+        }
+    }
+
+    /// The file at `path` changed on disk: its facts are read again.
+    fn forget_info(&mut self, path: &Path) {
+        if self.info.report.as_ref().is_some_and(|(p, _)| p == path) {
+            self.info.report = None;
+        }
+        // A job that reads the old file reports nothing.
+        if self.info.job.as_ref().is_some_and(|(_, p)| p == path) {
+            self.info.job = None;
+            self.info.stray += 1;
+        }
+    }
+
     // ----- text recognition -------------------------------------------------
 
     /// True when the shown image is still the one the user wants to see
@@ -2347,6 +2542,7 @@ impl State {
             let key = TextKey::new(&shown.path, &shown.base);
             self.text.store(key, Arc::clone(&text.layout));
         }
+        self.forget_info(&save.target);
         if save.overwrite {
             self.library.invalidate(&save.target);
         } else {
