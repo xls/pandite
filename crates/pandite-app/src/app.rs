@@ -26,7 +26,7 @@ use pandite_core::{
     CancelToken, Color, Content, DrawList, EncodeOptions, Error, ImageBuf, PixelFormat, Point,
     Rect, Registry, Size, TextLayout, TextMeasure, TextureSink, ViewState,
 };
-use pandite_library::{Event, Fetch, FileAccess, Library, LibraryConfig, Reduced};
+use pandite_library::{Event, Fetch, FileAccess, KeptThumbnails, Library, LibraryConfig, Reduced};
 use pandite_ui::{
     Action, ConfirmRequest, CursorShape, EncoderInfo, ImageInfo, InfoRow, InputEvent, Loading,
     Progress, TextView, ThemeKind, ThumbState, Ui, UiContext, ZOOM_STEP,
@@ -174,6 +174,10 @@ pub struct Startup {
     pub window: WindowState,
     /// Size the window to the first image when its size is known.
     pub size_to_image: bool,
+    /// Thumbnails of the last folder from the previous session
+    /// ([`ShutdownReport::thumbnails`]). Used when this session opens the
+    /// same folder; dropped otherwise.
+    pub thumbnails: Option<KeptThumbnails>,
 }
 
 /// What [`App::handle_action`] did with an action.
@@ -188,12 +192,16 @@ pub enum Handled {
 }
 
 /// What [`App::shutdown`] did.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct ShutdownReport {
     /// `Some(true)` when the settings were written, `Some(false)` when the
     /// write failed, `None` when it was not attempted or did not finish in
     /// time.
     pub settings_saved: Option<bool>,
+    /// The thumbnails of the last folder, within the thumbnail cache
+    /// limit, for the next session ([`Startup::thumbnails`]). Drop them to
+    /// free the memory.
+    pub thumbnails: Option<KeptThumbnails>,
 }
 
 /// The file the user wants to see.
@@ -488,6 +496,7 @@ impl App {
             open,
             window,
             size_to_image,
+            thumbnails,
         } = startup;
         let config = LibraryConfig {
             read_ahead: settings.read_ahead as usize,
@@ -506,6 +515,7 @@ impl App {
             // Staged loading: a quick reduced image first, full resolution
             // for the image on screen only, read-ahead at window size.
             screen_size: Some(screen_size(window.size)),
+            kept_thumbnails: thumbnails,
             ..LibraryConfig::default()
         };
         let library = Library::new(Arc::clone(&registry), config, Arc::clone(&platform.waker))?;
@@ -1181,8 +1191,9 @@ impl App {
 
     /// Write the settings (on a worker, waiting at most `timeout`), stop
     /// background work and drop the library without joining threads stuck
-    /// in file reads. Returns at once when nothing is stuck and after at
-    /// most `timeout` plus the library's short grace otherwise.
+    /// in file reads. The report hands back the thumbnails of the last
+    /// folder. Returns at once when nothing is stuck and after at most
+    /// `timeout` plus the library's short grace otherwise.
     pub fn shutdown(self, timeout: Duration) -> ShutdownReport {
         let App { ui: _, mut st } = self;
         if let Some(run) = &st.bulk {
@@ -1194,6 +1205,7 @@ impl App {
         st.text.cancel_job();
         let mut report = ShutdownReport {
             settings_saved: None,
+            thumbnails: st.library.export_thumbnails(),
         };
         if let Some(path) = st.settings_path.clone() {
             let settings = st.final_settings();

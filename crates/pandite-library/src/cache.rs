@@ -60,6 +60,11 @@ impl<T> Cache<T> {
         self.entries.len()
     }
 
+    /// Every entry with its path, in no particular order.
+    pub fn iter(&self) -> impl Iterator<Item = (&Path, &Entry<T>)> {
+        self.entries.iter().map(|(p, e)| (p.as_path(), e))
+    }
+
     pub fn remove(&mut self, path: &Path) -> Option<Entry<T>> {
         let old = self.entries.remove(path)?;
         self.used -= old.bytes;

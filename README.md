@@ -233,9 +233,13 @@ folder of the app. The file explains each setting. For example,
 ### Instant open on Windows
 
 On Windows, pandite stays in the background when you close its window. It
-frees every image first and keeps a few megabytes of memory and the open
-graphics device. The next image you open appears in about a tenth of a
-second, because the program does not start again.
+frees every image first. It keeps the open graphics device, a few megabytes
+of memory and the thumbnails of the last folder, up to the thumbnail cache
+limit (`thumbnail_cache_mb`, 64 MB by default). The next image you open
+appears in about a tenth of a second, because the program does not start
+again. If that image is in the same folder, the gallery shows the kept
+thumbnails at once and makes new ones only for files that changed. If no
+image opens within 30 minutes, pandite frees the thumbnails too.
 
 - To have the first image of a session open as fast, start
   `pandite --background` when you sign in.

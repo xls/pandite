@@ -20,7 +20,7 @@ use pandite_core::{
     Rect, Registry, Result as CoreResult, Size, Source, TextLayout, TextLine, TextMeasure,
     TextProvider, TextWord, TextureId, TextureSink,
 };
-use pandite_library::{FileAccess, FileInfo};
+use pandite_library::{FileAccess, FileInfo, KeptThumbnails};
 use pandite_ui::{Action, CursorShape, InputEvent, Key, Modifiers};
 use std::collections::{HashSet, VecDeque};
 use std::io;
@@ -598,6 +598,8 @@ pub struct Config {
     pub work_area: Option<Rect>,
     /// Decoders to use instead of the default registry.
     pub registry: Option<Arc<Registry>>,
+    /// Thumbnails kept from an earlier session.
+    pub thumbnails: Option<KeptThumbnails>,
 }
 
 impl Default for Config {
@@ -613,6 +615,7 @@ impl Default for Config {
             size_to_image: false,
             work_area: Some(Rect::new(0.0, 0.0, 1920.0, 1040.0)),
             registry: None,
+            thumbnails: None,
         }
     }
 }
@@ -685,6 +688,7 @@ impl Harness {
             open: config.open,
             window: config.window,
             size_to_image: config.size_to_image,
+            thumbnails: config.thumbnails,
         };
         let app = App::new(startup, platform).expect("app starts");
         Self {
@@ -1111,7 +1115,12 @@ struct GateState {
     started: Vec<(String, bool)>,
     cancelled: Vec<String>,
     finished: Vec<(String, bool)>,
+    /// Every decode in start order with its target size.
+    targets: Vec<(String, Option<(u32, u32)>)>,
 }
+
+/// The longest thumbnail side the core asks the library for.
+pub const THUMB_SIDE: u32 = 256;
 
 /// Decodes "STAGED <w> <h>" files (extension `stg`): a cheap reduced
 /// decode for a target size and a full decode of [`staged_pattern`], each
@@ -1195,6 +1204,17 @@ impl GatedDecoder {
         self.wait(|s| s.finished.iter().any(|(n, f)| n == name && *f == full))
     }
 
+    /// Names of the thumbnail decodes (target [`THUMB_SIDE`] square) so
+    /// far, in start order.
+    pub fn thumbnail_decodes(&self) -> Vec<String> {
+        lock(&self.state)
+            .targets
+            .iter()
+            .filter(|(_, t)| *t == Some((THUMB_SIDE, THUMB_SIDE)))
+            .map(|(n, _)| n.clone())
+            .collect()
+    }
+
     /// Full decodes of `name` that finished with an image.
     pub fn full_finished(&self, name: &str) -> usize {
         lock(&self.state)
@@ -1261,6 +1281,7 @@ impl DecoderProvider for GatedDecoder {
         let full = options.target_size.is_none();
         let mut g = lock(&self.state);
         g.started.push((name.clone(), full));
+        g.targets.push((name.clone(), options.target_size));
         self.cv.notify_all();
         loop {
             let held = if full {

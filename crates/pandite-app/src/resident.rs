@@ -16,8 +16,9 @@
 //! updated program never talks to an old one; it starts as usual and
 //! becomes the resident.
 //!
-//! While it waits the resident holds no image, thumbnail or texture and a
-//! few megabytes of memory. It keeps the GPU device open; `stay_ready =
+//! While it waits the resident holds no image and no texture. It keeps the
+//! thumbnails of the last folder for 30 minutes, inside the thumbnail
+//! cache limit, and the GPU device open; `stay_ready =
 //! false` in the settings file turns the whole behavior off and
 //! `pandite --quit` ends a resident.
 //!
