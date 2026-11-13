@@ -32,6 +32,43 @@ pub struct GpuOptions {
     /// for a user setting such as "NVIDIA". When none matches, the order
     /// above applies. `None` (default) or an empty text matches nothing.
     pub adapter_name: Option<String>,
+    /// This machine had a discrete GPU at an earlier start. Windows now and
+    /// then leaves a present adapter out of its list for a moment; with
+    /// this set, a list without a discrete GPU is asked for again a few
+    /// times (about half a second in all) before an integrated GPU is
+    /// accepted. Off by default.
+    pub expect_discrete: bool,
+}
+
+/// How often and how long to wait for a discrete GPU that is expected but
+/// missing from the adapter list.
+const DISCRETE_RETRIES: u32 = 6;
+const DISCRETE_RETRY_WAIT: std::time::Duration = std::time::Duration::from_millis(80);
+
+/// True when the adapter list should be read again: a discrete GPU is
+/// expected, none is listed, and tries are left. Sleeps before a retry.
+pub(crate) fn wait_for_discrete(
+    options: &GpuOptions,
+    candidates: &[wgpu::Adapter],
+    attempt: u32,
+) -> bool {
+    let listed = candidates
+        .iter()
+        .any(|a| a.get_info().device_type == wgpu::DeviceType::DiscreteGpu);
+    let again = retry_for_discrete(options, listed, attempt);
+    if again {
+        std::thread::sleep(DISCRETE_RETRY_WAIT);
+    }
+    again
+}
+
+/// The decision behind [`wait_for_discrete`], without the wait.
+pub(crate) fn retry_for_discrete(options: &GpuOptions, listed: bool, attempt: u32) -> bool {
+    options.expect_discrete
+        && !listed
+        && !options.force_fallback_adapter
+        && options.power_preference != wgpu::PowerPreference::LowPower
+        && attempt < DISCRETE_RETRIES
 }
 
 impl Default for GpuOptions {
@@ -41,6 +78,7 @@ impl Default for GpuOptions {
             backends: wgpu::Backends::all(),
             force_fallback_adapter: false,
             adapter_name: None,
+            expect_discrete: false,
         }
     }
 }
@@ -232,9 +270,17 @@ impl Gpu {
     /// [`GpuOptions`] describes, that opens a device. Fails with
     /// [`Error::Backend`] when the machine has no usable adapter.
     pub fn new(options: &GpuOptions) -> Result<Arc<Gpu>> {
-        let instance = wgpu::Instance::new(instance_descriptor(options, None));
+        let mut attempt = 0;
+        let (instance, list) = loop {
+            let instance = wgpu::Instance::new(instance_descriptor(options, None));
+            let list = candidates(&instance, None, options);
+            if !wait_for_discrete(options, &list, attempt) {
+                break (instance, list);
+            }
+            attempt += 1;
+        };
         let mut failures = Vec::new();
-        for adapter in candidates(&instance, None, options) {
+        for adapter in list {
             match Self::open(instance.clone(), adapter) {
                 Ok(gpu) => return Ok(Arc::new(gpu)),
                 Err(err) => failures.push(err.to_string()),
@@ -263,9 +309,17 @@ impl Gpu {
             + Sync
             + 'static,
     {
-        let (instance, surface) = window_instance(window, options)?;
+        let mut attempt = 0;
+        let (instance, surface, list) = loop {
+            let (instance, surface) = window_instance(window.clone(), options)?;
+            let list = candidates(&instance, Some(&surface), options);
+            if !wait_for_discrete(options, &list, attempt) {
+                break (instance, surface, list);
+            }
+            attempt += 1;
+        };
         let mut failures = Vec::new();
-        for adapter in candidates(&instance, Some(&surface), options) {
+        for adapter in list {
             match Self::open(instance.clone(), adapter) {
                 Ok(gpu) => return Ok((Arc::new(gpu), surface)),
                 Err(err) => failures.push(err.to_string()),
@@ -661,6 +715,31 @@ mod unit {
             .into_iter()
             .map(|i| list[i].name.clone())
             .collect()
+    }
+
+    #[test]
+    fn missing_discrete_gpu_is_asked_for_again() {
+        let expect = GpuOptions {
+            expect_discrete: true,
+            ..GpuOptions::default()
+        };
+        // Expected and missing: retry until the tries run out.
+        assert!(retry_for_discrete(&expect, false, 0));
+        assert!(retry_for_discrete(&expect, false, DISCRETE_RETRIES - 1));
+        assert!(!retry_for_discrete(&expect, false, DISCRETE_RETRIES));
+        // Listed, not expected, software only or low power: no retry.
+        assert!(!retry_for_discrete(&expect, true, 0));
+        assert!(!retry_for_discrete(&GpuOptions::default(), false, 0));
+        let software = GpuOptions {
+            force_fallback_adapter: true,
+            ..expect.clone()
+        };
+        assert!(!retry_for_discrete(&software, false, 0));
+        let low = GpuOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            ..expect
+        };
+        assert!(!retry_for_discrete(&low, false, 0));
     }
 
     #[test]

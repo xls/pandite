@@ -284,8 +284,15 @@ impl Renderer {
             + Sync
             + 'static,
     {
-        let (instance, surface) = gpu::window_instance(window.clone(), options)?;
-        let candidates = gpu::candidates(&instance, Some(&surface), options);
+        let mut attempt = 0;
+        let (instance, surface, candidates) = loop {
+            let (instance, surface) = gpu::window_instance(window.clone(), options)?;
+            let candidates = gpu::candidates(&instance, Some(&surface), options);
+            if !gpu::wait_for_discrete(options, &candidates, attempt) {
+                break (instance, surface, candidates);
+            }
+            attempt += 1;
+        };
         let mut surface = Some(surface);
         let mut failures = Vec::new();
         for adapter in candidates {

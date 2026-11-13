@@ -142,6 +142,9 @@ pub struct Settings {
     pub jpeg_quality: u8,
     /// Text recognition (`ocr = auto | off`).
     pub ocr: TextRecognition,
+    /// The last start drew with a discrete GPU. The next start then waits
+    /// a moment for it when the system leaves it out of the adapter list.
+    pub gpu_discrete_seen: bool,
 }
 
 impl Default for Settings {
@@ -158,6 +161,7 @@ impl Default for Settings {
             wrap_around: true,
             jpeg_quality: 90,
             ocr: TextRecognition::Auto,
+            gpu_discrete_seen: false,
         }
     }
 }
@@ -211,6 +215,13 @@ impl Settings {
             "\n# Read text in images so it can be selected and copied: auto or off."
         );
         let _ = writeln!(s, "ocr = {}", self.ocr.as_str());
+        let _ = writeln!(
+            s,
+            "
+# Written by pandite: the last start used a discrete GPU. When true,
+# a start waits up to half a second for that GPU to be listed."
+        );
+        let _ = writeln!(s, "gpu_discrete_seen = {}", self.gpu_discrete_seen);
         s
     }
 
@@ -278,6 +289,7 @@ impl Settings {
                         .ok_or_else(bad)?;
                 }
                 "ocr" => s.ocr = TextRecognition::parse(value).ok_or_else(bad)?,
+                "gpu_discrete_seen" => s.gpu_discrete_seen = parse_bool(value).ok_or_else(bad)?,
                 _ => {}
             }
         }
@@ -507,6 +519,7 @@ mod tests {
             wrap_around: false,
             jpeg_quality: 77,
             ocr: TextRecognition::Off,
+            gpu_discrete_seen: true,
         };
         assert_eq!(Settings::parse(&s.to_text()).unwrap(), s);
         assert_eq!(
