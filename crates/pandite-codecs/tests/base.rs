@@ -733,17 +733,32 @@ fn reduced_error(reduced: &pandite_core::ImageBuf, reference: &[[f64; 3]]) -> (f
     (sum / (reference.len() * 3) as f64, max)
 }
 
+/// MPEntry attribute (CIPA DC-007) of the primary image: representative
+/// image flag, JPEG data, MP type Baseline MP Primary Image.
+const MP_PRIMARY: u32 = 0x2003_0000;
+/// MPEntry attribute of a Large Thumbnail (full HD equivalent): the
+/// preview cameras append after the main image.
+const MP_LARGE_THUMBNAIL: u32 = 0x0001_0002;
+/// MPEntry attribute with MP type Undefined: the type phones write for
+/// the HDR gain map they append (Ultra HDR, Apple HDR).
+const MP_UNDEFINED: u32 = 0;
+
 /// A JPEG with a Multi-Picture Format index (CIPA DC-007) in APP2 that
-/// points to `preview`, appended after the main image.
+/// points to `preview`, a Large Thumbnail appended after the main image.
 fn with_mpf_preview(main: &[u8], preview: &[u8]) -> Vec<u8> {
-    let entries = 2u32;
+    with_mpf(main, &[(MP_LARGE_THUMBNAIL, preview)])
+}
+
+/// A JPEG with a Multi-Picture Format index in APP2: the main image, then
+/// each `(attribute, stream)` appended in order.
+fn with_mpf(main: &[u8], images: &[(u32, &[u8])]) -> Vec<u8> {
+    let entries = 1 + images.len() as u32;
     // TIFF header (8), IFD count (2), two entries (24), next IFD (4).
     let ifd_len = 8 + 2 + 24 + 4;
     let mp_len = ifd_len + 16 * entries as usize;
     let app2_len = 2 + 4 + mp_len;
     let mp_header_at = 2 + 2 + 2 + 4;
     let total_main = main.len() + 2 + app2_len;
-    let preview_rel = (total_main - mp_header_at) as u32;
     let mut seg = Vec::new();
     seg.extend_from_slice(&[0xFF, 0xE2]);
     seg.extend_from_slice(&(app2_len as u16).to_be_bytes());
@@ -762,12 +777,16 @@ fn with_mpf_preview(main: &[u8], preview: &[u8]) -> Vec<u8> {
     seg.extend_from_slice(&(16 * entries).to_le_bytes());
     seg.extend_from_slice(&(ifd_len as u32).to_le_bytes());
     seg.extend_from_slice(&0u32.to_le_bytes());
-    // Entry 0: the primary image (offset 0). Entry 1: the preview.
-    for (size, offset) in [
-        (total_main as u32, 0u32),
-        (preview.len() as u32, preview_rel),
-    ] {
-        seg.extend_from_slice(&0x0002_0000u32.to_le_bytes());
+    // Entry 0: the primary image (offset 0). Then the appended images,
+    // with offsets from the MP header.
+    let mut list = vec![(MP_PRIMARY, total_main as u32, 0u32)];
+    let mut at = total_main;
+    for (attribute, stream) in images {
+        list.push((*attribute, stream.len() as u32, (at - mp_header_at) as u32));
+        at += stream.len();
+    }
+    for (attribute, size, offset) in list {
+        seg.extend_from_slice(&attribute.to_le_bytes());
         seg.extend_from_slice(&size.to_le_bytes());
         seg.extend_from_slice(&offset.to_le_bytes());
         seg.extend_from_slice(&[0; 4]);
@@ -776,8 +795,142 @@ fn with_mpf_preview(main: &[u8], preview: &[u8]) -> Vec<u8> {
     out.extend_from_slice(&seg);
     out.extend_from_slice(&main[2..]);
     assert_eq!(out.len(), total_main);
-    out.extend_from_slice(preview);
+    for (_, stream) in images {
+        out.extend_from_slice(stream);
+    }
     out
+}
+
+/// Mean of |R - G| + |G - B| per pixel: 0 for a gray picture.
+fn colorfulness(img: &pandite_core::ImageBuf) -> f64 {
+    let sum: u64 = img
+        .data()
+        .chunks_exact(4)
+        .map(|p| u64::from(p[0].abs_diff(p[1])) + u64::from(p[1].abs_diff(p[2])))
+        .sum();
+    sum as f64 / f64::from(img.width() * img.height())
+}
+
+/// Every `f`-th pixel of every `f`-th row of `rgb`, as one gray channel
+/// (Rec. 601 luma): the HDR gain map phones append to their JPEGs.
+fn gray_subsample(rgb: &[u8], w: u32, h: u32, f: u32) -> Vec<u8> {
+    let mut out = Vec::with_capacity(((w / f) * (h / f)) as usize);
+    for y in 0..h / f {
+        for x in 0..w / f {
+            let i = ((y * f * w + x * f) * 3) as usize;
+            let [r, g, b] = [rgb[i], rgb[i + 1], rgb[i + 2]].map(u32::from);
+            out.push(((299 * r + 587 * g + 114 * b + 500) / 1000) as u8);
+        }
+    }
+    out
+}
+
+/// The defect "JPEG files first appear in grayscale, then in color": a
+/// phone JPEG carries its HDR gain map as a second Multi-Picture Format
+/// image (one gray channel, a quarter of the size, MP type Undefined). The
+/// reduced decode, which the viewer shows first, took it for an embedded
+/// preview. Only Large Thumbnails are previews, and a gray stream never
+/// stands in for a color image, whatever its MP type says.
+#[test]
+fn jpeg_reduced_decode_never_shows_a_grayscale_gain_map() {
+    let (w, h) = (512u32, 384u32);
+    let rgb = smooth(w, h);
+    let main = jpeg(w as u16, h as u16, &rgb, jpeg_encoder::ColorType::Rgb, 95);
+    let full = still(&main, "full.jpg");
+    let full_color = colorfulness(&full);
+    assert!(
+        full_color > 50.0,
+        "the test picture is colorful: {full_color}"
+    );
+    let gain_map = jpeg(
+        (w / 4) as u16,
+        (h / 4) as u16,
+        &gray_subsample(&rgb, w, h, 4),
+        jpeg_encoder::ColorType::Luma,
+        90,
+    );
+    let half: Vec<u8> = (0..h / 2)
+        .flat_map(|y| (0..w / 2).map(move |x| ((y * 2 * w + x * 2) * 3) as usize))
+        .flat_map(|i| [rgb[i], rgb[i + 1], rgb[i + 2]])
+        .collect();
+    let preview = jpeg(
+        (w / 2) as u16,
+        (h / 2) as u16,
+        &half,
+        jpeg_encoder::ColorType::Rgb,
+        95,
+    );
+    // The gain map covers the target: it was the smallest fitting image.
+    let options = DecodeOptions {
+        target_size: Some((100, 75)),
+        ..DecodeOptions::default()
+    };
+    for (what, file, dims, factor) in [
+        // A phone JPEG: DCT scaling of the main image to 1/4.
+        (
+            "gain map of type Undefined",
+            with_mpf(&main, &[(MP_UNDEFINED, &gain_map)]),
+            (w / 4, h / 4),
+            4,
+        ),
+        // A color image of another MP type is another picture (such as a
+        // three-channel gain map): not a preview either.
+        (
+            "color image of type Undefined",
+            with_mpf(&main, &[(MP_UNDEFINED, &preview)]),
+            (w / 4, h / 4),
+            4,
+        ),
+        // A gray stream labeled as a preview is not one either.
+        (
+            "gray Large Thumbnail",
+            with_mpf(&main, &[(MP_LARGE_THUMBNAIL, &gain_map)]),
+            (w / 4, h / 4),
+            4,
+        ),
+        // A camera preview beside a gain map: the preview stands in.
+        (
+            "color preview and gain map",
+            with_mpf(
+                &main,
+                &[(MP_LARGE_THUMBNAIL, &preview), (MP_UNDEFINED, &gain_map)],
+            ),
+            (w / 2, h / 2),
+            2,
+        ),
+    ] {
+        let reduced = decode_with(&file, "phone.jpg", &options);
+        let reduced = reduced.first_image();
+        let color = colorfulness(reduced);
+        assert!(
+            color >= full_color * 0.9,
+            "{what}: the first stage is gray (colorfulness {color:.1}, full image {full_color:.1})"
+        );
+        assert_eq!((reduced.width(), reduced.height()), dims, "{what}");
+        let (mean, max) = reduced_error(reduced, &box_down(&full, factor));
+        assert!(
+            mean <= 6.0 && max <= 60.0,
+            "{what}: mean {mean:.2} max {max:.1}"
+        );
+    }
+    // A gray image keeps its gray preview.
+    let gray_main = jpeg(
+        w as u16,
+        h as u16,
+        &gray_subsample(&rgb, w, h, 1),
+        jpeg_encoder::ColorType::Luma,
+        95,
+    );
+    let gray_preview = jpeg(
+        (w / 2) as u16,
+        (h / 2) as u16,
+        &gray_subsample(&rgb, w, h, 2),
+        jpeg_encoder::ColorType::Luma,
+        95,
+    );
+    let file = with_mpf(&gray_main, &[(MP_LARGE_THUMBNAIL, &gray_preview)]);
+    let reduced = decode_with(&file, "gray.jpg", &options);
+    assert_eq!(reduced.dimensions(), (w / 2, h / 2), "the gray preview");
 }
 
 /// Gate G3: the reduced JPEG decode matches the full decode scaled down.

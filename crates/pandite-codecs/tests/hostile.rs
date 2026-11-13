@@ -73,8 +73,13 @@ fn mpf_jpeg(main: &[u8], preview: &[u8]) -> Vec<u8> {
         seg.extend_from_slice(&value.to_le_bytes());
     }
     seg.extend_from_slice(&0u32.to_le_bytes());
-    for (size, offset) in [(total_main as u32, 0u32), (preview.len() as u32, rel)] {
-        seg.extend_from_slice(&0x0002_0000u32.to_le_bytes());
+    // The primary image (representative, Baseline MP Primary Image), then
+    // the preview (Large Thumbnail, full HD equivalent).
+    for (attribute, size, offset) in [
+        (0x2003_0000u32, total_main as u32, 0u32),
+        (0x0001_0002, preview.len() as u32, rel),
+    ] {
+        seg.extend_from_slice(&attribute.to_le_bytes());
         seg.extend_from_slice(&size.to_le_bytes());
         seg.extend_from_slice(&offset.to_le_bytes());
         seg.extend_from_slice(&[0; 4]);

@@ -12,9 +12,12 @@
 //!   scales in the DCT to 1/2, 1/4 or 1/8 (the smallest scale that still
 //!   covers the target).
 //! - With a target size, an embedded preview that covers it is decoded
-//!   instead: the Multi-Picture Format preview cameras append (Sony stores
-//!   a 1616 x 1080 copy after the main image) or the EXIF thumbnail. Only
-//!   a preview with the main image's aspect ratio is used.
+//!   instead: the Multi-Picture Format Large Thumbnail cameras append (Sony
+//!   stores a 1616 x 1080 copy after the main image) or the EXIF
+//!   thumbnail. Only a preview with the main image's aspect ratio is used,
+//!   never a grayscale one for a color image. Other Multi-Picture Format
+//!   images are other pictures, such as the grayscale HDR gain map phones
+//!   append.
 //!
 //! EXIF orientation is applied, embedded ICC profiles are converted to
 //! sRGB (CMYK through the profile when there is one).
@@ -553,10 +556,19 @@ pub(crate) struct Preview {
 /// Previews longer than this are not read (no camera stores one).
 const MAX_PREVIEW_BYTES: u32 = 64 << 20;
 
-/// The embedded previews of a JPEG file: the Multi-Picture Format entries
-/// after the first (the first is the primary image) and the EXIF
-/// thumbnail. Each must lie inside the file, start a JPEG stream and have
-/// an 8-bit frame header with a nonzero size.
+/// True when an MPEntry's Individual Image Attribute (CIPA DC-007) has an
+/// MP type code (the low 24 bits) of the Large Thumbnail class (0x01nnnn):
+/// a reduced copy of the primary image. Other entries are other pictures:
+/// the HDR gain map phones append (type Undefined), depth maps, frames of
+/// a panorama or stereo pair.
+fn is_large_thumbnail(attribute: u32) -> bool {
+    (attribute & 0x00FF_FFFF) >> 16 == 0x01
+}
+
+/// The embedded previews of a JPEG file: the Multi-Picture Format Large
+/// Thumbnails and the EXIF thumbnail. Each must lie inside the file, start
+/// a JPEG stream and have an 8-bit frame header with a nonzero size. A
+/// grayscale stream is no preview of a color image.
 pub(crate) fn previews(data: &[u8], header: &Header<'_>) -> Vec<Preview> {
     let mut out: Vec<Preview> = Vec::new();
     let mut push = |offset: usize, len: usize| {
@@ -567,6 +579,9 @@ pub(crate) fn previews(data: &[u8], header: &Header<'_>) -> Vec<Preview> {
             return;
         };
         if h.width == 0 || h.height == 0 || h.precision != 8 {
+            return;
+        }
+        if h.components == 1 && header.components != 1 {
             return;
         }
         if !out.iter().any(|p| p.offset == offset) {
@@ -592,10 +607,15 @@ pub(crate) fn previews(data: &[u8], header: &Header<'_>) -> Vec<Preview> {
                     let images = (e.count / 16).min(16) as usize;
                     for i in 1..images {
                         let base = e.value_at + i * 16;
-                        let (Some(size), Some(off)) = (t.u32(base + 4), t.u32(base + 8)) else {
+                        let (Some(attribute), Some(size), Some(off)) =
+                            (t.u32(base), t.u32(base + 4), t.u32(base + 8))
+                        else {
                             continue;
                         };
-                        if off == 0 || !(4..=MAX_PREVIEW_BYTES).contains(&size) {
+                        if !is_large_thumbnail(attribute)
+                            || off == 0
+                            || !(4..=MAX_PREVIEW_BYTES).contains(&size)
+                        {
                             continue;
                         }
                         push(at.saturating_add(off as usize), size as usize);
