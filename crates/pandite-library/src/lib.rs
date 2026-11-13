@@ -29,7 +29,8 @@
 //!
 //! [`Registry`]: pandite_core::Registry
 
-#![forbid(unsafe_code)]
+// Denied, not forbidden: the downscaler's vector module allows it.
+#![deny(unsafe_code)]
 
 mod cache;
 mod downscale;
@@ -41,6 +42,8 @@ mod state;
 mod worker;
 
 pub use downscale::{box_downscale, fit_size};
+#[doc(hidden)]
+pub use downscale::{box_downscale_reference, box_downscale_with, DownscaleLevel};
 pub use folder::{natural_cmp, FolderList};
 pub use fs::{
     is_local, read_chunked, std_list_dir, FileAccess, FileInfo, Stamp, StdFiles,
