@@ -76,9 +76,24 @@ file. [docs/text-recognition.md](docs/text-recognition.md) has the details.
    computer, download the `aarch64-pc-windows-msvc` zip.
 2. Extract the zip to a folder.
 3. Start `pandite.exe`.
+4. To open images with pandite from File Explorer, run this command once
+   in the folder of the program:
 
-A Microsoft Store version is in preparation. It adds file associations
-and automatic updates.
+   ```text
+   pandite.exe --register
+   ```
+
+   The command adds pandite to "Open with" and to Default apps for each
+   supported file type, for your user account only. It needs no
+   administrator rights. pandite then opens each file type that you did
+   not give to a different program in Settings. Windows keeps the choices
+   you made in Settings. The command opens the Default apps page, where
+   you can change them.
+5. If you move the program to a different folder, run the command again.
+6. To remove the entries, run `pandite.exe --unregister`.
+
+A Microsoft Store version is in preparation. It registers the file types
+itself and adds automatic updates.
 
 ### macOS
 
@@ -167,6 +182,9 @@ The full list, with the mouse actions, is in
 pandite [options] [--] [<image>]
 
   --config-dir <dir>  keep settings in this folder
+  --register          Windows: add pandite to Open with and Default apps
+                      for every supported file type (this user only)
+  --unregister        Windows: remove what --register added
   -h, --help          show this help
   -V, --version       show the version
 ```

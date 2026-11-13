@@ -25,5 +25,6 @@ pub mod disk;
 pub mod edit;
 pub mod icon;
 pub mod platform;
+pub mod register;
 pub mod settings;
 pub mod shell;

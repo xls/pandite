@@ -11,6 +11,9 @@
 //!                        startup image once it shows at full resolution
 //!   --config-dir <dir>   keep settings in this folder instead of the
 //!                        per-user configuration folder
+//!   --register           Windows: add pandite to "Open with" and to Default
+//!                        apps for every supported file type, for this user
+//!   --unregister         Windows: remove what --register added
 //!   --help, -h           print usage
 //!   --version, -V        print the version
 //! ```
@@ -30,6 +33,9 @@ Options:
   --smoke-stall       with --smoke: simulate a file that never finishes loading
   --timing            print how long the startup image took to appear
   --config-dir <dir>  keep settings in this folder
+  --register          Windows: add pandite to Open with and Default apps
+                      for every supported file type (this user only)
+  --unregister        Windows: remove what --register added
   -h, --help          show this help
   -V, --version       show the version
 ";
@@ -48,6 +54,10 @@ pub struct Cli {
     pub timing: bool,
     /// Settings folder override.
     pub config_dir: Option<PathBuf>,
+    /// Register the file associations for this user and exit.
+    pub register: bool,
+    /// Remove the file associations for this user and exit.
+    pub unregister: bool,
     /// Print usage and exit.
     pub help: bool,
     /// Print the version and exit.
@@ -123,6 +133,8 @@ where
             }
             "--smoke-stall" => cli.smoke_stall = true,
             "--timing" => cli.timing = true,
+            "--register" => cli.register = true,
+            "--unregister" => cli.unregister = true,
             "--config-dir" => {
                 let v = value("--config-dir")?;
                 cli.config_dir = Some(absolutize(Path::new(&v), cwd));
@@ -135,6 +147,11 @@ where
     let mut positional = positional.into_iter().filter(|p| !p.is_empty());
     cli.path = positional.next().map(|p| absolutize(Path::new(&p), cwd));
     cli.ignored = positional.map(|p| absolutize(Path::new(&p), cwd)).collect();
+    if cli.register && cli.unregister {
+        return Err(CliError(
+            "--register and --unregister cannot be used together".into(),
+        ));
+    }
     if cli.smoke_stall && cli.smoke.is_none() {
         return Err(CliError("--smoke-stall needs --smoke <image>".into()));
     }
@@ -205,6 +222,9 @@ mod tests {
 
         assert!(parse(["-h"], &cwd()).unwrap().help);
         assert!(parse(["--version"], &cwd()).unwrap().version);
+        assert!(parse(["--register"], &cwd()).unwrap().register);
+        assert!(parse(["--unregister"], &cwd()).unwrap().unregister);
+        assert!(parse(["--register", "--unregister"], &cwd()).is_err());
         assert!(parse(["-V"], &cwd()).unwrap().version);
 
         // After "--" a name that starts with a dash is a file.
