@@ -20,6 +20,7 @@ pandite-core = { path = "../pandite-core" }
 pandite-codecs = { path = "../pandite-codecs" }
 pandite-ops = { path = "../pandite-ops" }
 pandite-library = { path = "../pandite-library" }
+pandite-ocr = { path = "../pandite-ocr" }
 pandite-render = { path = "../pandite-render" }
 pandite-ui = { path = "../pandite-ui" }
 winit = { version = "0.30.13", default-features = false, features = ["rwh_06"] }

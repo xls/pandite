@@ -20,6 +20,7 @@ const KIND_BORDER: f32 = 1.0;
 const KIND_IMAGE: f32 = 2.0;
 const KIND_MASK: f32 = 3.0;
 const KIND_GLYPH: f32 = 4.0;
+const KIND_QUAD: f32 = 5.0;
 
 type Instance = [f32; 16];
 
@@ -324,6 +325,21 @@ impl UiRenderer {
                     color,
                 } => {
                     self.push_text(*pos, text, *size, *color, scissor)?;
+                }
+                DrawCmd::Quad { points, color } => {
+                    let finite = points.iter().all(|p| p.x.is_finite() && p.y.is_finite());
+                    if finite && color.a > 0 {
+                        // The four corners travel in the rect and uv slots,
+                        // in triangle strip order: first, second, fourth,
+                        // third.
+                        let [a, b, c, d] = *points;
+                        let [r, g, bl, al] = linear_premultiplied(*color);
+                        let inst: Instance = [
+                            a.x, a.y, b.x, b.y, d.x, d.y, c.x, c.y, r, g, bl, al, 0.0, 0.0,
+                            KIND_QUAD, 0.0,
+                        ];
+                        self.push(None, scissor, inst);
+                    }
                 }
                 _ => {}
             }

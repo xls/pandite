@@ -47,6 +47,17 @@
 //! Positions and sizes are physical pixels from the window's top-left,
 //! matching the draw list. Every interface length is a logical size times
 //! [`UiContext::scale_factor`], rounded to whole pixels.
+//!
+//! # Recognized text
+//!
+//! When [`UiContext::text`] carries the words of the image on screen, the
+//! pointer over a word is a text cursor, a left drag that starts on a word
+//! selects words in reading order, a double click selects a word and a
+//! triple click its line. Ctrl+A selects everything, Ctrl+C copies the
+//! selection as [`Action::CopyText`] (lines joined with `"\n"`, words with
+//! one space) and Escape clears it before any other meaning. Drags that
+//! start off text pan as before. Highlights are drawn over the image with
+//! the same placement as the image itself.
 
 #![forbid(unsafe_code)]
 
@@ -66,6 +77,7 @@ mod paint;
 mod raster;
 mod resize_dialog;
 mod text_field;
+mod text_select;
 mod theme;
 mod toolbar;
 mod ui;
@@ -76,7 +88,7 @@ pub use action::{
 };
 pub use command::{command_for_key, Command, Shortcut, SHORTCUTS};
 pub use confirm::ConfirmRequest;
-pub use context::{EncoderInfo, ImageInfo, Loading, Progress, ThumbState, UiContext};
+pub use context::{EncoderInfo, ImageInfo, Loading, Progress, TextView, ThumbState, UiContext};
 pub use icon::{Icon, ICON_TEXTURE_BASE};
 pub use input::{CursorShape, InputEvent, Key, Modifiers, PointerButton, WheelDelta};
 pub use text_field::{CharFilter, FieldResponse, TextField};

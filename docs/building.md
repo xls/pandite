@@ -200,6 +200,17 @@ The GPU tests need a GPU adapter. When the computer has no adapter, these
 tests print a notice and pass. To make a missing adapter fail the tests,
 set `PANDITE_REQUIRE_GPU=1`.
 
+The text recognition tests in `crates/pandite-ocr` need the Windows OCR
+engine and an OCR language. Without them, these tests print a notice and
+pass. To make a missing engine fail the tests, set `PANDITE_REQUIRE_OCR=1`.
+The GitHub runners can have no OCR language, so the CI does not set it.
+
+To measure recognition time against the size limit for large images, run:
+
+```sh
+cargo run --release -p pandite-ocr --example ocr_bench
+```
+
 The GitHub runners have no GPU, only software rasterizers. On Linux, the
 CI runs the renderer tests on the Mesa software rasterizer with
 `PANDITE_REQUIRE_GPU=1` and `PANDITE_FORCE_FALLBACK_ADAPTER=1`. In the

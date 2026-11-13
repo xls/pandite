@@ -142,6 +142,104 @@ impl Rect {
     }
 }
 
+/// A two-dimensional affine transform: a point `(x, y)` maps to
+/// `(a * x + c * y + e, b * x + d * y + f)`. It describes how a view edit
+/// (a quarter turn, a mirror, a crop, a resize) moves image pixels, and how
+/// image pixels land on the screen.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Affine {
+    /// Weight of `x` in the new `x`.
+    pub a: f32,
+    /// Weight of `x` in the new `y`.
+    pub b: f32,
+    /// Weight of `y` in the new `x`.
+    pub c: f32,
+    /// Weight of `y` in the new `y`.
+    pub d: f32,
+    /// Added to the new `x`.
+    pub e: f32,
+    /// Added to the new `y`.
+    pub f: f32,
+}
+
+impl Default for Affine {
+    fn default() -> Self {
+        Self::IDENTITY
+    }
+}
+
+impl Affine {
+    /// The transform that changes nothing.
+    pub const IDENTITY: Affine = Affine::new(1.0, 0.0, 0.0, 1.0, 0.0, 0.0);
+
+    /// Build a transform from its six coefficients.
+    pub const fn new(a: f32, b: f32, c: f32, d: f32, e: f32, f: f32) -> Self {
+        Self { a, b, c, d, e, f }
+    }
+
+    /// Move by `dx`, `dy`.
+    pub const fn translate(dx: f32, dy: f32) -> Self {
+        Self::new(1.0, 0.0, 0.0, 1.0, dx, dy)
+    }
+
+    /// Scale about the origin.
+    pub const fn scale(sx: f32, sy: f32) -> Self {
+        Self::new(sx, 0.0, 0.0, sy, 0.0, 0.0)
+    }
+
+    /// The transform that maps rectangle `from` onto rectangle `to`
+    /// (scale and move, no rotation). An empty `from` gives the identity.
+    pub fn rect_to_rect(from: Rect, to: Rect) -> Self {
+        if from.is_empty() {
+            return Self::IDENTITY;
+        }
+        let sx = to.w / from.w;
+        let sy = to.h / from.h;
+        Self::new(sx, 0.0, 0.0, sy, to.x - from.x * sx, to.y - from.y * sy)
+    }
+
+    /// Where `p` lands.
+    pub fn apply(&self, p: Point) -> Point {
+        Point::new(
+            self.a * p.x + self.c * p.y + self.e,
+            self.b * p.x + self.d * p.y + self.f,
+        )
+    }
+
+    /// First `self`, then `next`.
+    pub fn then(&self, next: &Affine) -> Affine {
+        Affine::new(
+            next.a * self.a + next.c * self.b,
+            next.b * self.a + next.d * self.b,
+            next.a * self.c + next.c * self.d,
+            next.b * self.c + next.d * self.d,
+            next.a * self.e + next.c * self.f + next.e,
+            next.b * self.e + next.d * self.f + next.f,
+        )
+    }
+
+    /// The transform that undoes `self`, or `None` when it collapses the
+    /// plane (a zero scale) or holds values that are not finite.
+    pub fn inverse(&self) -> Option<Affine> {
+        let det = self.a * self.d - self.b * self.c;
+        if !det.is_finite() || det.abs() < 1e-12 {
+            return None;
+        }
+        let inv = Affine::new(
+            self.d / det,
+            -self.b / det,
+            -self.c / det,
+            self.a / det,
+            (self.c * self.f - self.d * self.e) / det,
+            (self.b * self.e - self.a * self.f) / det,
+        );
+        let finite = [inv.a, inv.b, inv.c, inv.d, inv.e, inv.f]
+            .iter()
+            .all(|v| v.is_finite());
+        finite.then_some(inv)
+    }
+}
+
 /// The window rectangle for a first-open image.
 ///
 /// `work_area` is the usable monitor area. `fraction` (0.1 to 1.0) is the
@@ -191,6 +289,29 @@ mod tests {
         assert!(!a.contains(Point::new(10.0, 5.0)));
         let c = Rect::from_corners(Point::new(8.0, 9.0), Point::new(2.0, 1.0));
         assert_eq!(c, Rect::new(2.0, 1.0, 6.0, 8.0));
+    }
+
+    #[test]
+    fn affine_composes_and_inverts() {
+        // A quarter turn clockwise of a 30 x 20 image: (x, y) -> (20 - y, x).
+        let turn = Affine::new(0.0, 1.0, -1.0, 0.0, 20.0, 0.0);
+        assert_eq!(turn.apply(Point::new(0.0, 0.0)), Point::new(20.0, 0.0));
+        assert_eq!(turn.apply(Point::new(30.0, 20.0)), Point::new(0.0, 30.0));
+        let then = turn.then(&Affine::translate(5.0, -1.0));
+        assert_eq!(then.apply(Point::new(10.0, 4.0)), Point::new(21.0, 9.0));
+        let inv = then.inverse().unwrap();
+        let p = inv.apply(then.apply(Point::new(7.5, 3.25)));
+        assert!(
+            (p.x - 7.5).abs() < 1e-4 && (p.y - 3.25).abs() < 1e-4,
+            "{p:?}"
+        );
+        assert!(Affine::scale(0.0, 1.0).inverse().is_none());
+        let fit = Affine::rect_to_rect(
+            Rect::new(0.0, 0.0, 100.0, 50.0),
+            Rect::new(10.0, 20.0, 50.0, 25.0),
+        );
+        assert_eq!(fit.apply(Point::new(100.0, 50.0)), Point::new(60.0, 45.0));
+        assert_eq!(Affine::default(), Affine::IDENTITY);
     }
 
     #[test]

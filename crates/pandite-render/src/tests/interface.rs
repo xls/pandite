@@ -79,6 +79,46 @@ fn drawlist_rect_readback() {
 }
 
 #[test]
+fn drawlist_quad_readback() {
+    let Some(mut r) = ui_renderer(64, 64) else {
+        return;
+    };
+    // A diamond around (32, 32) with corners 20 pixels out.
+    let mut list = DrawList::new();
+    list.quad(
+        [
+            Point::new(32.0, 12.0),
+            Point::new(52.0, 32.0),
+            Point::new(32.0, 52.0),
+            Point::new(12.0, 32.0),
+        ],
+        Color::rgb(200, 100, 50),
+    );
+    // A translucent quad over part of it blends like a rectangle.
+    list.quad(
+        [
+            Point::new(40.0, 40.0),
+            Point::new(60.0, 40.0),
+            Point::new(60.0, 60.0),
+            Point::new(40.0, 60.0),
+        ],
+        Color::rgba(255, 255, 255, 128),
+    );
+    let px = draw(&mut r, &list);
+    assert_rgb(&px, 32, 32, [200, 100, 50], 1);
+    assert_rgb(&px, 32, 14, [200, 100, 50], 1);
+    assert_rgb(&px, 14, 32, [200, 100, 50], 1);
+    // Outside the diamond, near the corners of its bounding box.
+    assert_rgb(&px, 14, 14, [0, 0, 0], 0);
+    assert_rgb(&px, 50, 14, [0, 0, 0], 0);
+    assert_rgb(&px, 14, 50, [0, 0, 0], 0);
+    assert_rgb(&px, 55, 55, [srgb_code(128.0 / 255.0); 3], 1);
+    assert_rgb(&px, 39, 55, [0, 0, 0], 0);
+    // A quad joins the shape batch: one draw call.
+    assert_eq!(r.ui_draw_calls(), 1);
+}
+
+#[test]
 fn drawlist_rounded_rect_corners() {
     let Some(mut r) = ui_renderer(64, 64) else {
         return;

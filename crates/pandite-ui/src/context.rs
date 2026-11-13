@@ -1,9 +1,25 @@
 //! The per-frame snapshot the application hands to the interface.
 
 use crate::theme::ThemeKind;
-use pandite_core::{Rect, Size, ViewState};
+use pandite_core::{Affine, Rect, Size, TextLayout, ViewState};
 use std::path::Path;
 use std::time::Duration;
+
+/// Recognized text of the image on screen.
+#[derive(Clone, Copy, Debug)]
+pub struct TextView<'a> {
+    /// The words, in pixels of the image the text was read from. Give a
+    /// layout with at least one word; an empty one offers nothing.
+    pub layout: &'a TextLayout,
+    /// Maps layout pixels to pixels of the displayed image
+    /// ([`ImageInfo::width`] x [`ImageInfo::height`]): the view edits made
+    /// since the text was read (quarter turns, mirrors, crops, resizes).
+    /// The identity for an unedited image.
+    pub to_image: Affine,
+    /// Names this layout on this image. Change it whenever either changes;
+    /// a selection made under another id is dropped.
+    pub id: u64,
+}
 
 /// Facts about the image on screen.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -134,6 +150,13 @@ pub struct UiContext<'a> {
     pub notice: Option<&'a str>,
     /// Encoders the bulk dialog offers.
     pub encoders: &'a [EncoderInfo<'a>],
+    /// True when this platform reads text in images and the user allows
+    /// it. The shortcut overlay lists the text commands only then.
+    pub text_enabled: bool,
+    /// The text recognized in the image on screen, when there is any.
+    /// Words then take a text cursor, drags over them select text, and
+    /// Ctrl+A and Ctrl+C select and copy it.
+    pub text: Option<TextView<'a>>,
 }
 
 impl Default for UiContext<'_> {
@@ -156,6 +179,8 @@ impl Default for UiContext<'_> {
             loading: None,
             notice: None,
             encoders: &[],
+            text_enabled: false,
+            text: None,
         }
     }
 }

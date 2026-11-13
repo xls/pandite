@@ -4,7 +4,9 @@
 //! normal asynchronous path, draws frames to the window and then renders
 //! the same content offscreen on the same GPU device and reads the pixels
 //! back: a still must show non-background pixels, an animation must show
-//! two different frames. It prints one `SMOKE OK` or `SMOKE FAIL` line.
+//! two different frames. Where the system reads text, the run then waits
+//! until the text of a still was read and reports how many words it
+//! found. It prints one `SMOKE OK` or `SMOKE FAIL` line.
 //!
 //! With `--smoke-stall` every file read blocks forever. The run waits for
 //! the loading screen, presses Escape and passes when the core asks to
@@ -85,6 +87,8 @@ pub struct Smoke {
     stall_seen: Option<Instant>,
     escape_at: Option<Instant>,
     shown: Option<(u32, u32, &'static str)>,
+    /// The offscreen check passed with this detail; text may still be read.
+    checked: Option<String>,
     failure: Option<String>,
     verified: Option<String>,
 }
@@ -103,6 +107,7 @@ impl Smoke {
             stall_seen: None,
             escape_at: None,
             shown: None,
+            checked: None,
             failure: None,
             verified: None,
         }
@@ -181,6 +186,8 @@ impl Smoke {
                 "the loading screen"
             } else if self.frames == 0 {
                 "the image"
+            } else if self.checked.is_some() {
+                "text recognition"
             } else {
                 "animation frames"
             };
@@ -228,36 +235,56 @@ impl Smoke {
     }
 
     /// Once enough window frames were drawn, check the GPU output
-    /// offscreen.
-    pub fn verify(&mut self, renderer: &Renderer, content: Option<&Content>) {
+    /// offscreen; then wait for text recognition of the image to end.
+    pub fn verify(&mut self, renderer: &Renderer, content: Option<&Content>, app: &App) {
         if self.finished() || self.stall {
             return;
         }
-        let Some((w, h, kind)) = self.shown else {
-            return;
-        };
-        let animated = kind == "animation";
-        if self.frames < MIN_FRAMES || (animated && self.advances < MIN_ADVANCES) {
-            return;
-        }
-        let Some(content) = content else {
-            return;
-        };
-        match offscreen_check(renderer, content) {
-            Ok(detail) => {
-                self.verified = Some(format!(
-                    "{} {w}x{h} {kind}, {} window frames, {} animation steps, {detail}, gpu {}",
-                    self.path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_default(),
-                    self.frames,
-                    self.advances,
-                    renderer.gpu().describe(),
-                ));
+        if self.checked.is_none() {
+            let Some((w, h, kind)) = self.shown else {
+                return;
+            };
+            let animated = kind == "animation";
+            if self.frames < MIN_FRAMES || (animated && self.advances < MIN_ADVANCES) {
+                return;
             }
-            Err(err) => self.fail(format!("offscreen check failed: {err}")),
+            let Some(content) = content else {
+                return;
+            };
+            match offscreen_check(renderer, content) {
+                Ok(detail) => {
+                    self.checked = Some(format!(
+                        "{} {w}x{h} {kind}, {} window frames, {} animation steps, {detail}",
+                        self.path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_default(),
+                        self.frames,
+                        self.advances,
+                    ));
+                }
+                Err(err) => {
+                    self.fail(format!("offscreen check failed: {err}"));
+                    return;
+                }
+            }
         }
+        // Recognition runs in the background like in normal use; the run
+        // ends once it did (immediately where nothing reads text).
+        if app.text_pending() {
+            return;
+        }
+        let Some(detail) = &self.checked else {
+            return;
+        };
+        let text = match app.shown_text() {
+            Some(layout) => format!("text {} words", layout.word_count()),
+            None => "text not read".to_string(),
+        };
+        self.verified = Some(format!(
+            "{detail}, {text}, gpu {}",
+            renderer.gpu().describe()
+        ));
     }
 
     /// The line to print and the exit code.

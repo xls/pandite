@@ -1,0 +1,21 @@
+[package]
+name = "pandite-ocr"
+description = "Text recognition providers for the pandite viewer: the operating system recognizer, fully offline."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+pandite-core = { path = "../pandite-core" }
+
+# Windows.Media.Ocr through WinRT. Threading lowers the worker's priority.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", default-features = false, features = ["std", "Foundation", "Globalization", "Graphics_Imaging", "Media_Ocr", "Storage_Streams", "Win32_Foundation", "Win32_System_Threading"] }
+
+[dev-dependencies]
+# Tests render text with the font the interface embeds.
+fontdue = { version = "0.9.5", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true

@@ -99,6 +99,16 @@ pub enum DrawCmd {
     },
     /// Restrict following commands to this area. `None` removes the limit.
     Clip(Option<Rect>),
+    /// A filled quadrilateral, for shapes that are not axis aligned (text
+    /// highlights on a rotated or slanted image). The points go around the
+    /// outline in order; the shape must be convex. Edges are not
+    /// antialiased.
+    Quad {
+        /// Corners in order around the outline.
+        points: [Point; 4],
+        /// Fill color.
+        color: Color,
+    },
 }
 
 /// The drawing instructions for one frame of interface.
@@ -167,6 +177,11 @@ impl DrawList {
     pub fn clip(&mut self, rect: Option<Rect>) {
         self.cmds.push(DrawCmd::Clip(rect));
     }
+
+    /// Add a filled convex quadrilateral.
+    pub fn quad(&mut self, points: [Point; 4], color: Color) {
+        self.cmds.push(DrawCmd::Quad { points, color });
+    }
 }
 
 /// Text metrics the interface crate needs for layout. The renderer crate
@@ -205,7 +220,15 @@ mod tests {
             Color::WHITE.with_alpha(128),
         );
         list.clip(None);
-        assert_eq!(list.cmds.len(), 5);
+        let corners = [
+            Point::new(0.0, 0.0),
+            Point::new(2.0, 1.0),
+            Point::new(1.0, 3.0),
+            Point::new(-1.0, 2.0),
+        ];
+        list.quad(corners, Color::BLACK);
+        assert_eq!(list.cmds.len(), 6);
+        assert!(matches!(&list.cmds[5], DrawCmd::Quad { points, .. } if *points == corners));
         assert!(matches!(list.cmds[0], DrawCmd::Clip(Some(_))));
         assert!(matches!(
             &list.cmds[2],

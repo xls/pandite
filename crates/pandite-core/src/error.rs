@@ -28,6 +28,9 @@ pub enum Error {
     Io(std::io::Error),
     /// A platform codec or GPU backend failure.
     Backend(String),
+    /// A platform service is missing on this system (for example a text
+    /// recognizer without an installed language). Not a fault of the data.
+    Unavailable(String),
 }
 
 impl fmt::Display for Error {
@@ -42,6 +45,7 @@ impl fmt::Display for Error {
             Error::Cancelled => f.write_str("cancelled"),
             Error::Io(err) => write!(f, "i/o error: {err}"),
             Error::Backend(what) => write!(f, "backend error: {what}"),
+            Error::Unavailable(what) => write!(f, "unavailable: {what}"),
         }
     }
 }
@@ -75,5 +79,7 @@ mod tests {
         let io: Error = std::io::Error::new(std::io::ErrorKind::NotFound, "gone").into();
         assert!(io.to_string().contains("gone"));
         assert!(std::error::Error::source(&io).is_some());
+        let missing = Error::Unavailable("no recognizer language".into());
+        assert_eq!(missing.to_string(), "unavailable: no recognizer language");
     }
 }

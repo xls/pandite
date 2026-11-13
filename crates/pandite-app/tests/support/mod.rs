@@ -14,8 +14,9 @@ use pandite_app::platform::{Clipboard, DialogKind, DialogReply, Dialogs, WindowC
 use pandite_app::settings::Settings;
 use pandite_core::{
     CancelToken, Content, ContentKind, DecodeOptions, DecoderProvider, DrawCmd, DrawList,
-    EncodeOptions, EncoderProvider, Error, ImageBuf, ImageMeta, Orientation, PixelFormat, Rect,
-    Registry, Result as CoreResult, Size, Source, TextMeasure, TextureId, TextureSink,
+    EncodeOptions, EncoderProvider, Error, ImageBuf, ImageMeta, Orientation, PixelFormat, Quad,
+    Rect, Registry, Result as CoreResult, Size, Source, TextLayout, TextLine, TextMeasure,
+    TextProvider, TextWord, TextureId, TextureSink,
 };
 use pandite_library::{FileAccess, FileInfo};
 use pandite_ui::{Action, CursorShape, InputEvent, Key, Modifiers};
@@ -537,6 +538,12 @@ pub struct Harness {
     pub now: Duration,
     /// Every content update taken by [`Harness::frame`], oldest first.
     pub updates: Vec<Update>,
+    /// Report full-resolution content as presented right after
+    /// [`Harness::frame`] takes it, the way the shell does after drawing.
+    /// Off: only [`Harness::present`] reports it.
+    pub auto_present: bool,
+    /// The newest full-resolution content generation taken.
+    last_full: Option<u64>,
     wake_rx: Receiver<()>,
 }
 
@@ -585,7 +592,17 @@ impl Harness {
             registry,
             now: Duration::from_millis(1),
             updates: Vec::new(),
+            auto_present: true,
+            last_full: None,
             wake_rx,
+        }
+    }
+
+    /// Report the newest full-resolution content taken as presented.
+    pub fn present(&mut self) {
+        let now = self.now;
+        if let Some(generation) = self.last_full {
+            self.app().content_presented(generation, now);
         }
     }
 
@@ -619,7 +636,15 @@ impl Harness {
                     .map(|p| [p[0], p[1], p[2], p[3]]),
             });
         }
+        if let Some(last) = taken.last() {
+            // A newer update replaces older ones; only full content counts.
+            self.last_full =
+                (last.full_resolution && last.dims.is_some()).then_some(last.generation);
+        }
         self.updates.extend(taken);
+        if self.auto_present {
+            self.present();
+        }
         list
     }
 
@@ -761,6 +786,196 @@ pub fn folder(tag: &str, names: &[&str], w: u32, h: u32) -> (TempDir, Vec<PathBu
         })
         .collect();
     (dir, paths)
+}
+
+// ----- text recognizer -------------------------------------------------------------
+
+/// One call into [`FakeText`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextCall {
+    pub op: &'static str,
+    pub thread: ThreadId,
+    /// The image size `recognize` was given (0 x 0 for `available`).
+    pub dims: (u32, u32),
+}
+
+#[derive(Default)]
+struct FakeTextState {
+    available: bool,
+    hold: bool,
+    /// Words per line: text and box as fractions of the image size, so
+    /// the layout fits any image it is given.
+    lines: Vec<Vec<(String, [f32; 4])>>,
+    calls: Vec<TextCall>,
+    started: usize,
+    cancelled: usize,
+    finished: usize,
+}
+
+/// A text recognizer for tests. It returns a fixed layout scaled to the
+/// image it reads, records every call with its thread, and with
+/// [`FakeText::hold`] blocks inside `recognize` until released, returning
+/// `Cancelled` as soon as the token is set.
+#[derive(Default)]
+pub struct FakeText {
+    state: Mutex<FakeTextState>,
+    cv: Condvar,
+}
+
+impl FakeText {
+    /// A working recognizer that finds `lines`: words with their boxes
+    /// as fractions `[x, y, w, h]` of the image size.
+    pub fn new(lines: &[&[(&str, [f32; 4])]]) -> Arc<Self> {
+        let fake = Self::default();
+        {
+            let mut g = lock(&fake.state);
+            g.available = true;
+            g.lines = lines
+                .iter()
+                .map(|l| l.iter().map(|(t, r)| (t.to_string(), *r)).collect())
+                .collect();
+        }
+        Arc::new(fake)
+    }
+
+    /// A recognizer that reports itself missing (no OCR language).
+    pub fn unavailable() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    /// The default registry plus this recognizer and `decoders`.
+    pub fn registry(self: &Arc<Self>, decoders: &[Arc<dyn DecoderProvider>]) -> Arc<Registry> {
+        let mut reg = pandite_codecs::default_registry();
+        for d in decoders {
+            reg.add_decoder(Arc::clone(d));
+        }
+        reg.add_text_provider(Arc::clone(self) as Arc<dyn TextProvider>);
+        Arc::new(reg)
+    }
+
+    pub fn hold(&self) {
+        lock(&self.state).hold = true;
+    }
+
+    pub fn release(&self) {
+        lock(&self.state).hold = false;
+        self.cv.notify_all();
+    }
+
+    pub fn calls(&self) -> Vec<TextCall> {
+        lock(&self.state).calls.clone()
+    }
+
+    /// `recognize` calls so far.
+    pub fn recognitions(&self) -> Vec<TextCall> {
+        self.calls()
+            .into_iter()
+            .filter(|c| c.op == "recognize")
+            .collect()
+    }
+
+    fn wait(&self, done: impl Fn(&FakeTextState) -> bool) -> bool {
+        let deadline = Instant::now() + WAIT;
+        let mut g = lock(&self.state);
+        while !done(&g) {
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            g = self
+                .cv
+                .wait_timeout(g, deadline - now)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+        true
+    }
+
+    /// Wait until `n` recognitions started.
+    pub fn wait_started(&self, n: usize) -> bool {
+        self.wait(|s| s.started >= n)
+    }
+
+    /// Wait until `n` held recognitions stopped because they were
+    /// cancelled.
+    pub fn wait_cancelled(&self, n: usize) -> bool {
+        self.wait(|s| s.cancelled >= n)
+    }
+
+    /// Recognitions that returned a layout.
+    pub fn finished(&self) -> usize {
+        lock(&self.state).finished
+    }
+
+    fn record(&self, op: &'static str, dims: (u32, u32)) {
+        lock(&self.state).calls.push(TextCall {
+            op,
+            thread: thread::current().id(),
+            dims,
+        });
+        self.cv.notify_all();
+    }
+}
+
+impl TextProvider for FakeText {
+    fn id(&self) -> &'static str {
+        "fake-text"
+    }
+
+    fn name(&self) -> &'static str {
+        "Test recognizer"
+    }
+
+    fn available(&self) -> bool {
+        self.record("available", (0, 0));
+        lock(&self.state).available
+    }
+
+    fn recognize(&self, image: &ImageBuf, cancel: &CancelToken) -> CoreResult<TextLayout> {
+        let (w, h) = (image.width(), image.height());
+        self.record("recognize", (w, h));
+        let mut g = lock(&self.state);
+        if !g.available {
+            return Err(Error::Unavailable("test recognizer is off".into()));
+        }
+        g.started += 1;
+        self.cv.notify_all();
+        while g.hold {
+            if cancel.is_cancelled() {
+                g.cancelled += 1;
+                drop(g);
+                self.cv.notify_all();
+                return Err(Error::Cancelled);
+            }
+            g = self
+                .cv
+                .wait_timeout(g, Duration::from_millis(1))
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+        let (fw, fh) = (w as f32, h as f32);
+        let lines = g
+            .lines
+            .iter()
+            .map(|l| TextLine {
+                words: l
+                    .iter()
+                    .map(|(text, [x, y, bw, bh])| TextWord {
+                        text: text.clone(),
+                        quad: Quad::from_rect(Rect::new(x * fw, y * fh, bw * fw, bh * fh)),
+                    })
+                    .collect(),
+            })
+            .collect();
+        g.finished += 1;
+        drop(g);
+        self.cv.notify_all();
+        Ok(TextLayout {
+            width: w,
+            height: h,
+            lines,
+        })
+    }
 }
 
 // ----- staged decoder ------------------------------------------------------------

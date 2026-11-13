@@ -6,33 +6,35 @@
 //! with draw lists, content to upload and calls on the [`WindowControl`].
 //!
 //! Threading: every method runs on the event-loop thread and returns at
-//! once. File reads, folder listings, decodes, encodes, writes and bulk
-//! work run on library workers or on the job threads in [`jobs`], which
-//! report through a channel and the [`Waker`]. A job stuck in a file system
-//! call is never waited for.
+//! once. File reads, folder listings, decodes, encodes, writes, bulk work
+//! and text recognition run on library workers or on the job threads in
+//! [`jobs`], which report through a channel and the [`Waker`]. A job stuck
+//! in a file system call is never waited for.
 
 mod jobs;
+mod text;
 mod thumbs;
 
 use crate::disk::Disk;
 use crate::edit::{self, Edit, EditStack, Undo};
 use crate::platform::{Clipboard, DialogKind, Dialogs, Filter, Waker, WindowControl};
-use crate::settings::{self, Settings, ThemeChoice, WindowPlacement};
+use crate::settings::{self, Settings, TextRecognition, ThemeChoice, WindowPlacement};
 use jobs::Outbox;
 use pandite_core::{
     CancelToken, Color, Content, DrawList, EncodeOptions, Error, ImageBuf, Point, Rect, Registry,
-    Size, TextMeasure, TextureSink, ViewState,
+    Size, TextLayout, TextMeasure, TextureSink, ViewState,
 };
 use pandite_library::{Event, Fetch, FileAccess, Library, LibraryConfig, Reduced};
 use pandite_ui::{
     Action, ConfirmRequest, CursorShape, EncoderInfo, ImageInfo, InputEvent, Loading, Progress,
-    ThemeKind, ThumbState, Ui, UiContext, ZOOM_STEP,
+    TextView, ThemeKind, ThumbState, Ui, UiContext, ZOOM_STEP,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::time::Duration;
+use text::{TextKey, TextState, TEXT_DELAY};
 use thumbs::Thumbs;
 
 /// Messages from job threads to the core.
@@ -66,6 +68,13 @@ pub(crate) enum Msg {
         id: u64,
         summary: String,
         destination: PathBuf,
+    },
+    /// Text recognition job `ticket` of shown image `image` ended.
+    TextDone {
+        ticket: u64,
+        image: u64,
+        key: TextKey,
+        result: pandite_core::Result<TextLayout>,
     },
 }
 
@@ -208,6 +217,21 @@ struct Shown {
     /// The full image's size while `content` is a reduced stand-in. Edits
     /// and saves wait until the full image replaces it.
     standin: Option<(u32, u32)>,
+    /// The content generation that first carried this image at full
+    /// resolution.
+    full_gen: Option<u64>,
+    /// When a frame with that content was first presented.
+    presented_at: Option<Duration>,
+    /// The text read from `base`, once recognition ended (an empty layout
+    /// when it found nothing or failed).
+    text: Option<ShownText>,
+}
+
+/// Recognized text attached to the image on screen.
+struct ShownText {
+    /// Names this layout on this image for the interface.
+    id: u64,
+    layout: Arc<TextLayout>,
 }
 
 impl Shown {
@@ -342,6 +366,7 @@ struct State {
     content_out: Option<ContentUpdate>,
     notice: Option<String>,
     thumbs: Thumbs,
+    text: TextState,
 
     next_id: u64,
     dialogs_open: HashMap<u64, DialogPurpose>,
@@ -444,6 +469,10 @@ impl App {
         } else {
             AutoSize::Off
         };
+        let text = TextState::new(
+            registry.text_providers().to_vec(),
+            settings.ocr == TextRecognition::Auto,
+        );
         let st = State {
             registry,
             library,
@@ -494,6 +523,7 @@ impl App {
             content_out: None,
             notice: None,
             thumbs: Thumbs::default(),
+            text,
             next_id: 1,
             dialogs_open: HashMap::new(),
             confirms: HashMap::new(),
@@ -571,6 +601,24 @@ impl App {
     /// True when the image on screen has edits that are not saved.
     pub fn is_edited(&self) -> bool {
         self.st.shown.as_ref().is_some_and(|s| s.edits.is_edited())
+    }
+
+    /// The text recognized in the image on screen, once recognition ended
+    /// (empty when it found none). Word outlines are in pixels of the
+    /// full-resolution image as decoded, before view edits.
+    pub fn shown_text(&self) -> Option<&TextLayout> {
+        self.st.shown.as_ref()?.text.as_ref().map(|t| &*t.layout)
+    }
+
+    /// True while text recognition runs for the image on screen.
+    pub fn reading_text(&self) -> bool {
+        self.st.text.job.is_some()
+    }
+
+    /// True while text recognition of the image on screen runs or waits
+    /// for its start time.
+    pub fn text_pending(&self) -> bool {
+        self.st.text.job.is_some() || self.st.text_due().is_some()
     }
 
     /// True while edits or a save run in the background.
@@ -655,8 +703,13 @@ impl App {
     }
 
     /// When the next timed frame is due, on the clock passed as `now`.
+    /// Text recognition of the image on screen starts at such a frame.
     pub fn next_frame_at(&self) -> Option<Duration> {
-        self.ui.next_redraw_at()
+        let ui = self.ui.next_redraw_at();
+        match (ui, self.st.text_due()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     // ----- events from the shell -------------------------------------------
@@ -674,11 +727,26 @@ impl App {
         }
     }
 
+    /// A frame showing content `generation` (from
+    /// [`ContentUpdate::generation`]) at full resolution was presented.
+    /// Call after every such frame; repeats cost nothing. Text recognition
+    /// of the image waits for this.
+    pub fn content_presented(&mut self, generation: u64, now: Duration) {
+        if let Some(shown) = self.st.shown.as_mut() {
+            let full = shown.standin.is_none() && shown.full_gen.is_some_and(|g| generation >= g);
+            if full && shown.presented_at.is_none() {
+                shown.presented_at = Some(now);
+            }
+        }
+        self.st.poll_text(now);
+    }
+
     /// Open a file or folder (dropped on the window, for example).
     pub fn open(&mut self, path: PathBuf, now: Duration) {
         self.st.open_path(path, now, false);
         self.st.dirty = true;
         self.st.update_title();
+        self.st.poll_text(now);
         self.after_change();
     }
 
@@ -701,6 +769,7 @@ impl App {
         }
         // Hover, focus and pressed states change without an action.
         self.st.dirty = true;
+        self.st.poll_text(now);
         self.after_change();
     }
 
@@ -853,14 +922,21 @@ impl App {
         for event in events {
             self.st.on_library_event(event);
         }
+        let had_text = self.st.text_id();
         while let Ok(msg) = self.st.inbox.try_recv() {
             changed = true;
             self.on_msg(msg, now);
         }
         changed |= self.st.check_target();
+        self.st.poll_text(now);
         if changed {
             self.st.dirty = true;
             self.st.update_title();
+        }
+        if self.st.text_id() != had_text {
+            // Text arrived under a resting pointer: the cursor over a word
+            // becomes a text cursor without waiting for a move.
+            self.input(InputEvent::Tick, now);
         }
         self.after_change();
         changed
@@ -938,6 +1014,8 @@ impl App {
         measure: &dyn TextMeasure,
         list: &mut DrawList,
     ) -> FrameOut {
+        // A recognition whose start time came wakes the loop for a frame.
+        self.st.poll_text(now);
         self.st.refresh_text();
         let (viewport, background, range) = {
             let ctx = context(&self.st, &self.ui, now);
@@ -994,10 +1072,11 @@ impl App {
     /// in file reads. Returns at once when nothing is stuck and after at
     /// most `timeout` plus the library's short grace otherwise.
     pub fn shutdown(self, timeout: Duration) -> ShutdownReport {
-        let App { ui: _, st } = self;
+        let App { ui: _, mut st } = self;
         if let Some(run) = &st.bulk {
             run.cancel.cancel();
         }
+        st.text.cancel_job();
         let mut report = ShutdownReport {
             settings_saved: None,
         };
@@ -1134,6 +1213,12 @@ impl App {
                     st.library.refresh();
                 }
             }
+            Msg::TextDone {
+                ticket,
+                image,
+                key,
+                result,
+            } => st.text_done(ticket, image, key, result),
         }
     }
 }
@@ -1190,6 +1275,8 @@ fn context<'a>(st: &'a State, ui: &Ui, now: Duration) -> UiContext<'a> {
         }),
         notice: st.notice.as_deref(),
         encoders: &st.encoders,
+        text_enabled: st.text.active(),
+        text: None,
     };
     if let Some(shown) = &st.shown {
         let content = ui.content_rect(&ctx);
@@ -1204,6 +1291,19 @@ fn context<'a>(st: &'a State, ui: &Ui, now: Duration) -> UiContext<'a> {
             screen_rect: st.view.image_rect(size, content),
             edited: shown.edits.is_edited(),
         });
+        // Words follow the applied edits; edits still queued or running
+        // show the previous picture, and so do its words.
+        ctx.text = shown
+            .text
+            .as_ref()
+            .filter(|t| shown.standin.is_none() && !t.layout.is_empty())
+            .map(|t| TextView {
+                layout: &t.layout,
+                to_image: shown
+                    .edits
+                    .transform((shown.base.width(), shown.base.height())),
+                id: t.id,
+            });
     }
     ctx
 }
@@ -1545,6 +1645,7 @@ impl State {
             shown.base = base;
             shown.standin = None;
             self.push_content(Some((*content).clone()));
+            self.mark_full_resolution();
             self.resume_waiting_work();
             return;
         }
@@ -1559,12 +1660,26 @@ impl State {
             id,
             told_first_frame: false,
             standin: None,
+            full_gen: None,
+            presented_at: None,
+            text: None,
         });
         self.view = ViewState::default();
         self.pending_save = None;
         self.push_content(Some((*content).clone()));
+        self.mark_full_resolution();
         if self.startup_path.as_deref() == Some(path.as_path()) {
             self.auto_size_to(dims);
+        }
+    }
+
+    /// The content just pushed is the image on screen at full resolution:
+    /// once a frame with it is presented, its text may be read.
+    fn mark_full_resolution(&mut self) {
+        let generation = self.content_gen;
+        if let Some(shown) = self.shown.as_mut() {
+            shown.full_gen = Some(generation);
+            shown.presented_at = None;
         }
     }
 
@@ -1595,6 +1710,9 @@ impl State {
             id,
             told_first_frame: false,
             standin: Some(dims),
+            full_gen: None,
+            presented_at: None,
+            text: None,
         });
         self.view = ViewState::default();
         self.notice = None;
@@ -1740,6 +1858,128 @@ impl State {
             Event::ThumbnailReady { index, .. } => self.thumbs.ready(index),
             Event::ThumbnailFailed { index, .. } => self.thumbs.mark(index, ThumbState::Failed),
             _ => {}
+        }
+    }
+
+    // ----- text recognition -------------------------------------------------
+
+    /// True when the shown image is still the one the user wants to see
+    /// and can have its text read: full resolution, a still, on target.
+    fn text_wanted(&self, shown: &Shown) -> bool {
+        shown.standin.is_none()
+            && !shown.animated()
+            && self.target.as_ref().is_some_and(|t| t.path == shown.path)
+    }
+
+    /// When recognition of the shown image may start, if it is waiting.
+    fn text_due(&self) -> Option<Duration> {
+        if !self.text.active() || self.text.job.is_some() {
+            return None;
+        }
+        let shown = self.shown.as_ref()?;
+        if shown.text.is_some() || !self.text_wanted(shown) {
+            return None;
+        }
+        Some(shown.presented_at? + TEXT_DELAY)
+    }
+
+    /// The id of the text attached to the shown image.
+    fn text_id(&self) -> Option<u64> {
+        self.shown.as_ref()?.text.as_ref().map(|t| t.id)
+    }
+
+    /// Stop a recognition nobody waits for any more, and start the one
+    /// that is due.
+    fn poll_text(&mut self, now: Duration) {
+        if let Some(job) = &self.text.job {
+            let wanted = self
+                .shown
+                .as_ref()
+                .is_some_and(|s| s.id == job.image && self.text_wanted(s));
+            if !wanted || !self.text.active() {
+                self.text.cancel_job();
+            }
+        }
+        let Some(due) = self.text_due() else {
+            return;
+        };
+        let Some(shown) = self.shown.as_ref() else {
+            return;
+        };
+        let key = TextKey::new(&shown.path, &shown.base);
+        if let Some(layout) = self.text.cached(&key) {
+            // Read earlier this session: show it at once.
+            let id = self.text.next_id();
+            if let Some(shown) = self.shown.as_mut() {
+                shown.text = Some(ShownText { id, layout });
+            }
+            self.dirty = true;
+            return;
+        }
+        if now < due {
+            return;
+        }
+        let (image_id, image) = (shown.id, shown.base.clone());
+        if !self
+            .text
+            .start(self.out.clone(), image_id, key.clone(), image)
+        {
+            // No thread: count the image as read, without text, so this
+            // does not repeat on every frame.
+            self.attach_text(image_id, &key, Arc::new(TextLayout::default()));
+        }
+    }
+
+    /// Attach `layout` to the shown image when it is still `image_id` read
+    /// from the same pixels and has no text yet (a selection on text that
+    /// is already there stays).
+    fn attach_text(&mut self, image_id: u64, key: &TextKey, layout: Arc<TextLayout>) {
+        let id = self.text.next_id();
+        if let Some(shown) = self.shown.as_mut().filter(|s| {
+            s.id == image_id && s.text.is_none() && TextKey::new(&s.path, &s.base) == *key
+        }) {
+            shown.text = Some(ShownText { id, layout });
+            self.dirty = true;
+            // An earlier job answered for the same pixels: a later one
+            // for them is not needed.
+            if self.text.job.as_ref().is_some_and(|j| j.image == image_id) {
+                self.text.cancel_job();
+            }
+        }
+    }
+
+    fn text_done(
+        &mut self,
+        ticket: u64,
+        image: u64,
+        key: TextKey,
+        result: pandite_core::Result<TextLayout>,
+    ) {
+        if self.text.job.as_ref().is_some_and(|j| j.ticket == ticket) {
+            self.text.job = None;
+        }
+        if !self.text.current(ticket) {
+            // Read from pixels a save replaced since.
+            return;
+        }
+        match result {
+            Ok(layout) => {
+                let layout = Arc::new(layout);
+                self.text.store(key.clone(), Arc::clone(&layout));
+                self.attach_text(image, &key, layout);
+            }
+            // Navigation stopped it; it starts again if the image returns.
+            Err(Error::Cancelled) => {}
+            // No recognizer or language here: no text features at all, and
+            // no message (this is not the user's problem to solve).
+            Err(Error::Unavailable(_)) => self.text.set_unavailable(),
+            // A failure for this image: remember it as "no text" so it is
+            // not tried again this session.
+            Err(_) => {
+                let empty = Arc::new(TextLayout::new(key.width, key.height));
+                self.text.store(key.clone(), Arc::clone(&empty));
+                self.attach_text(image, &key, empty);
+            }
         }
     }
 
@@ -2042,13 +2282,33 @@ impl State {
         let animated = shown.animated();
         let had_edits = !shown.edits.is_empty();
         let committed = shown.edits.commit(&shown.base);
+        let old_path = shown.path.clone();
         if had_edits || animated {
             shown.base = committed.clone();
             shown.content = Arc::new(Content::Still(committed.clone()));
+            // New pixels: words read from the old ones no longer apply and
+            // are read again from the saved image.
+            shown.text = None;
         }
         if !save.overwrite {
             shown.path = save.target.clone();
             shown.name = save.name.clone();
+        }
+        if had_edits || animated {
+            self.text.forget(&old_path);
+            self.text.forget(&save.target);
+            if self
+                .text
+                .job
+                .as_ref()
+                .is_some_and(|j| j.image == save.image)
+            {
+                self.text.cancel_job();
+            }
+        } else if let Some(text) = &shown.text {
+            // The same pixels under a new name keep their words.
+            let key = TextKey::new(&shown.path, &shown.base);
+            self.text.store(key, Arc::clone(&text.layout));
         }
         if save.overwrite {
             self.library.invalidate(&save.target);
@@ -2063,6 +2323,7 @@ impl State {
         }
         if animated {
             self.push_content(Some(Content::Still(committed)));
+            self.mark_full_resolution();
         }
     }
 

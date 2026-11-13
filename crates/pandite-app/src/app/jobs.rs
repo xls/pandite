@@ -1,17 +1,20 @@
 //! Background jobs of the application core: edits, Save As, size probes,
-//! folder resolution, bulk conversion and settings writes.
+//! folder resolution, bulk conversion, text recognition and settings
+//! writes.
 //!
 //! Each job runs on its own thread, touches the disk only through
 //! [`Disk`], and reports with one [`Msg`] followed by a wake of the event
 //! loop. A job whose thread is stuck in a file system call is simply never
 //! heard from again; nothing waits for it.
 
+use super::text::TextKey;
 use super::Msg;
 use crate::disk::{list_images, Disk};
 use crate::edit::Edit;
 use crate::platform::Waker;
 use pandite_core::{
     CancelToken, EncodeOptions, Error, ImageBuf, Registry, Result as CoreResult, Source,
+    TextProvider,
 };
 use pandite_ops::{BulkJob as OpsJob, Destination, FileOutcome, OverwritePolicy};
 use pandite_ui::{BulkJob, BulkSource};
@@ -65,6 +68,50 @@ pub(crate) fn edit(out: Outbox, image_id: u64, edit: Edit, input: ImageBuf) -> s
         out.send(Msg::EditDone {
             image: image_id,
             edit,
+            result,
+        });
+    })
+}
+
+/// What a text recognition job needs.
+pub(crate) struct TextJobSpec {
+    pub ticket: u64,
+    /// The shown image being read.
+    pub image_id: u64,
+    pub key: TextKey,
+    pub image: ImageBuf,
+    pub providers: Vec<Arc<dyn TextProvider>>,
+    pub cancel: CancelToken,
+}
+
+/// Read the text in the image with the first provider that works here.
+/// Reports [`Error::Unavailable`] when none does. The event loop never
+/// waits for this thread.
+pub(crate) fn recognize(out: Outbox, job: TextJobSpec) -> std::io::Result<()> {
+    spawn("pandite-text", move || {
+        let TextJobSpec {
+            ticket,
+            image_id,
+            key,
+            image,
+            providers,
+            cancel,
+        } = job;
+        let result = guarded("text recognition", || {
+            for provider in &providers {
+                cancel.check()?;
+                if provider.available() {
+                    return provider.recognize(&image, &cancel);
+                }
+            }
+            Err(Error::Unavailable(
+                "no text recognizer works on this system".into(),
+            ))
+        });
+        out.send(Msg::TextDone {
+            ticket,
+            image: image_id,
+            key,
             result,
         });
     })

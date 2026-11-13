@@ -22,6 +22,7 @@ use crate::input::{CursorShape, Modifiers, PointerButton};
 use crate::menu::{MenuItem, MenuOwner, MenuPick, MenuState};
 use crate::metrics::{self, Metrics};
 use crate::resize_dialog::{self, ResizeDialog};
+use crate::text_select::{TextGeom, TextSelection};
 use crate::theme::Theme;
 use crate::toolbar::ToolbarLayout;
 use pandite_core::{Color, DisplayMode, Point, Rect, TextureSink};
@@ -112,6 +113,16 @@ pub(crate) enum Capture {
     },
     Pan {
         last: Point,
+        start: Point,
+        /// The pointer went past the drag threshold: a pan, not a click.
+        panned: bool,
+    },
+    /// A left press on a recognized word: a drag from it selects text.
+    Text {
+        id: u64,
+        anchor: usize,
+        start: Point,
+        dragging: bool,
     },
     Crop,
     RightPress,
@@ -158,6 +169,10 @@ pub struct Ui {
     field_geoms: Vec<FieldGeom>,
     animating: bool,
     next_redraw: Option<Duration>,
+    text_sel: Option<TextSelection>,
+    /// Time, place and count of the last press on a word, for double and
+    /// triple clicks.
+    text_clicks: Option<(Duration, Point, u32)>,
 }
 
 impl Default for Ui {
@@ -198,6 +213,8 @@ impl Ui {
             field_geoms: Vec::new(),
             animating: false,
             next_redraw: None,
+            text_sel: None,
+            text_clicks: None,
         }
     }
 
@@ -291,7 +308,41 @@ impl Ui {
             Command::Previous | Command::Next | Command::First | Command::Last => ctx.count > 1,
             Command::CropApply => self.crop.as_ref().is_some_and(|c| c.pixel_rect().is_some()),
             Command::CropSelectAll | Command::CropCancel => self.crop.is_some(),
+            Command::SelectAllText => TextGeom::new(ctx).is_some(),
+            Command::CopyText => self.selected_text(ctx).is_some(),
             _ => true,
+        }
+    }
+
+    /// The selected recognized text (lines joined with `"\n"`, words with
+    /// one space), when a selection exists for [`UiContext::text`]. Words
+    /// a crop cut away are left out.
+    pub fn selected_text(&self, ctx: &UiContext<'_>) -> Option<String> {
+        let sel = self.selection(ctx)?;
+        let (first, last) = sel.bounds();
+        let text = TextGeom::new(ctx)?.text_of(first, last);
+        (!text.is_empty()).then_some(text)
+    }
+
+    /// The text selection when it still belongs to the layout in `ctx`.
+    fn selection(&self, ctx: &UiContext<'_>) -> Option<TextSelection> {
+        let sel = self.text_sel?;
+        let text = ctx.text?;
+        let (_, last) = sel.bounds();
+        (text.id == sel.id && last < text.layout.word_count()).then_some(sel)
+    }
+
+    /// True while a menu, dialog or the shortcut overlay holds the input.
+    fn modal(&self) -> bool {
+        self.menu.is_some() || self.help || self.confirm.is_some() || self.dialog.is_some()
+    }
+
+    /// Forget the text selection and end a text drag.
+    fn clear_text_selection(&mut self) {
+        self.text_sel = None;
+        if let Some((Capture::Text { .. }, button)) = self.capture {
+            // The release of the held button still arrives; swallow it.
+            self.capture = Some((Capture::Swallow, button));
         }
     }
 
@@ -451,6 +502,15 @@ impl Ui {
         let m = Metrics::new(ctx.scale_factor);
         self.toolbar.compute(ctx.window_size.w, &m);
 
+        // A text selection ends when its layout or image goes away.
+        if self.text_sel.is_some() && self.selection(ctx).is_none() {
+            self.clear_text_selection();
+        }
+        if let Some((Capture::Text { id, .. }, _)) = self.capture {
+            if TextGeom::new(ctx).is_none_or(|g| g.id != id) {
+                self.clear_text_selection();
+            }
+        }
         // Crop mode ends when its image goes away or changes size.
         if let Some(crop) = &self.crop {
             if ctx.image.map(|i| (i.width, i.height)) != Some(crop.image) {
@@ -682,6 +742,9 @@ impl Ui {
         let Some(info) = ctx.image else { return false };
         self.menu = None;
         self.help = false;
+        // Crop mode owns the pointer; a text selection would only be in
+        // the way.
+        self.clear_text_selection();
         self.crop = Some(CropState::new((info.width, info.height)));
         true
     }
@@ -716,8 +779,8 @@ impl Ui {
     fn open_context_menu(&mut self, pos: Point, ctx: &UiContext<'_>) {
         let content = self.content_rect(ctx);
         let anchor = (ctx.image.is_some() && content.contains(pos)).then_some(pos);
-        let commands: &[Option<Command>] = if self.crop.is_some() {
-            &[
+        let mut commands: Vec<Option<Command>> = if self.crop.is_some() {
+            vec![
                 Some(Command::CropApply),
                 Some(Command::CropSelectAll),
                 Some(Command::CropCancel),
@@ -728,8 +791,15 @@ impl Ui {
                 Some(Command::ZoomOut),
             ]
         } else {
-            &CONTEXT_MENU
+            CONTEXT_MENU.to_vec()
         };
+        // The text commands appear only while the image has text.
+        if self.crop.is_none() && TextGeom::new(ctx).is_some() {
+            if let Some(at) = commands.iter().position(|c| *c == Some(Command::CopyPath)) {
+                commands.insert(at + 1, Some(Command::SelectAllText));
+                commands.insert(at + 1, Some(Command::CopyText));
+            }
+        }
         let items = commands
             .iter()
             .map(|c| match c {
@@ -906,6 +976,24 @@ impl Ui {
                 }
             }
             Command::CropCancel => self.finish_crop(None, out),
+            Command::SelectAllText => {
+                if let Some(geom) = TextGeom::new(ctx) {
+                    if let Some((anchor, focus)) = geom.visible_bounds() {
+                        self.text_sel = Some(TextSelection {
+                            id: geom.id,
+                            anchor,
+                            focus,
+                        });
+                    }
+                }
+            }
+            Command::CopyText => {
+                if let Some(text) = self.selected_text(ctx) {
+                    out.push(Action::CopyText(text));
+                    // Ctrl+C also copies the file path; say which it was.
+                    self.toast("Text copied", self.now);
+                }
+            }
         }
     }
 
@@ -923,9 +1011,12 @@ impl Ui {
         });
     }
 
-    /// Escape: close the topmost thing, or leave full screen.
+    /// Escape: clear the text selection, or close the topmost thing, or
+    /// leave full screen.
     fn cancel(&mut self, ctx: &UiContext<'_>, out: &mut Vec<Action>) {
-        if ctx.loading.is_some() {
+        if !self.modal() && self.selection(ctx).is_some() {
+            self.clear_text_selection();
+        } else if ctx.loading.is_some() {
             out.push(Action::CancelLoad);
         } else if self.menu.is_some() {
             self.menu = None;
@@ -950,6 +1041,19 @@ impl Ui {
         } else {
             out.push(Action::FitToWindow);
         }
+    }
+
+    /// The recognized word under window point `p`, outside crop mode. Only
+    /// points on the image count.
+    fn word_at(&self, p: Point, ctx: &UiContext<'_>, m: &Metrics) -> Option<usize> {
+        if self.crop.is_some() || !self.content_rect(ctx).contains(p) {
+            return None;
+        }
+        let geom = TextGeom::new(ctx)?;
+        if !geom.image_rect.contains(p) {
+            return None;
+        }
+        geom.word_at(p, m.px(3.0))
     }
 
     /// True when the image overflows the content area (it can be panned).
@@ -987,6 +1091,7 @@ impl Ui {
         };
         self.cursor = match self.capture {
             Some((Capture::Pan { .. }, _)) => CursorShape::Grabbing,
+            Some((Capture::Text { .. }, _)) => CursorShape::Text,
             Some((Capture::Gallery { dragging: true, .. }, _)) => CursorShape::Grabbing,
             Some((Capture::Crop, _)) => match self.pointer {
                 Some(p) => self.crop_cursor(p, ctx, m),
@@ -1007,6 +1112,7 @@ impl Ui {
                 Target::Content => match self.pointer {
                     Some(p) if self.crop.is_some() => self.crop_cursor(p, ctx, m),
                     _ if ctx.fullscreen && !self.toolbar_wanted(ctx, m) => CursorShape::Hidden,
+                    Some(p) if self.word_at(p, ctx, m).is_some() => CursorShape::Text,
                     _ if self.pannable(ctx) => CursorShape::Grab,
                     _ => CursorShape::Default,
                 },

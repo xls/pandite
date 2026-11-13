@@ -77,14 +77,20 @@ pub enum Command {
     CropSelectAll,
     /// Crop mode: leave without cropping.
     CropCancel,
+    /// Select all text recognized in the image.
+    SelectAllText,
+    /// Copy the selected text.
+    CopyText,
 }
 
 impl Command {
     /// Every command, in the order the shortcut overlay lists them.
-    pub const ALL: [Command; 32] = [
+    pub const ALL: [Command; 34] = [
         Command::Open,
         Command::SaveAs,
         Command::CopyPath,
+        Command::CopyText,
+        Command::SelectAllText,
         Command::Undo,
         Command::RotateLeft,
         Command::RotateRight,
@@ -151,6 +157,8 @@ impl Command {
             Command::CropApply => "Apply crop",
             Command::CropSelectAll => "Select whole image",
             Command::CropCancel => "Cancel crop",
+            Command::SelectAllText => "Select all text",
+            Command::CopyText => "Copy selected text",
         }
     }
 
@@ -205,7 +213,15 @@ impl Command {
                 | Command::PanRight
                 | Command::CropApply
                 | Command::CropSelectAll
+                | Command::SelectAllText
+                | Command::CopyText
         )
+    }
+
+    /// True for the commands that act on recognized text. They exist only
+    /// where text recognition is on.
+    pub fn is_text(self) -> bool {
+        matches!(self, Command::SelectAllText | Command::CopyText)
     }
 
     /// True when holding the key repeats the command.
@@ -326,11 +342,16 @@ const CTRL_SHIFT: Modifiers = Modifiers::CTRL_SHIFT;
 /// The global keyboard table. The first binding of a command is the one
 /// shown in tooltips and menus. Dialogs and text fields handle their own
 /// keys (Enter, Escape, Tab, editing keys) before this table is consulted.
+/// Ctrl+C is listed for both copy commands: [`command_for_key`] returns
+/// [`Command::CopyPath`], and the interface copies the selected text
+/// instead while a text selection exists.
 pub const SHORTCUTS: &[Shortcut] = &[
     Shortcut::new(Key::O, CTRL, Command::Open),
     Shortcut::new(Key::S, CTRL_SHIFT, Command::SaveAs),
     Shortcut::new(Key::S, CTRL, Command::SaveAs),
     Shortcut::new(Key::C, CTRL, Command::CopyPath),
+    Shortcut::new(Key::C, CTRL, Command::CopyText),
+    Shortcut::new(Key::A, CTRL, Command::SelectAllText),
     Shortcut::new(Key::Z, CTRL, Command::Undo),
     Shortcut::new(Key::R, SHIFT, Command::RotateLeft),
     Shortcut::new(Key::L, N, Command::RotateLeft),
@@ -427,6 +448,25 @@ mod tests {
         assert_eq!(
             command_for_key(Key::Escape, Modifiers::NONE, false),
             Some(Command::Cancel)
+        );
+        // Ctrl+A selects text outside crop mode and the crop inside it;
+        // Ctrl+C resolves to the path copy, which a text selection
+        // overrides in the interface.
+        assert_eq!(
+            command_for_key(Key::A, Modifiers::CTRL, false),
+            Some(Command::SelectAllText)
+        );
+        assert_eq!(
+            command_for_key(Key::A, Modifiers::CTRL, true),
+            Some(Command::CropSelectAll)
+        );
+        assert_eq!(
+            command_for_key(Key::C, Modifiers::CTRL, false),
+            Some(Command::CopyPath)
+        );
+        assert_eq!(
+            Command::CopyText.shortcut_label().as_deref(),
+            Some("Ctrl+C")
         );
     }
 

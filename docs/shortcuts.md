@@ -15,6 +15,8 @@ On macOS, Ctrl is the Command key and Alt is the Option key.
 | Open... | Ctrl+O |
 | Save as... | Ctrl+Shift+S, Ctrl+S |
 | Copy file path | Ctrl+C |
+| Copy selected text | Ctrl+C |
+| Select all text | Ctrl+A |
 | Undo | Ctrl+Z |
 | Rotate left | Shift+R, L |
 | Rotate right | R |
@@ -58,6 +60,13 @@ On macOS, Ctrl is the Command key and Alt is the Option key.
   need Shift for these keys work.
 - When you hold the key, these commands repeat: previous image, next image,
   zoom in, zoom out and the four pan commands. Other commands run one time.
+- Ctrl+C copies the selected text when text in the image is selected.
+  Otherwise, Ctrl+C copies the file path.
+- Ctrl+A and Copy selected text work only on Windows, when pandite has read
+  the text of the image. See [text-recognition.md](text-recognition.md).
+  On other systems, the shortcut overlay does not show them.
+- When a text selection exists and no menu or dialog is open, Esc clears
+  the selection first. The next Esc has its usual meaning.
 - When a file is loading, Esc stops the load. If the file is the first image,
   pandite closes. If the file is a later image, pandite shows the previous image.
 - Esc closes the topmost menu, dialog or mode first. When nothing is open,
@@ -76,11 +85,19 @@ On macOS, Ctrl is the Command key and Alt is the Option key.
 | Wheel over the image | Zoom at the pointer, 1.2 times for each wheel notch |
 | Wheel over the gallery strip | Scroll the strip |
 | Drag the image with the left or middle button | Pan |
-| Double-click the image | In fit to window: 1:1 at the pointer. In other modes: fit to window. |
+| Drag from a word with the left button | Select the words from that word to the word nearest the pointer, in reading order |
+| Double-click a word | Select the word |
+| Triple-click a word | Select the line of the word |
+| Click the image away from the text | Clear the text selection |
+| Double-click the image away from the text | In fit to window: 1:1 at the pointer. In other modes: fit to window. |
 | Right-click | Context menu |
 | Back and Forward side buttons | Previous image and next image |
 | Click a thumbnail | Show that image |
 | Drag the gallery strip | Scroll the strip |
+
+The text actions work only where pandite read text in the image (on
+Windows). Over a word, the pointer is a text cursor. The middle button
+pans also over text.
 
 ### In crop mode
 

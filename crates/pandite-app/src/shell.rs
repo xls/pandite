@@ -390,7 +390,11 @@ impl Shell {
             )),
             _ => None,
         };
-        let registry = Arc::new(pandite_codecs::default_registry());
+        // Decoders, encoders and the platform text recognizer (none on
+        // macOS and Linux yet).
+        let mut registry = pandite_codecs::default_registry();
+        pandite_ocr::register_text_providers(&mut registry);
+        let registry = Arc::new(registry);
         let disk: Arc<dyn Disk> = match &self.stall {
             Some(stall) => Arc::clone(stall) as Arc<dyn Disk>,
             None => Arc::new(StdDisk),
@@ -732,6 +736,11 @@ impl Shell {
                         current && self.uploads.shown_full,
                     );
                 }
+                if status == FrameStatus::Drawn && current && self.uploads.shown_full {
+                    // The full image is on screen: background work that
+                    // waited for it (text recognition) may start.
+                    app.content_presented(self.uploads.shown, self.start.elapsed());
+                }
             }
             Err(err) => {
                 let recent = self
@@ -1020,10 +1029,13 @@ impl ApplicationHandler<UserEvent> for Shell {
             smoke.tick(app, self.stall.as_deref(), now);
         }
         let timed = self.timing.as_ref().is_none_or(|t| t.line().is_some());
-        if let (Some(smoke), Some(renderer), true) =
-            (self.smoke.as_mut(), self.renderer.as_ref(), timed)
-        {
-            smoke.verify(renderer, self.content.as_ref());
+        if let (Some(smoke), Some(renderer), Some(app), true) = (
+            self.smoke.as_mut(),
+            self.renderer.as_ref(),
+            self.app.as_ref(),
+            timed,
+        ) {
+            smoke.verify(renderer, self.content.as_ref(), app);
         }
         self.flush_content();
         self.check_exit(event_loop);

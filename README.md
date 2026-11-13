@@ -43,11 +43,29 @@ into the program on any platform.
   choose Save as, and pandite asks before it writes over the original.
 - Save as PNG, JPEG, WebP (lossless) or BMP.
 - Bulk convert and resize a set of files or a whole folder.
+- Select and copy the text in an image, on Windows. See
+  [Text in images](#text-in-images).
 - A button that copies the path of the current file.
 - Remembers the window size and position. On first open, the window takes
   a share of the screen and the image fits inside it.
 - A minimal dark interface that steps aside for the image and follows the
   light or dark theme of the system.
+
+## Text in images
+
+On Windows, pandite reads the text in the image on screen. Point at a word
+and the pointer becomes a text cursor. Drag across words to select them,
+double-click a word or triple-click a line, or press Ctrl+A for all the
+text. Ctrl+C then copies the text, with one line for each line in the
+image.
+
+The reading happens on your computer, with the text recognizer that comes
+with Windows, so it works offline. It starts in the background once the
+image is on screen, so the image always comes first. It needs an OCR
+language, and Windows installs one with most display languages. Without
+one, pandite shows no text features. macOS and Linux have no text
+features yet. To turn the feature off, set `ocr = off` in the settings
+file. [docs/text-recognition.md](docs/text-recognition.md) has the details.
 
 ## Install
 
@@ -134,9 +152,10 @@ On macOS, use Command for Ctrl and Option for Alt.
 | Ctrl+R | Resize |
 | Ctrl+B | Bulk convert and resize |
 | Ctrl+Shift+S | Save as |
-| Ctrl+C | Copy file path |
+| Ctrl+C | Copy the selected text, or the file path when no text is selected |
+| Ctrl+A | Select all the text in the image (Windows) |
 | Ctrl+Z | Undo |
-| Esc | Cancel loading, close a dialog, leave full screen |
+| Esc | Clear a text selection, cancel loading, close a dialog, leave full screen |
 | F1 | Show all shortcuts |
 
 The full list, with the mouse actions, is in
@@ -156,7 +175,8 @@ pandite keeps its settings in `%APPDATA%\pandite\settings.ini` on Windows,
 `~/Library/Application Support/pandite/settings.ini` on macOS and
 `~/.config/pandite/settings.ini` (or `$XDG_CONFIG_HOME/pandite`) on Linux.
 In the Microsoft Store version, Windows keeps the file in the private
-folder of the app.
+folder of the app. The file explains each setting. For example,
+`ocr = off` turns off the reading of text in images.
 
 ## Build from source
 

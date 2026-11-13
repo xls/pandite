@@ -9,7 +9,9 @@
 //! - [`error`]: the shared error type.
 //! - [`geom`]: points, sizes, rectangles and fit math.
 //! - [`image`]: pixel buffers, animations and decoded content.
-//! - [`provider`]: decoder and encoder provider traits plus the registry.
+//! - [`provider`]: decoder, encoder and text recognizer registration.
+//! - [`text`]: recognized text (lines, words, outlines) and the text
+//!   recognition provider trait.
 //! - [`view`]: display modes and the image-to-screen transform.
 //! - [`draw`]: the retained draw list the interface emits and the renderer consumes.
 
@@ -20,11 +22,12 @@ pub mod error;
 pub mod geom;
 pub mod image;
 pub mod provider;
+pub mod text;
 pub mod view;
 
 pub use draw::{Color, DrawCmd, DrawList, TextMeasure, TextureId, TextureSink};
 pub use error::{Error, Result};
-pub use geom::{Point, Rect, Size};
+pub use geom::{Affine, Point, Rect, Size};
 pub use image::{
     Animation, Content, ContentKind, Frame, ImageBuf, ImageMeta, LoopCount, Orientation,
     PixelFormat,
@@ -32,4 +35,5 @@ pub use image::{
 pub use provider::{
     CancelToken, DecodeOptions, DecoderProvider, EncodeOptions, EncoderProvider, Registry, Source,
 };
+pub use text::{Quad, TextLayout, TextLine, TextProvider, TextWord};
 pub use view::{DisplayMode, ViewState};

@@ -9,6 +9,7 @@ use crate::icon::Icon;
 use crate::menu::MenuItem;
 use crate::metrics::{self, Metrics};
 use crate::paint;
+use crate::text_select::{as_rect, TextGeom};
 use crate::theme::{fade, Theme};
 use crate::thumbnail_texture_id;
 use pandite_core::{Color, DrawCmd, DrawList, Point, Rect, TextMeasure};
@@ -24,6 +25,7 @@ impl Ui {
         let loading = ctx.loading.filter(|l| l.elapsed >= metrics::LOADING_DELAY);
         let splash = loading.filter(|l| !l.over_image);
 
+        self.draw_text_selection(ctx, theme, content, out);
         if self.crop.is_some() {
             self.draw_crop(ctx, measure, &m, theme, out);
         }
@@ -50,6 +52,36 @@ impl Ui {
         self.draw_tooltip(ctx, measure, &m, theme, out);
         self.refresh_cursor(ctx, &m);
         self.finish(ctx);
+    }
+
+    /// Translucent bands over the selected words, one per line, placed
+    /// exactly where the image draws them and clipped to the image area.
+    fn draw_text_selection(
+        &self,
+        ctx: &UiContext<'_>,
+        t: &Theme,
+        content: Rect,
+        out: &mut DrawList,
+    ) {
+        let (Some(sel), Some(geom)) = (self.selection(ctx), TextGeom::new(ctx)) else {
+            return;
+        };
+        let (first, last) = sel.bounds();
+        let bands = geom.bands(first, last);
+        let Some(area) = content.intersect(geom.image_rect) else {
+            return;
+        };
+        if bands.is_empty() {
+            return;
+        }
+        out.clip(Some(area));
+        for band in bands {
+            match as_rect(&band) {
+                Some(r) => out.rect(r, t.selection, 0.0),
+                None => out.quad(band.points, t.selection),
+            }
+        }
+        out.clip(None);
     }
 
     fn draw_toolbar(
@@ -781,6 +813,7 @@ impl Ui {
         out.rect(win, t.backdrop, 0.0);
         let rows: Vec<(String, &'static str)> = Command::ALL
             .iter()
+            .filter(|cmd| ctx.text_enabled || !cmd.is_text())
             .filter_map(|cmd| {
                 let keys: Vec<String> = SHORTCUTS
                     .iter()

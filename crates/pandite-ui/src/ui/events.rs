@@ -10,6 +10,7 @@ use crate::input::{InputEvent, Key, Modifiers, PointerButton, WheelDelta};
 use crate::menu::{MenuOwner, MenuPick};
 use crate::metrics::{self, Metrics};
 use crate::resize_dialog;
+use crate::text_select::{TextGeom, TextSelection};
 use pandite_core::Point;
 
 /// Wheel lines per pixel of precise scrolling, before scaling.
@@ -87,12 +88,55 @@ impl Ui {
     fn on_move(&mut self, pos: Point, ctx: &UiContext<'_>, m: &Metrics, out: &mut Vec<Action>) {
         self.pointer = Some(pos);
         match self.capture {
-            Some((Capture::Pan { last }, button)) => {
+            Some((
+                Capture::Pan {
+                    last,
+                    start,
+                    panned,
+                },
+                button,
+            )) => {
                 let (dx, dy) = (pos.x - last.x, pos.y - last.y);
                 if dx != 0.0 || dy != 0.0 {
                     out.push(Action::PanBy { dx, dy });
                 }
-                self.capture = Some((Capture::Pan { last: pos }, button));
+                let moved = (pos.x - start.x).abs().max((pos.y - start.y).abs());
+                let panned = panned || moved > m.drag_threshold();
+                self.capture = Some((
+                    Capture::Pan {
+                        last: pos,
+                        start,
+                        panned,
+                    },
+                    button,
+                ));
+                return;
+            }
+            Some((
+                Capture::Text {
+                    id,
+                    anchor,
+                    start,
+                    dragging,
+                },
+                button,
+            )) => {
+                let moved = (pos.x - start.x).abs().max((pos.y - start.y).abs());
+                let dragging = dragging || moved > m.drag_threshold();
+                if dragging {
+                    if let Some(focus) = TextGeom::new(ctx).and_then(|g| g.nearest(pos)) {
+                        self.text_sel = Some(TextSelection { id, anchor, focus });
+                    }
+                }
+                self.capture = Some((
+                    Capture::Text {
+                        id,
+                        anchor,
+                        start,
+                        dragging,
+                    },
+                    button,
+                ));
                 return;
             }
             Some((Capture::Crop, _)) => {
@@ -271,21 +315,33 @@ impl Ui {
                         _ => Capture::Swallow,
                     }
                 }
-                PointerButton::Left => {
-                    let double = self.last_press.is_some_and(|(t, p)| {
-                        self.now.saturating_sub(t) <= metrics::DOUBLE_CLICK
-                            && (p.x - pos.x).abs() <= m.px(6.0)
-                            && (p.y - pos.y).abs() <= m.px(6.0)
-                    });
-                    if double {
-                        self.last_press = None;
-                        self.toggle_fit(ctx, pos, out);
-                    } else {
-                        self.last_press = Some((self.now, pos));
+                PointerButton::Left => match self.text_press(pos, ctx, m) {
+                    Some(capture) => capture,
+                    None => {
+                        self.text_clicks = None;
+                        let double = self.last_press.is_some_and(|(t, p)| {
+                            self.now.saturating_sub(t) <= metrics::DOUBLE_CLICK
+                                && (p.x - pos.x).abs() <= m.px(6.0)
+                                && (p.y - pos.y).abs() <= m.px(6.0)
+                        });
+                        if double {
+                            self.last_press = None;
+                            self.toggle_fit(ctx, pos, out);
+                        } else {
+                            self.last_press = Some((self.now, pos));
+                        }
+                        Capture::Pan {
+                            last: pos,
+                            start: pos,
+                            panned: false,
+                        }
                     }
-                    Capture::Pan { last: pos }
-                }
-                PointerButton::Middle => Capture::Pan { last: pos },
+                },
+                PointerButton::Middle => Capture::Pan {
+                    last: pos,
+                    start: pos,
+                    panned: false,
+                },
                 PointerButton::Right => Capture::RightPress,
                 _ => Capture::Swallow,
             },
@@ -295,6 +351,49 @@ impl Ui {
             _ => Capture::Swallow,
         };
         self.capture = Some((capture, button));
+    }
+
+    /// A left press on the image: on a recognized word it starts a text
+    /// selection (one click), selects the word (two) or its line (three).
+    /// Returns `None` when the press is off text.
+    fn text_press(&mut self, pos: Point, ctx: &UiContext<'_>, m: &Metrics) -> Option<Capture> {
+        let word = self.word_at(pos, ctx, m)?;
+        let geom = TextGeom::new(ctx)?;
+        let count = match self.text_clicks {
+            Some((t, p, n))
+                if self.now.saturating_sub(t) <= metrics::DOUBLE_CLICK
+                    && (p.x - pos.x).abs() <= m.px(6.0)
+                    && (p.y - pos.y).abs() <= m.px(6.0) =>
+            {
+                n + 1
+            }
+            _ => 1,
+        };
+        self.text_clicks = Some((self.now, pos, count));
+        // A press on text is never the first half of a fit toggle.
+        self.last_press = None;
+        let select = |anchor: usize, focus: usize| TextSelection {
+            id: geom.id,
+            anchor,
+            focus,
+        };
+        Some(match count {
+            1 => Capture::Text {
+                id: geom.id,
+                anchor: word,
+                start: pos,
+                dragging: false,
+            },
+            2 => {
+                self.text_sel = Some(select(word, word));
+                Capture::Swallow
+            }
+            _ => {
+                let (first, last) = geom.line_bounds(word)?;
+                self.text_sel = Some(select(first, last));
+                Capture::Swallow
+            }
+        })
     }
 
     /// A left press on a dialog element: focus it and start a press or a
@@ -447,7 +546,21 @@ impl Ui {
                     crop.end();
                 }
             }
-            Capture::Pan { .. } | Capture::Swallow => {}
+            Capture::Text { dragging, .. } => {
+                // A click on text without a drag places no selection, like
+                // a click in a document.
+                if !dragging {
+                    self.text_sel = None;
+                }
+            }
+            Capture::Pan { start, panned, .. } => {
+                // A left click off text (not a pan) drops the selection.
+                let moved = (pos.x - start.x).abs().max((pos.y - start.y).abs());
+                if button == PointerButton::Left && !panned && moved <= m.drag_threshold() {
+                    self.text_sel = None;
+                }
+            }
+            Capture::Swallow => {}
         }
     }
 
@@ -528,6 +641,14 @@ impl Ui {
         m: &Metrics,
         out: &mut Vec<Action>,
     ) {
+        // Escape clears a text selection before any of its other meanings
+        // (cancelling a load, leaving full screen).
+        if key == Key::Escape && !self.modal() && self.selection(ctx).is_some() {
+            if !repeat {
+                self.clear_text_selection();
+            }
+            return;
+        }
         // Escape while a file loads cancels the load, before anything else.
         if key == Key::Escape && ctx.loading.is_some() {
             if !repeat {
@@ -603,9 +724,14 @@ impl Ui {
                 }
             }
         }
-        let Some(cmd) = command_for_key(key, mods, self.crop.is_some()) else {
+        let Some(mut cmd) = command_for_key(key, mods, self.crop.is_some()) else {
             return;
         };
+        // Ctrl+C copies the selected text while there is a selection, and
+        // the file path otherwise.
+        if cmd == Command::CopyPath && self.command_enabled(Command::CopyText, ctx) {
+            cmd = Command::CopyText;
+        }
         if repeat && !cmd.repeats() {
             return;
         }

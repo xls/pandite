@@ -58,6 +58,34 @@ impl ThemeChoice {
     }
 }
 
+/// Whether the viewer reads text in images.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum TextRecognition {
+    /// Read the text of the image on screen when the platform has a
+    /// recognizer.
+    #[default]
+    Auto,
+    /// Never read text.
+    Off,
+}
+
+impl TextRecognition {
+    fn as_str(self) -> &'static str {
+        match self {
+            TextRecognition::Auto => "auto",
+            TextRecognition::Off => "off",
+        }
+    }
+
+    fn parse(text: &str) -> Option<Self> {
+        match text.to_ascii_lowercase().as_str() {
+            "auto" => Some(TextRecognition::Auto),
+            "off" => Some(TextRecognition::Off),
+            _ => None,
+        }
+    }
+}
+
 /// Where the window was, in physical pixels of the virtual desktop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct WindowPlacement {
@@ -112,6 +140,8 @@ pub struct Settings {
     pub wrap_around: bool,
     /// JPEG quality for Save As, 1 to 100.
     pub jpeg_quality: u8,
+    /// Text recognition (`ocr = auto | off`).
+    pub ocr: TextRecognition,
 }
 
 impl Default for Settings {
@@ -127,6 +157,7 @@ impl Default for Settings {
             read_ahead: 2,
             wrap_around: true,
             jpeg_quality: 90,
+            ocr: TextRecognition::Auto,
         }
     }
 }
@@ -175,6 +206,11 @@ impl Settings {
         let _ = writeln!(s, "wrap_around = {}", self.wrap_around);
         let _ = writeln!(s, "\n# Save As.");
         let _ = writeln!(s, "jpeg_quality = {}", self.jpeg_quality);
+        let _ = writeln!(
+            s,
+            "\n# Read text in images so it can be selected and copied: auto or off."
+        );
+        let _ = writeln!(s, "ocr = {}", self.ocr.as_str());
         s
     }
 
@@ -241,6 +277,7 @@ impl Settings {
                         .filter(|v| (1..=100).contains(v))
                         .ok_or_else(bad)?;
                 }
+                "ocr" => s.ocr = TextRecognition::parse(value).ok_or_else(bad)?,
                 _ => {}
             }
         }
@@ -469,6 +506,7 @@ mod tests {
             read_ahead: 3,
             wrap_around: false,
             jpeg_quality: 77,
+            ocr: TextRecognition::Off,
         };
         assert_eq!(Settings::parse(&s.to_text()).unwrap(), s);
         assert_eq!(
@@ -486,6 +524,12 @@ mod tests {
         assert!(Settings::parse("first_open_fraction = 2").is_err());
         assert!(Settings::parse("window_x = 1\nwindow_y = 2").is_err());
         assert!(Settings::parse("theme = dark\ntheme = light").is_err());
+        assert_eq!(
+            Settings::parse("ocr = OFF").unwrap().ocr,
+            TextRecognition::Off
+        );
+        assert_eq!(Settings::parse("").unwrap().ocr, TextRecognition::Auto);
+        assert!(Settings::parse("ocr = maybe").is_err());
     }
 
     #[test]

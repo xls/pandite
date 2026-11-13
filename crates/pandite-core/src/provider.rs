@@ -1,4 +1,5 @@
-//! Decoder and encoder provider traits and the registry that holds them.
+//! Decoder and encoder provider traits and the registry that holds them
+//! together with the text recognizers ([`crate::text::TextProvider`]).
 //!
 //! A provider is a small stateless object compiled into the binary. Format
 //! crates construct their providers and add them to a [`Registry`] at
@@ -6,6 +7,7 @@
 
 use crate::error::{Error, Result};
 use crate::image::{Content, ImageBuf, ImageMeta};
+use crate::text::TextProvider;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -214,6 +216,7 @@ pub trait EncoderProvider: Send + Sync {
 pub struct Registry {
     decoders: Vec<Arc<dyn DecoderProvider>>,
     encoders: Vec<Arc<dyn EncoderProvider>>,
+    text: Vec<Arc<dyn TextProvider>>,
 }
 
 impl Registry {
@@ -232,6 +235,19 @@ impl Registry {
     pub fn add_encoder(&mut self, provider: Arc<dyn EncoderProvider>) {
         self.encoders.retain(|p| p.id() != provider.id());
         self.encoders.push(provider);
+    }
+
+    /// Add a text recognizer. A provider with the same id replaces the
+    /// earlier one. Callers try them in registration order.
+    pub fn add_text_provider(&mut self, provider: Arc<dyn TextProvider>) {
+        self.text.retain(|p| p.id() != provider.id());
+        self.text.push(provider);
+    }
+
+    /// All text recognizers in registration order. Empty on platforms
+    /// without one.
+    pub fn text_providers(&self) -> &[Arc<dyn TextProvider>] {
+        &self.text
     }
 
     /// All decoders in registration order.
@@ -400,6 +416,50 @@ mod tests {
         }));
         assert_eq!(reg.decoders().len(), 2);
         assert_eq!(reg.decoder_by_id("aaa").unwrap().extensions(), &["new"]);
+    }
+
+    struct Reader(&'static str);
+
+    impl TextProvider for Reader {
+        fn id(&self) -> &'static str {
+            self.0
+        }
+        fn name(&self) -> &'static str {
+            "reader"
+        }
+        fn available(&self) -> bool {
+            true
+        }
+        fn recognize(
+            &self,
+            image: &ImageBuf,
+            cancel: &CancelToken,
+        ) -> Result<crate::text::TextLayout> {
+            cancel.check()?;
+            Ok(crate::text::TextLayout::new(image.width(), image.height()))
+        }
+    }
+
+    #[test]
+    fn registry_holds_text_providers_in_order() {
+        let mut reg = Registry::new();
+        assert!(reg.text_providers().is_empty());
+        reg.add_text_provider(Arc::new(Reader("a")));
+        reg.add_text_provider(Arc::new(Reader("b")));
+        reg.add_text_provider(Arc::new(Reader("a")));
+        let ids: Vec<&str> = reg.text_providers().iter().map(|p| p.id()).collect();
+        assert_eq!(ids, ["b", "a"], "a replaced provider moves to the end");
+        let image = ImageBuf::solid_rgba8(4, 2, [0; 4]).unwrap();
+        let cancel = CancelToken::new();
+        let layout = reg.text_providers()[0].recognize(&image, &cancel).unwrap();
+        assert_eq!((layout.width, layout.height), (4, 2));
+        cancel.cancel();
+        assert!(matches!(
+            reg.text_providers()[0].recognize(&image, &cancel),
+            Err(Error::Cancelled)
+        ));
+        // Clones share the providers.
+        assert_eq!(reg.clone().text_providers().len(), 2);
     }
 
     #[test]

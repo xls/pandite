@@ -6,7 +6,7 @@
 //! the work ([`EditStack::next_job`]) and records results
 //! ([`EditStack::finish`]), so it is plain data and easy to test.
 
-use pandite_core::{CancelToken, Error, ImageBuf, Result};
+use pandite_core::{Affine, CancelToken, Error, ImageBuf, Result};
 use pandite_ops::{Filter, PixelRect, ResizeOptions, ResizeSpec, Rotation};
 use std::collections::VecDeque;
 
@@ -152,6 +152,33 @@ impl EditStack {
     /// The applied edits in order.
     pub fn edits(&self) -> impl Iterator<Item = &Edit> {
         self.applied.iter().map(|(e, _)| e)
+    }
+
+    /// Where the applied edits move a point of `base` (a `base.0` x
+    /// `base.1` image): from its pixel coordinates to those of
+    /// [`EditStack::current`]. Quarter turns and mirrors map the image
+    /// onto itself exactly, a crop moves it by the crop's corner and a
+    /// resize scales it by the size it produced.
+    pub fn transform(&self, base: (u32, u32)) -> Affine {
+        let (mut w, mut h) = (base.0 as f32, base.1 as f32);
+        let mut t = Affine::IDENTITY;
+        for (edit, image) in &self.applied {
+            let (nw, nh) = (image.width() as f32, image.height() as f32);
+            let step = match *edit {
+                // (x, y) -> (h - y, x)
+                Edit::RotateRight => Affine::new(0.0, 1.0, -1.0, 0.0, h, 0.0),
+                // (x, y) -> (y, w - x)
+                Edit::RotateLeft => Affine::new(0.0, -1.0, 1.0, 0.0, 0.0, w),
+                Edit::FlipHorizontal => Affine::new(-1.0, 0.0, 0.0, 1.0, w, 0.0),
+                Edit::FlipVertical => Affine::new(1.0, 0.0, 0.0, -1.0, 0.0, h),
+                Edit::Crop(r) => Affine::translate(-(r.x as f32), -(r.y as f32)),
+                Edit::Resize(_) if w > 0.0 && h > 0.0 => Affine::scale(nw / w, nh / h),
+                Edit::Resize(_) => Affine::IDENTITY,
+            };
+            t = t.then(&step);
+            (w, h) = (nw, nh);
+        }
+        t
     }
 
     /// When idle and an edit waits, mark it running and return it with the
@@ -324,6 +351,65 @@ mod tests {
             enlarge: false,
         });
         assert_eq!(fit.resolve(400, 200).unwrap(), (100, 50));
+    }
+
+    #[test]
+    fn transform_follows_the_pixels_through_every_edit() {
+        // 5 x 3 pixels, each with its own red value.
+        let mut data = Vec::new();
+        for i in 0..15u8 {
+            data.extend_from_slice(&[10 + i * 10, 0, 0, 255]);
+        }
+        let base = ImageBuf::new(5, 3, PixelFormat::Rgba8, data).unwrap();
+        let red_at = |img: &ImageBuf, x: u32, y: u32| img.row(y)[x as usize * 4];
+        let mut stack = EditStack::new();
+        assert_eq!(stack.transform((5, 3)), Affine::IDENTITY);
+        for edit in [
+            Edit::RotateRight,
+            Edit::FlipHorizontal,
+            Edit::RotateLeft,
+            Edit::FlipVertical,
+            Edit::RotateRight,
+            Edit::Crop(PixelRect::new(1, 1, 2, 3)),
+        ] {
+            stack.push(edit);
+            stack.run_all(&base).unwrap();
+            let current = stack.current(&base);
+            let t = stack.transform((5, 3));
+            // Every pixel that survives lands where its value is now.
+            let mut seen = 0;
+            for y in 0..3 {
+                for x in 0..5 {
+                    let p = t.apply(pandite_core::Point::new(x as f32 + 0.5, y as f32 + 0.5));
+                    let (cx, cy) = (p.x.floor(), p.y.floor());
+                    if cx < 0.0 || cy < 0.0 {
+                        continue;
+                    }
+                    let (cx, cy) = (cx as u32, cy as u32);
+                    if cx >= current.width() || cy >= current.height() {
+                        continue;
+                    }
+                    assert_eq!(red_at(current, cx, cy), red_at(&base, x, y), "{edit:?}");
+                    seen += 1;
+                }
+            }
+            assert_eq!(seen, current.width() * current.height(), "{edit:?}");
+        }
+        // A resize scales by the size it produced.
+        stack.push(Edit::Resize(ResizeSpec::Exact {
+            width: 4,
+            height: 9,
+        }));
+        stack.run_all(&base).unwrap();
+        let t = stack.transform((5, 3));
+        let before = EditStack {
+            applied: stack.applied[..stack.len() - 1].to_vec(),
+            ..EditStack::default()
+        }
+        .transform((5, 3));
+        let p = pandite_core::Point::new(2.5, 1.5);
+        let (a, b) = (before.apply(p), t.apply(p));
+        assert!((b.x - a.x * 2.0).abs() < 1e-4 && (b.y - a.y * 3.0).abs() < 1e-4);
     }
 
     #[test]

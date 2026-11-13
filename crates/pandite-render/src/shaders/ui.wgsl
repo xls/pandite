@@ -1,6 +1,8 @@
 // Interface pass. Every DrawCmd becomes one instanced quad. Shapes use a
 // signed distance to a rounded box for one pixel wide antialiased edges.
-// Colors arrive premultiplied in linear light and blend with "over".
+// Free quadrilaterals (KIND_QUAD) carry their four corners in the rect and
+// uv slots and fill without antialiasing. Colors arrive premultiplied in
+// linear light and blend with "over".
 
 struct UiFrame {
     target_size: vec2<f32>,
@@ -18,6 +20,7 @@ const KIND_BORDER: u32 = 1u;
 const KIND_IMAGE: u32 = 2u;
 const KIND_MASK: u32 = 3u;
 const KIND_GLYPH: u32 = 4u;
+const KIND_QUAD: u32 = 5u;
 
 // Coverage exponent that makes linear-light text blending look like the
 // gamma-space blending fonts are designed for.
@@ -51,7 +54,13 @@ fn vs_ui(@builtin(vertex_index) index: u32, inst: Instance) -> VsOut {
     let grow = select(1.0, 0.0, kind == KIND_GLYPH);
     let lo = inst.rect.xy - vec2<f32>(grow);
     let size = inst.rect.zw + vec2<f32>(2.0 * grow);
-    let p = lo + corner * size;
+    var p = lo + corner * size;
+    if (kind == KIND_QUAD) {
+        // Corners in strip order: rect.xy, rect.zw, uv.xy, uv.zw.
+        let top = select(inst.rect.xy, inst.rect.zw, (index & 1u) == 1u);
+        let bottom = select(inst.uv.xy, inst.uv.zw, (index & 1u) == 1u);
+        p = select(top, bottom, (index & 2u) == 2u);
+    }
     let ndc = p / ui.target_size * 2.0 - vec2<f32>(1.0);
     var out: VsOut;
     out.pos = vec4<f32>(ndc.x, -ndc.y, 0.0, 1.0);
@@ -119,6 +128,8 @@ fn fs_ui(in: VsOut) -> @location(0) vec4<f32> {
         color = in.color * texel.r;
     } else if (kind == KIND_GLYPH) {
         coverage = text_coverage(texel.r, in.color);
+    } else if (kind == KIND_QUAD) {
+        coverage = 1.0;
     }
     var out = color * coverage;
     if (ui.encode_srgb != 0u && out.a > 0.0) {

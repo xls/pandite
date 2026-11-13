@@ -1700,6 +1700,7 @@ dependencies = [
  "pandite-codecs",
  "pandite-core",
  "pandite-library",
+ "pandite-ocr",
  "pandite-ops",
  "pandite-render",
  "pandite-ui",
@@ -1744,6 +1745,15 @@ name = "pandite-library"
 version = "0.1.0"
 dependencies = [
  "pandite-core",
+]
+
+[[package]]
+name = "pandite-ocr"
+version = "0.1.0"
+dependencies = [
+ "fontdue",
+ "pandite-core",
+ "windows",
 ]
 
 [[package]]
