@@ -15,12 +15,12 @@
 // only run on the owner's machine.
 
 import { spawnSync } from 'node:child_process';
-import { readdirSync, existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { readdirSync, existsSync, readFileSync, statSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { join, extname } from 'node:path';
 import process from 'node:process';
 import { reuseGate } from './reuse.mjs';
-
-reuseGate('perf');
 
 const fail = (m) => { console.error(`STEP FAILED: ${m}`); process.exit(1); };
 const args = process.argv.slice(2);
@@ -45,6 +45,19 @@ if (!existsSync(exe)) fail(`release binary missing at ${exe}; build it first`);
 const files = readdirSync(folder).filter((f) => BUDGET[extname(f).toLowerCase()]).sort();
 const kinds = new Set(files.map((f) => extname(f).toLowerCase()));
 if (!kinds.has('.arw') || !kinds.has('.jpg')) fail('folder needs at least one .arw and one .jpg file');
+
+// A benchmark measures one binary on one set of files. It runs again only
+// when the binary, the samples or this script (the budgets) change.
+const sha = (path) => createHash('sha256').update(readFileSync(path)).digest('hex');
+reuseGate('perf', args, {
+  bound: [
+    sha(exe),
+    sha(fileURLToPath(import.meta.url)),
+    files.map((f) => { const st = statSync(join(folder, f)); return `${f}:${st.size}:${st.mtimeMs}`; }),
+  ],
+  maxAgeMs: Infinity,
+  what: 'this exact release binary and sample set',
+});
 
 const median = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
 let worst = 0;
