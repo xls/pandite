@@ -395,13 +395,13 @@ fn context_menu_lists_commands() {
     );
     assert_eq!(ui.mode(), UiMode::Normal);
     // The delete commands run from the menu as they do from the keys.
-    for (label, action) in [
-        ("Move to Trash", Action::MoveToTrash),
-        ("Delete permanently...", Action::DeleteFile),
+    for (cmd, action) in [
+        (Command::MoveToTrash, Action::MoveToTrash),
+        (Command::DeleteFile, Action::DeleteFile),
     ] {
         press(&mut ui, &ctx, p, PointerButton::Right);
         release(&mut ui, &ctx, p, PointerButton::Right);
-        assert_eq!(click_label(&mut ui, &ctx, label), vec![action]);
+        assert_eq!(click_label(&mut ui, &ctx, cmd.label()), vec![action]);
         assert_eq!(ui.mode(), UiMode::Normal);
     }
     // Zoom from the menu zooms at the point that was clicked.
