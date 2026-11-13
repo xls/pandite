@@ -21,10 +21,13 @@
 //  - the Debian control template and the RPM spec take their version from
 //    the build, ship the files of the tarball (with its desktop entry, so
 //    the same MIME types), and recommend the same run-time libraries
-//  - the npm launcher has the Cargo.toml version, no dependencies and no
-//    install script, and downloads the file names the build scripts write
-//  - the release workflow passes the version to every package builder and
-//    pins the Inno Setup download; ci.yml builds no installer
+//  - the npm installer has the bin names pandite and pandite-installer, a
+//    files list, no dependencies and no install script; its repository,
+//    setup AppId and release file names match the build scripts and
+//    pandite.iss; no file of the old npm launcher is left
+//  - the release workflow passes the version to every package builder,
+//    pins the Inno Setup download, and neither builds nor publishes an npm
+//    package; ci.yml builds no installer
 //  - packaging, workflow and documentation text files are pure ASCII
 //    without tabs in YAML
 
@@ -442,54 +445,75 @@ for (const macro of ['pandite_version', 'pandite_source']) {
   if (!rpmScript.includes(`--define "${macro} `)) err(`build-rpm.sh does not define ${macro}`);
 }
 
-// ------------------------------------------------------------ npm launcher
+// ----------------------------------------------------------- npm installer
 
-const npmRel = 'packaging/npm/package.json';
+// The npm package is an installer with its own version: it finds the
+// releases on GitHub at run time and is not built by the release workflow.
+const npmDir = 'packaging/npm';
+const npmRel = `${npmDir}/package.json`;
 const npmPkg = JSON.parse(read(npmRel));
 if (npmPkg.name !== 'pandite') err(`${npmRel}: name must be pandite`);
-if (npmPkg.version !== VERSION) err(`${npmRel}: version ${npmPkg.version} differs from Cargo.toml ${VERSION}`);
+if (!/^\d+\.\d+\.\d+$/.test(npmPkg.version ?? '')) err(`${npmRel}: version must be x.y.z (the installer version, independent of Cargo.toml)`);
 if (npmPkg.license !== LICENSE_ID) err(`${npmRel}: license must be ${LICENSE_ID}`);
 if (npmPkg.homepage !== REPO || !String(npmPkg.repository?.url ?? '').includes(REPO.replace(/^https:\/\//, ''))) err(`${npmRel}: homepage and repository must name ${REPO}`);
 if (npmPkg.type !== 'module') err(`${npmRel}: type must be module`);
-for (const key of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies', 'bundleDependencies', 'bundledDependencies', 'scripts']) {
-  if (key in npmPkg) err(`${npmRel}: the launcher has no ${key}`);
+if (npmPkg.engines?.node !== '>=18') err(`${npmRel}: engines.node must be >=18`);
+for (const key of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies', 'bundleDependencies', 'bundledDependencies']) {
+  if (key in npmPkg) err(`${npmRel}: the installer has no ${key}`);
 }
-const npmBin = npmPkg.bin?.pandite;
-if (!npmBin || !existsSync(join(ROOT, 'packaging/npm', npmBin))) err(`${npmRel}: bin.pandite must name a file`);
-else if (!read(`packaging/npm/${npmBin}`).startsWith('#!/usr/bin/env node\n')) err(`packaging/npm/${npmBin} must start with #!/usr/bin/env node`);
-for (const f of ['bin/', 'lib/', 'checksums.json']) if (!npmPkg.files?.includes(f)) err(`${npmRel}: files must include ${f}`);
-if (existsSync(join(ROOT, 'packaging/npm/checksums.json'))) err('packaging/npm/checksums.json is made by the release workflow; do not keep it in the source tree');
-const launcher = await import(pathToFileURL(join(ROOT, 'packaging/npm/lib/launcher.js')).href);
-if (launcher.RELEASES_URL !== `${REPO}/releases/download`) err(`launcher.js downloads from ${launcher.RELEASES_URL}, want ${REPO}/releases/download`);
+const INSTALL_SCRIPTS = ['preinstall', 'install', 'postinstall', 'preprepare', 'prepare', 'postprepare', 'prepack', 'postpack'];
+for (const key of INSTALL_SCRIPTS) if (npmPkg.scripts?.[key] !== undefined) err(`${npmRel}: the installer has no ${key} script`);
+if (existsSync(join(ROOT, npmDir, 'binding.gyp'))) err(`${npmDir}/binding.gyp makes npm build at install time`);
+const npmBins = Object.entries(npmPkg.bin ?? {});
+if (npmBins.map(([name]) => name).sort().join(',') !== 'pandite,pandite-installer') err(`${npmRel}: bin must be exactly pandite and pandite-installer`);
+if (new Set(npmBins.map(([, file]) => file)).size !== 1) err(`${npmRel}: pandite and pandite-installer must run the same file`);
+for (const [name, file] of npmBins) {
+  if (!existsSync(join(ROOT, npmDir, file))) err(`${npmRel}: bin.${name} names ${file}, which does not exist`);
+  else if (!read(`${npmDir}/${file}`).startsWith('#!/usr/bin/env node\n')) err(`${npmDir}/${file} must start with #!/usr/bin/env node`);
+}
+if (!Array.isArray(npmPkg.files) || npmPkg.files.slice().sort().join(',') !== 'bin/,lib/') err(`${npmRel}: files must be exactly bin/ and lib/ (npm adds package.json, README.md and LICENSE)`);
+if (!existsSync(join(ROOT, npmDir, 'LICENSE')) || read(`${npmDir}/LICENSE`) !== read('LICENSE')) err(`${npmDir}/LICENSE must be a copy of LICENSE`);
+for (const old of ['build.mjs', 'checksums.json', 'lib/launcher.js']) {
+  if (existsSync(join(ROOT, npmDir, old))) err(`${npmDir}/${old} belongs to the old npm launcher; delete it`);
+}
+const installer = await import(pathToFileURL(join(ROOT, npmDir, 'lib/platform.js')).href);
+if (installer.REPO_URL !== REPO) err(`${npmDir}/lib/platform.js reads the releases of ${installer.REPO_URL}, want ${REPO}`);
+if (`{${installer.WINDOWS_APP_ID}` !== one('AppId')) err(`${npmDir}/lib/platform.js has the AppId ${installer.WINDOWS_APP_ID}; ${issRel} has ${one('AppId')}`);
+if (installer.SUMS_FILE !== 'SHA256SUMS.txt' || !/sha256sum -- \* > SHA256SUMS\.txt/.test(release)) err(`the npm installer reads ${installer.SUMS_FILE}; release.yml must write SHA256SUMS.txt`);
+// The release file names that the installer looks for, as the build scripts write them.
 const appScript = read('packaging/macos/build-app.sh');
-const zipScript = read('packaging/windows/build-zip.ps1');
+const installSh = read('packaging/linux/install.sh');
 const winTargets = [...release.matchAll(/^\s*- target: (\S+-pc-windows-msvc)$/gm)].map((m) => m[1]);
-for (const p of launcher.PLATFORMS) {
-  const pick = launcher.assetFor({ ...p, version: VERSION });
-  const builtBy = {
-    win32: () =>
-      winTargets.includes(pick.target) &&
-      pick.asset === `pandite-${VERSION}-${pick.target}.zip` &&
-      pick.exe === `pandite-${VERSION}-${pick.target}/pandite.exe` &&
-      zipScript.includes('$name = "pandite-$Version-$Target"') &&
-      zipScript.includes('"$name.zip"'),
-    darwin: () =>
-      pick.asset === `pandite-${VERSION}-universal-apple-darwin.zip` &&
-      pick.exe === 'pandite.app/Contents/MacOS/pandite' &&
-      appScript.includes('NAME="pandite-$VERSION-universal-apple-darwin"') &&
-      appScript.includes('"$OUT/$NAME.zip"') &&
-      appScript.includes('APP="$WORK/pandite.app"') &&
-      appScript.includes('"$APP/Contents/MacOS/pandite"'),
-    linux: () =>
-      pick.asset === `pandite-${VERSION}-x86_64-unknown-linux-gnu.tar.gz` &&
-      pick.exe === `pandite-${VERSION}-x86_64-unknown-linux-gnu/pandite` &&
-      tarScript.includes('TARGET=x86_64-unknown-linux-gnu') &&
-      tarScript.includes('NAME="pandite-$VERSION-$TARGET"') &&
-      tarScript.includes('"$OUT/$NAME.tar.gz"') &&
-      tarItems.has('pandite'),
-  }[p.platform];
-  if (!builtBy?.()) err(`the npm launcher downloads ${pick.asset} (${pick.exe}) for ${p.platform} ${p.arch}, which no build script writes`);
+const setupBase = one('OutputBaseFilename') ?? '';
+const macBase = /^NAME="([^"]+)"$/m.exec(appScript)?.[1]?.replace('$VERSION', VERSION);
+const tarTarget = /^TARGET=(\S+)$/m.exec(tarScript)?.[1];
+const tarBase = /^NAME="([^"]+)"$/m.exec(tarScript)?.[1]?.replace('$VERSION', VERSION).replace('$TARGET', tarTarget);
+const built = {
+  setup: (name) =>
+    winTargets.some((t) => name === `${setupBase.replace('{#Version}', VERSION).replace('{#Target}', t)}.exe`),
+  'app-zip': (name) =>
+    name === `${macBase}.zip` &&
+    appScript.includes('ditto -c -k --sequesterRsrc --keepParent "$APP" "$OUT/$NAME.zip"') &&
+    appScript.includes(`APP="$WORK/${installer.MAC_APP}"`),
+  dmg: (name) => name === `${macBase}.dmg` && appScript.includes('cp -R "$APP" "$DMG_SRC/"') && appScript.includes('"$OUT/$NAME.dmg"'),
+  tarball: (name) =>
+    name === `${tarBase}.tar.gz` &&
+    tarBase === installer.tarballTop(VERSION) &&
+    tarScript.includes('"$OUT/$NAME.tar.gz"') &&
+    tarScript.includes('-C "$WORK" -cf - "$NAME"') &&
+    tarItems.has('install.sh') &&
+    tarItems.has('pandite') &&
+    installSh.includes('PREFIX=${PREFIX:-"$HOME/.local"}') &&
+    installSh.includes('"--uninstall"'),
+};
+const installerKinds = new Set();
+for (const p of installer.PLATFORMS) {
+  for (const { name, kind } of installer.candidateAssets({ ...p, glibc: installer.MIN_GLIBC, version: VERSION })) {
+    installerKinds.add(kind);
+    if (!built[kind]?.(name)) err(`the npm installer looks for ${name} (${kind}) on ${p.platform} ${p.arch}, which no build script writes`);
+  }
 }
+if (installerKinds.size !== Object.keys(built).length) err(`the npm installer uses the kinds [${[...installerKinds]}], check.mjs knows [${Object.keys(built)}]`);
 
 // ---------------------------------------------------------- release steps
 
@@ -497,13 +521,18 @@ for (const [what, pattern] of [
   ['a setup program build with the release version', /build-setup\.ps1\s+-Exe "target\/\$env:TARGET\/release\/pandite\.exe"\s+-Version \$env:VERSION -Target \$env:TARGET/],
   ['a .deb build from the tarball with the release version', /build-deb\.sh "\$VERSION" dist\s*\\\s*"dist\/pandite-\$VERSION-x86_64-unknown-linux-gnu\.tar\.gz"/],
   ['an .rpm build from the tarball with the release version', /build-rpm\.sh "\$VERSION" dist\s*\\\s*"dist\/pandite-\$VERSION-x86_64-unknown-linux-gnu\.tar\.gz"/],
-  ['an npm launcher build with the release version', /packaging\/npm\/build\.mjs --version "\$VERSION"/],
-  ['the offline npm launcher test', /node packaging\/npm\/test\.mjs/],
   ['a pinned Inno Setup 6 version (INNO_SETUP_VERSION)', /INNO_SETUP_VERSION: "6\.\d+\.\d+"/],
   ['the SHA-256 of the Inno Setup download (INNO_SETUP_SHA256)', /INNO_SETUP_SHA256: [0-9a-f]{64}\n/],
-  ['an npm publish step that runs only with the NPM_TOKEN secret', /HAS_NPM_TOKEN: \$\{\{ secrets\.NPM_TOKEN != '' \}\}[\s\S]*if: env\.HAS_NPM_TOKEN == 'true'[\s\S]*npm publish/],
+  ['release notes that name npx pandite', /- .*\\`npx pandite\\` installs/],
 ]) {
   if (!pattern.test(release)) err(`release.yml lacks ${what}`);
+}
+for (const [what, pattern] of [
+  ['the NPM_TOKEN secret', /NPM_TOKEN/],
+  ['an npm publish step', /npm publish/],
+  ['an npm package build', /packaging\/npm\/build\.mjs|-npm\.tgz/],
+]) {
+  if (pattern.test(release)) err(`release.yml has ${what}; the npm installer is published by hand, apart from releases`);
 }
 if (/build-setup|pandite\.iss|ISCC|build-deb|build-rpm|rpmbuild|dpkg-deb|lintian|packaging\/npm/.test(ci)) {
   err('ci.yml builds installers or packages; the release workflow does that');
@@ -536,8 +565,8 @@ if (errors.length) {
 }
 console.log(`${exts.size} extensions in manifest, Info.plist and desktop entry; ${logos.length} logos with variants; ${textFiles.length} text files ASCII`);
 console.log(
-  `version ${VERSION} from Cargo.toml for the setup program, .deb, .rpm and npm launcher; ` +
+  `version ${VERSION} from Cargo.toml for the setup program, .deb and .rpm; ` +
     `${issDest.size} setup files = portable zip; ${LAYOUT.length} tarball items in .deb and .rpm; ` +
-    `${launcher.PLATFORMS.length} npm launcher systems`,
+    `npm installer ${npmPkg.version} finds the files of ${installer.PLATFORMS.length} systems`,
 );
 console.log('PACKAGING CONSISTENT');

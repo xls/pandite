@@ -229,32 +229,54 @@ run time. `packaging/linux/debian/control` and
 `packaging/linux/pandite.spec` list these libraries as recommended
 packages.
 
-## npm launcher
+## npm installer
 
-The npm package `pandite` holds a launcher for Node.js 18 or later. The
-launcher is a separate Node.js script. The program itself has no network
-code. On the first run, the launcher downloads the release file for its
-system and version from the GitHub release. It compares the SHA-256 of the
-file with `checksums.json` and unpacks the file into a per-user cache.
+The npm package `pandite` in `packaging/npm` is an installer for Node.js 18
+or later. It is a separate Node.js script. The program itself has no
+network code. `npx pandite` reads the releases from the GitHub API. It
+downloads the setup program, the macOS zip or the Linux tarball of a
+release. It checks the file against `SHA256SUMS.txt` of the same release
+and installs it. See `packaging/npm/README.md` for the commands.
 
-1. Test the launcher. The test uses no network:
+The installer has its own version in `packaging/npm/package.json`. This
+version is independent of the Pandite version. A Pandite release does not
+change the installer. Publish the installer only when its code changes.
+
+### Publish the npm installer
+
+1. Increase `version` in `packaging/npm/package.json`. npm does not accept
+   the same version two times.
+2. If you are not logged in to npm, log in:
 
    ```sh
-   node packaging/npm/test.mjs
+   npm login
    ```
 
-2. Make the package. The script needs the SHA-256 of the release packages
-   in the format of `SHA256SUMS.txt`:
+3. Go to the package folder:
 
    ```sh
-   node packaging/npm/build.mjs --version 0.1.0 --sums dist/SHA256SUMS.txt --out dist
+   cd packaging/npm
    ```
 
-3. Find `dist/pandite-0.1.0-npm.tgz`.
+4. Run the offline test. Make sure that the last line is
+   `NPM INSTALLER VERIFIED`:
 
-The release workflow writes `checksums.json` into the package. Do not keep
-`checksums.json` in `packaging/npm`. If the file is there,
-`node packaging/check.mjs` fails.
+   ```sh
+   node test.mjs
+   ```
+
+5. Optional: show the files of the package. The list holds `bin/`, `lib/`,
+   `LICENSE`, `README.md` and `package.json` only:
+
+   ```sh
+   npm pack --dry-run
+   ```
+
+6. Publish the package:
+
+   ```sh
+   npm publish
+   ```
 
 ## Tests and checks
 
@@ -282,7 +304,7 @@ The release workflow writes `checksums.json` into the package. Do not keep
    node packaging/check.mjs
    ```
 
-5. Test the npm launcher:
+5. Test the npm installer. The test uses no network:
 
    ```sh
    node packaging/npm/test.mjs
@@ -323,7 +345,7 @@ tests skip there. Run the GPU tests on a computer with a real GPU.
 | `packaging/linux/debian/` | Debian control template, `postinst` and `postrm`. |
 | `packaging/linux/build-deb.sh`, `build-rpm.sh` | Build the `.deb` and the `.rpm` from the tarball. |
 | `packaging/linux/pandite.spec` | RPM spec. |
-| `packaging/npm/` | npm launcher package, its build script and its offline test. |
+| `packaging/npm/` | npm installer package and its offline test. |
 | `docs/THIRD-PARTY-NOTICES.md` | Licenses of the dependencies. |
 
 After you change a file in this table, do the related step:
@@ -340,8 +362,7 @@ After you change a file in this table, do the related step:
 
 ## Release
 
-1. Set the new version in `[workspace.package]` in `Cargo.toml` and in
-   `packaging/npm/package.json`.
+1. Set the new version in `[workspace.package]` in `Cargo.toml`.
 2. Commit the change and push it to `main`.
 3. Make a tag that is `v` plus the version, and push it:
 
@@ -354,21 +375,19 @@ After you change a file in this table, do the related step:
    `SHA256SUMS.txt` and publishes the GitHub release.
 
 If the tag and the `Cargo.toml` version are different, the workflow stops
-before it builds. If `packaging/npm/package.json` has a different version,
-the workflow stops at the npm package. To test the packaging without a
-release, start the Release workflow manually on a branch (Actions, Release,
-Run workflow). The packages are then workflow artifacts.
+before it builds. To test the packaging without a release, start the
+Release workflow manually on a branch (Actions, Release, Run workflow). The
+packages are then workflow artifacts.
+
+The release does not publish the npm installer. `npx pandite` finds the new
+release on GitHub. The release must keep the file names of the build
+scripts and `SHA256SUMS.txt`. `node packaging/check.mjs` compares these
+names with the names that the installer uses.
 
 The workflow builds the setup program with Inno Setup. If the runner has no
 Inno Setup 6, the workflow downloads the version in `INNO_SETUP_VERSION`
 and compares it with `INNO_SETUP_SHA256` in `release.yml`. To change the
 version, change both values.
-
-To publish the npm launcher to the npm registry, add the repository secret
-`NPM_TOKEN` (Settings, Secrets and variables, Actions). Use an npm access
-token that can publish the package `pandite`. The workflow publishes to npm
-after the GitHub release, because the launcher downloads its files from
-that release. Without the secret, the npm package is a release file only.
 
 ## Continuous integration cost
 

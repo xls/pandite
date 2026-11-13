@@ -1,13 +1,14 @@
 {
   "name": "pandite",
-  "version": "0.1.0",
-  "description": "Run Pandite, the fast offline image viewer, with npx: downloads the checked release for your system on first run",
+  "version": "1.0.0",
+  "description": "Installer for Pandite, the fast offline image viewer: npx pandite installs or updates the latest GitHub release for your system",
   "keywords": [
+    "pandite",
     "image",
     "viewer",
+    "installer",
     "photo",
-    "raw",
-    "gpu"
+    "raw"
   ],
   "homepage": "https://github.com/xls/pandite",
   "bugs": "https://github.com/xls/pandite/issues",
@@ -20,12 +21,12 @@
   "author": "Thomas Rizos",
   "type": "module",
   "bin": {
-    "pandite": "bin/pandite.js"
+    "pandite": "bin/pandite.js",
+    "pandite-installer": "bin/pandite.js"
   },
   "files": [
     "bin/",
-    "lib/",
-    "checksums.json"
+    "lib/"
   ],
   "engines": {
     "node": ">=18"

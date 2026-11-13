@@ -1,47 +1,42 @@
 #!/usr/bin/env node
-// Offline test of the npm launcher. No network: a fake request function
-// serves the release files from memory, a fake spawn records the program
-// start, and every file goes to a temporary folder.
+// Offline test of the npm installer. No network and no real installer: a
+// fake fetch serves the GitHub API and the release files from memory, a
+// fake process runner records every program start and imitates reg.exe,
+// the setup program, its uninstaller, install.sh and hdiutil, and every
+// folder (home, data, temporary, /Applications) is in a temporary folder.
 //
 // Usage: node packaging/npm/test.mjs
 //
-// Proves: the release file of every supported system, a clear refusal of
-// unsupported systems, download through an HTTPS redirect, unpacking of
-// zip and tar.gz, the refusal of a file with another SHA-256, of a redirect
-// to plain HTTP and of archive entries outside their folder, the reuse of
-// the cache on the second run, the exit code, and checksums.json from a
-// SHA256SUMS.txt. Prints "NPM LAUNCHER VERIFIED" on success.
+// Prints "NPM INSTALLER VERIFIED" as its last line on success and exits
+// with a nonzero code otherwise.
 
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { EventEmitter } from 'node:events';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
-import { Readable } from 'node:stream';
 import { deflateRawSync, gzipSync } from 'node:zlib';
-import { makeChecksums, parseSums } from './build.mjs';
-import {
-  LauncherError,
-  PLATFORMS,
-  allAssets,
-  assetFor,
-  download,
-  main,
-  startsDetached,
-  untar,
-  unzip,
-} from './lib/launcher.js';
+import { untar, unzip } from './lib/archive.js';
+import { INSTALLER_VERSION, defaultDeps, main, parseArgs } from './lib/cli.js';
+import { InstallerError } from './lib/errors.js';
+import { parseSums } from './lib/github.js';
+import { HDIUTIL, MARKER, SETUP_ARGS, SH, UNINSTALL_ARGS, UNINSTALL_KEY, parseRegFile, regExe } from './lib/install.js';
+import { download } from './lib/net.js';
+import { PLATFORMS, chooseAsset, dataDir } from './lib/platform.js';
+import { compareVersions, normalizeVersion } from './lib/version.js';
 
-const VERSION = '1.2.3';
-const TEMP = mkdtempSync(path.join(os.tmpdir(), 'pandite-npm-test-'));
+const NOW = Date.UTC(2026, 10, 14, 12, 0, 0);
+const TEMP = mkdtempSync(path.join(os.tmpdir(), 'pandite-installer-test-'));
 let tempCount = 0;
 const tempDir = () => {
   tempCount += 1;
-  return path.join(TEMP, String(tempCount));
+  const dir = path.join(TEMP, String(tempCount));
+  mkdirSync(dir, { recursive: true });
+  return dir;
 };
 const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
+const API = 'https://api.github.com/repos/xls/pandite';
 
 // ------------------------------------------------------- archive writers
 
@@ -64,9 +59,10 @@ function makeZip(entries) {
   for (const e of entries) {
     const name = Buffer.from(e.name, 'utf8');
     const data = e.data ?? Buffer.alloc(0);
-    const packed = e.name.endsWith('/') ? data : deflateRawSync(data);
-    const method = e.name.endsWith('/') ? 0 : 8;
-    const mode = e.mode ?? (e.name.endsWith('/') ? 0o040755 : 0o100644);
+    const dir = e.name.endsWith('/');
+    const packed = dir ? data : deflateRawSync(data);
+    const method = dir ? 0 : 8;
+    const mode = e.mode ?? (dir ? 0o040755 : 0o100644);
     const local = Buffer.alloc(30);
     local.writeUInt32LE(0x04034b50, 0);
     local.writeUInt16LE(20, 4);
@@ -137,240 +133,810 @@ function makeTarGz(entries) {
   return gzipSync(Buffer.concat(blocks));
 }
 
-/** A release file of `pick` with the fake program `program` inside. */
-function releaseFile(pick, program) {
-  if (pick.format === 'tar.gz') {
-    const top = pick.exe.split('/')[0];
-    return makeTarGz([
-      { name: `${top}/` },
-      { name: pick.exe, data: program, mode: 0o755 },
-      { name: `${top}/install.sh`, data: Buffer.from('#!/bin/sh\n'), mode: 0o755 },
-      { name: `${top}/share/icons/hicolor/${'x'.repeat(60)}/apps/pandite.png`, data: Buffer.from('png') },
-    ]);
-  }
-  const top = pick.exe.split('/')[0];
-  const entries = [{ name: `${top}/` }, { name: pick.exe, data: program, mode: 0o100755 }];
-  if (pick.target === 'universal-apple-darwin') {
-    entries.push({ name: 'pandite.app/Contents/Info.plist', data: Buffer.from('<plist/>') });
-    entries.push({ name: '__MACOSX/pandite.app/._Info.plist', data: Buffer.from('xattr') });
-  } else {
-    entries.push({ name: `${top}/LICENSE.txt`, data: Buffer.from('MIT') });
-  }
-  return makeZip(entries);
+// --------------------------------------------------------- release files
+
+const setupExe = (version, arch) => Buffer.from(`MZ fake setup program of Pandite ${version} for ${arch}`);
+
+function macZip(version) {
+  return makeZip([
+    { name: 'pandite.app/' },
+    { name: 'pandite.app/Contents/' },
+    { name: 'pandite.app/Contents/MacOS/' },
+    { name: 'pandite.app/Contents/MacOS/pandite', data: Buffer.from(`pandite ${version} universal`), mode: 0o100755 },
+    { name: 'pandite.app/Contents/Info.plist', data: Buffer.from(`<plist>${version}</plist>`) },
+    { name: '__MACOSX/pandite.app/._Info.plist', data: Buffer.from('xattr') },
+  ]);
 }
 
-// --------------------------------------------------------------- fakes
+function linuxTarball(version) {
+  const top = `pandite-${version}-x86_64-unknown-linux-gnu`;
+  return makeTarGz([
+    { name: `${top}/` },
+    { name: `${top}/pandite`, data: Buffer.from(`pandite ${version} linux`), mode: 0o755 },
+    { name: `${top}/install.sh`, data: Buffer.from('#!/bin/sh\necho fake\n'), mode: 0o755 },
+    { name: `${top}/share/applications/pandite.desktop`, data: Buffer.from('[Desktop Entry]\n') },
+    { name: `${top}/share/icons/hicolor/48x48/apps/pandite.png`, data: Buffer.from('png48') },
+    { name: `${top}/share/icons/hicolor/256x256/apps/pandite.png`, data: Buffer.from('png256') },
+  ]);
+}
 
-const empty = () => Readable.from([]);
+/**
+ * The files of a release under the names the build scripts write, with
+ * SHA256SUMS.txt. `omit` leaves files out, `unlist` leaves them out of
+ * SHA256SUMS.txt, `corrupt` changes them after the sums were made.
+ */
+function releaseFiles(version, { omit = [], unlist = [], corrupt = [], sums = true } = {}) {
+  const files = new Map([
+    [`pandite-${version}-x86_64-pc-windows-msvc-setup.exe`, setupExe(version, 'x64')],
+    [`pandite-${version}-aarch64-pc-windows-msvc-setup.exe`, setupExe(version, 'arm64')],
+    [`pandite-${version}-x86_64-pc-windows-msvc.zip`, Buffer.from('portable zip')],
+    [`pandite-${version}-aarch64-pc-windows-msvc.zip`, Buffer.from('portable zip')],
+    [`pandite-${version}-universal-apple-darwin.zip`, macZip(version)],
+    [`pandite-${version}-universal-apple-darwin.dmg`, Buffer.from(`dmg ${version}`)],
+    [`pandite-${version}-x86_64-unknown-linux-gnu.tar.gz`, linuxTarball(version)],
+    [`pandite_${version}_amd64.deb`, Buffer.from('deb')],
+  ]);
+  for (const name of omit) files.delete(name);
+  if (sums) {
+    const lines = [...files].filter(([name]) => !unlist.includes(name)).map(([name, data]) => `${sha256(data)}  ${name}`);
+    files.set('SHA256SUMS.txt', Buffer.from(`${lines.join('\n')}\n`));
+  }
+  for (const name of corrupt) files.set(name, Buffer.concat([files.get(name), Buffer.from('evil')]));
+  return files;
+}
 
-/** Serves `files` (name -> Buffer) behind a redirect, like GitHub. */
-function fakeNetwork(files, { redirectTo = 'https://release-assets.example.com/' } = {}) {
+const rel = (version, options = {}) => ({ version, prerelease: false, files: releaseFiles(version, options) });
+
+// ----------------------------------------------------------- fake GitHub
+
+const json = (status, body, headers = {}) =>
+  new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } });
+
+/**
+ * A fetch function that answers like GitHub: the API, release downloads
+ * that redirect to a file host, and the file host. It fails on any request
+ * that is not HTTPS or does not ask for manual redirects.
+ */
+function fakeGitHub(releases, { latest = null, fileHost = 'https://objects.example.com/', rateLimit = false, apiStatus = null } = {}) {
   const calls = [];
-  const request = async (url) => {
-    calls.push(url);
+  const byTag = new Map(releases.map((r) => [r.tag ?? `v${r.version}`, r]));
+  const releaseJson = (r) => ({
+    tag_name: r.tag ?? `v${r.version}`,
+    draft: Boolean(r.draft),
+    prerelease: Boolean(r.prerelease),
+    assets: [...(r.files ?? [])].map(([name, data]) => ({
+      name,
+      size: data.length,
+      browser_download_url: `https://github.com/xls/pandite/releases/download/${r.tag ?? `v${r.version}`}/${encodeURIComponent(name)}`,
+    })),
+  });
+  async function fetch(url, init = {}) {
+    calls.push({ url, headers: { ...init.headers }, redirect: init.redirect });
     const u = new URL(url);
-    assert.equal(u.protocol, 'https:', `the launcher requested ${url}`);
-    if (u.host === 'github.com') {
-      const prefix = `/xls/pandite/releases/download/v${VERSION}/`;
-      assert.ok(u.pathname.startsWith(prefix), `unexpected release URL ${url}`);
-      return { statusCode: 302, headers: { location: redirectTo + u.pathname.slice(prefix.length) }, body: empty() };
+    assert.equal(u.protocol, 'https:', `the installer requested ${url}`);
+    assert.equal(init.redirect, 'manual', 'the installer follows redirects itself');
+    if (u.host === 'api.github.com') {
+      if (rateLimit) {
+        return json(403, { message: 'API rate limit exceeded' }, { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(NOW / 1000 + 25 * 60) });
+      }
+      if (apiStatus) return json(apiStatus, { message: 'Server Error' });
+      if (u.pathname === '/repos/xls/pandite/releases/latest') {
+        const r = latest && byTag.get(`v${latest}`);
+        return r ? json(200, releaseJson(r)) : json(404, { message: 'Not Found' });
+      }
+      const tag = /^\/repos\/xls\/pandite\/releases\/tags\/([^/]+)$/.exec(u.pathname);
+      if (tag) {
+        const r = byTag.get(decodeURIComponent(tag[1]));
+        return r && !r.draft ? json(200, releaseJson(r)) : json(404, { message: 'Not Found' });
+      }
+      if (u.pathname === '/repos/xls/pandite/releases') return json(200, releases.map(releaseJson));
+      return json(404, { message: 'Not Found' });
     }
-    const name = decodeURIComponent(u.pathname.slice(1));
-    if (!files.has(name)) return { statusCode: 404, headers: {}, body: empty() };
-    return { statusCode: 200, headers: {}, body: Readable.from([files.get(name)]) };
+    if (u.host === 'github.com') {
+      const m = /^\/xls\/pandite\/releases\/download\/([^/]+)\/([^/]+)$/.exec(u.pathname);
+      if (!m) return new Response('Not Found', { status: 404 });
+      return new Response(null, { status: 302, headers: { location: `${fileHost}${m[1]}/${m[2]}` } });
+    }
+    if (u.host === 'objects.example.com') {
+      const m = /^\/([^/]+)\/([^/]+)$/.exec(u.pathname);
+      const data = m && byTag.get(m[1])?.files?.get(decodeURIComponent(m[2]));
+      return data ? new Response(data, { status: 200 }) : new Response('Not Found', { status: 404 });
+    }
+    throw new Error(`unexpected request ${url}`);
+  }
+  return {
+    fetch,
+    calls,
+    apiCalls: () => calls.filter((c) => c.url.startsWith('https://api.github.com/')).map((c) => c.url),
+    downloads: () =>
+      calls.filter((c) => new URL(c.url).host === 'objects.example.com').map((c) => decodeURIComponent(c.url.split('/').pop())),
   };
-  return { request, calls };
 }
 
-function fakeSpawn(exitCode) {
+// ----------------------------------------------------------- fake system
+
+function regFile(key, values) {
+  const esc = (s) => String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const hive = { HKCU: 'HKEY_CURRENT_USER', HKLM: 'HKEY_LOCAL_MACHINE' };
+  const [root, ...rest] = key.split('\\');
+  const lines = ['Windows Registry Editor Version 5.00', '', `[${hive[root]}\\${rest.join('\\')}]`];
+  for (const [name, value] of Object.entries(values)) lines.push(`"${esc(name)}"="${esc(value)}"`);
+  lines.push('"EstimatedSize"=dword:00000400', '');
+  return Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(lines.join('\r\n'), 'utf16le')]);
+}
+
+/**
+ * A system in a temporary folder. `run` imitates the programs that the
+ * installer starts and fails on any other program.
+ */
+function fakeSystem(platform, arch = 'x64', { glibc = platform === 'linux' ? '2.39' : null } = {}) {
+  const root = tempDir();
+  const home = path.join(root, 'home');
+  const tmp = path.join(root, 'tmp');
+  const systemApplications = path.join(root, 'Applications');
+  for (const dir of [home, tmp, systemApplications]) mkdirSync(dir, { recursive: true });
+  const env = { HOME: home, LOCALAPPDATA: path.join(home, 'AppData', 'Local'), SystemRoot: path.join(root, 'Windows') };
+  const installDir = path.join(env.LOCALAPPDATA, 'Programs', 'Pandite');
+  const uninstaller = path.join(installDir, 'unins000.exe');
+  const registry = new Map();
   const calls = [];
-  const spawn = (exe, args, options) => {
-    calls.push({ exe, args, options });
-    const child = new EventEmitter();
-    child.unref = () => {};
-    child.kill = () => true;
-    setImmediate(() => {
-      child.emit('spawn');
-      if (!options.detached) child.emit('exit', exitCode, null);
-    });
-    return child;
+  const out = [];
+  const err = [];
+  const state = { setupExit: 0, uninstallerExit: 0, entryLingers: 0, lingering: null, setupFiles: [], sleeps: 0 };
+
+  async function run(command, args, options = {}) {
+    calls.push({ command, args: [...args], env: options.env, capture: Boolean(options.capture) });
+    const ok = (stdout = '') => ({ code: 0, signal: null, stdout, stderr: '' });
+    if (command === regExe(env)) {
+      assert.equal(platform, 'win32');
+      assert.equal(args[0], 'export');
+      assert.equal(args[3], '/y');
+      const [hive, ...rest] = args[1].split('\\');
+      if (state.lingering === hive) {
+        if (state.entryLingers > 0) state.entryLingers -= 1;
+        else {
+          registry.delete(hive);
+          state.lingering = null;
+        }
+      }
+      const values = registry.get(hive);
+      if (!values || rest.join('\\') !== UNINSTALL_KEY) {
+        return { code: 1, signal: null, stdout: '', stderr: 'ERROR: The system was unable to find the specified registry key or value.' };
+      }
+      writeFileSync(args[2], regFile(args[1], values));
+      return ok();
+    }
+    const setup = /^pandite-(.+)-(x86_64|aarch64)-pc-windows-msvc-setup\.exe$/.exec(path.basename(command));
+    if (setup) {
+      assert.equal(platform, 'win32');
+      assert.ok(command.startsWith(tmp + path.sep), 'the setup program runs from the temporary folder');
+      state.setupFiles.push(readFileSync(command));
+      if (state.setupExit) return { code: state.setupExit, signal: null, stdout: '', stderr: '' };
+      mkdirSync(installDir, { recursive: true });
+      writeFileSync(path.join(installDir, 'pandite.exe'), `pandite ${setup[1]}`);
+      writeFileSync(uninstaller, 'uninstaller');
+      registry.set('HKCU', {
+        DisplayName: 'Pandite',
+        DisplayVersion: setup[1],
+        InstallLocation: `${installDir}\\`,
+        UninstallString: `"${uninstaller}"`,
+        QuietUninstallString: `"${uninstaller}" /SILENT`,
+      });
+      return ok();
+    }
+    if (command === uninstaller) {
+      if (state.uninstallerExit) return { code: state.uninstallerExit, signal: null, stdout: '', stderr: '' };
+      rmSync(installDir, { recursive: true, force: true });
+      state.lingering = 'HKCU';
+      return ok();
+    }
+    if (command === SH) {
+      assert.equal(platform, 'linux');
+      const [script, flag] = args;
+      const prefix = options.env?.PREFIX;
+      assert.ok(prefix, 'install.sh gets PREFIX');
+      const bin = path.join(prefix, 'bin', 'pandite');
+      if (flag === '--uninstall') {
+        assert.ok(existsSync(path.join(path.dirname(script), 'share', 'icons', 'hicolor')), 'the kept install.sh has the icon folders');
+        rmSync(bin, { force: true });
+        return ok(`pandite removed from ${prefix}\n`);
+      }
+      assert.equal(args.length, 1);
+      mkdirSync(path.dirname(bin), { recursive: true });
+      writeFileSync(bin, readFileSync(path.join(path.dirname(script), 'pandite')));
+      return ok(`pandite installed in ${bin}\n`);
+    }
+    if (command === HDIUTIL) {
+      assert.equal(platform, 'darwin');
+      if (args[0] === 'attach') {
+        const mount = args[args.indexOf('-mountpoint') + 1];
+        const version = /^dmg (.+)$/.exec(readFileSync(args[args.length - 1], 'utf8'))[1];
+        const exe = path.join(mount, 'pandite.app', 'Contents', 'MacOS', 'pandite');
+        mkdirSync(path.dirname(exe), { recursive: true });
+        writeFileSync(exe, `pandite ${version} from dmg`);
+        return ok();
+      }
+      if (args[0] === 'detach') return ok();
+    }
+    throw new Error(`unexpected program start: ${command} ${args.join(' ')}`);
+  }
+
+  const deps = {
+    platform,
+    arch,
+    glibc,
+    env,
+    home,
+    tmpdir: tmp,
+    systemApplications,
+    fetch: () => {
+      throw new Error('no fetch for this test');
+    },
+    run,
+    sleep: async () => {
+      state.sleeps += 1;
+    },
+    now: () => NOW,
+    out: (line) => out.push(line),
+    err: (line) => err.push(line),
   };
-  return { spawn, calls };
+  for (const key of Object.keys(defaultDeps())) assert.ok(key in deps, `the fake system replaces ${key}`);
+  return { home, tmp, env, systemApplications, installDir, uninstaller, registry, calls, state, deps, data: dataDir({ platform, env, home }), out, err };
 }
 
-const quiet = () => {};
+/** Run the installer with `argv`: { code, out, err } of this run. */
+async function install(sys, gh, argv) {
+  sys.out.length = 0;
+  sys.err.length = 0;
+  const code = await main(argv, { ...sys.deps, fetch: gh.fetch });
+  return { code, out: [...sys.out], err: [...sys.err] };
+}
 
-// --------------------------------------------------------------- tests
+const programs = (sys) => sys.calls.filter((c) => c.command !== regExe(sys.env));
+const marker = (sys) => JSON.parse(readFileSync(path.join(sys.data, MARKER), 'utf8'));
+const noTempLeft = (sys) => assert.deepEqual(readdirSync(sys.tmp), [], 'no temporary folder stays behind');
+
+// ----------------------------------------------------------------- tests
 
 const tests = [];
 const test = (name, fn) => tests.push([name, fn]);
 
-test('every supported system maps to its release file', () => {
+test('the latest release: resolve, download, check and install (Linux)', async () => {
+  const gh = fakeGitHub([rel('0.2.0'), rel('0.1.0')], { latest: '0.2.0' });
+  const sys = fakeSystem('linux');
+  const r = await install(sys, gh, []);
+  assert.equal(r.code, 0, r.err.join('\n'));
+  assert.deepEqual(gh.apiCalls(), [`${API}/releases/latest`]);
+  assert.deepEqual(gh.downloads(), ['SHA256SUMS.txt', 'pandite-0.2.0-x86_64-unknown-linux-gnu.tar.gz']);
+  const bin = path.join(sys.home, '.local', 'bin', 'pandite');
+  assert.equal(readFileSync(bin, 'utf8'), 'pandite 0.2.0 linux');
+  assert.deepEqual(r.out, [`Pandite 0.2.0 installed in ${bin}. Start it from the application menu or with: ${bin}`]);
+  assert.equal(marker(sys).version, '0.2.0');
+  assert.equal(marker(sys).sha256, sha256(releaseFiles('0.2.0').get('pandite-0.2.0-x86_64-unknown-linux-gnu.tar.gz')));
+  noTempLeft(sys);
+  for (const c of gh.calls) {
+    assert.equal(c.headers['user-agent'], `pandite-installer/${INSTALLER_VERSION}`, 'a generic User-Agent');
+    assert.ok(!Object.keys(c.headers).some((h) => /authorization|cookie/i.test(h)), 'no credentials');
+  }
+});
+
+test('the Linux install runs install.sh with PREFIX and keeps a copy for the uninstall', async () => {
+  const gh = fakeGitHub([rel('0.2.0')], { latest: '0.2.0' });
+  const sys = fakeSystem('linux');
+  assert.equal((await install(sys, gh, [])).code, 0);
+  const sh = programs(sys);
+  assert.equal(sh.length, 1);
+  assert.equal(sh[0].command, SH);
+  const script = sh[0].args[0];
+  assert.deepEqual(sh[0].args, [script]);
+  assert.ok(script.startsWith(sys.tmp + path.sep));
+  assert.equal(path.relative(sys.tmp, script).split(path.sep).slice(1).join('/'), 'unpacked/pandite-0.2.0-x86_64-unknown-linux-gnu/install.sh');
+  assert.equal(sh[0].env.PREFIX, path.join(sys.home, '.local'));
+  assert.equal(sh[0].env.HOME, sys.home, 'install.sh gets the environment');
+  const keep = path.join(sys.data, 'linux');
+  assert.equal(readFileSync(path.join(keep, 'install.sh'), 'utf8'), '#!/bin/sh\necho fake\n');
+  assert.equal(readFileSync(path.join(keep, 'share', 'icons', 'hicolor', '256x256', 'apps', 'pandite.png'), 'utf8'), 'png256');
+  assert.equal(marker(sys).prefix, path.join(sys.home, '.local'));
+});
+
+test('a named version, with and without "v"', async () => {
+  for (const argv of [['-v', '0.1.0'], ['-v', 'v0.1.0'], ['install', '--version', 'v0.1.0'], ['install', '-v=0.1.0'], ['--version=V0.1.0']]) {
+    const gh = fakeGitHub([rel('0.2.0'), rel('0.1.0')], { latest: '0.2.0' });
+    const sys = fakeSystem('win32', 'x64');
+    const r = await install(sys, gh, argv);
+    assert.equal(r.code, 0, `${argv.join(' ')}: ${r.err.join('\n')}`);
+    assert.deepEqual(gh.apiCalls(), [`${API}/releases/tags/v0.1.0`], argv.join(' '));
+    assert.deepEqual(gh.downloads(), ['SHA256SUMS.txt', 'pandite-0.1.0-x86_64-pc-windows-msvc-setup.exe']);
+  }
+  assert.equal(normalizeVersion('1.0'), '1.0.0');
+  assert.equal(normalizeVersion('v2'), '2.0.0');
+  assert.equal(normalizeVersion('v1.0.0-rc.1'), '1.0.0-rc.1');
+  const gh = fakeGitHub([rel('0.1.0')], { latest: '0.1.0' });
+  const sys = fakeSystem('linux');
+  const missing = await install(sys, gh, ['-v', '9.9.9']);
+  assert.equal(missing.code, 1);
+  assert.deepEqual(missing.err, [
+    'pandite-installer: no Pandite release v9.9.9 found at https://github.com/xls/pandite/releases. Run "npx pandite --list" for the versions.',
+  ]);
+  const bad = await install(sys, gh, ['-v', 'latest']);
+  assert.equal(bad.code, 2);
+  assert.match(bad.err[0], /"latest" is not a version such as 0\.1\.0 or v0\.1\.0/);
+});
+
+test('the release file of every supported system', async () => {
   const want = {
-    'win32 x64': ['pandite-1.2.3-x86_64-pc-windows-msvc.zip', 'pandite-1.2.3-x86_64-pc-windows-msvc/pandite.exe'],
-    'win32 arm64': ['pandite-1.2.3-aarch64-pc-windows-msvc.zip', 'pandite-1.2.3-aarch64-pc-windows-msvc/pandite.exe'],
-    'darwin x64': ['pandite-1.2.3-universal-apple-darwin.zip', 'pandite.app/Contents/MacOS/pandite'],
-    'darwin arm64': ['pandite-1.2.3-universal-apple-darwin.zip', 'pandite.app/Contents/MacOS/pandite'],
-    'linux x64': ['pandite-1.2.3-x86_64-unknown-linux-gnu.tar.gz', 'pandite-1.2.3-x86_64-unknown-linux-gnu/pandite'],
+    'win32 x64': ['pandite-1.2.3-x86_64-pc-windows-msvc-setup.exe', 'setup'],
+    'win32 arm64': ['pandite-1.2.3-aarch64-pc-windows-msvc-setup.exe', 'setup'],
+    'darwin x64': ['pandite-1.2.3-universal-apple-darwin.zip', 'app-zip'],
+    'darwin arm64': ['pandite-1.2.3-universal-apple-darwin.zip', 'app-zip'],
+    'linux x64': ['pandite-1.2.3-x86_64-unknown-linux-gnu.tar.gz', 'tarball'],
   };
   assert.deepEqual(PLATFORMS.map((p) => `${p.platform} ${p.arch}`).sort(), Object.keys(want).sort());
+  const all = [...releaseFiles('1.2.3').keys()];
   for (const p of PLATFORMS) {
-    const pick = assetFor({ ...p, version: VERSION });
-    assert.deepEqual([pick.asset, pick.exe], want[`${p.platform} ${p.arch}`]);
+    const pick = chooseAsset({ ...p, glibc: '2.35', version: '1.2.3', available: all });
+    assert.deepEqual([pick.name, pick.kind], want[`${p.platform} ${p.arch}`]);
   }
-  assert.equal(assetFor({ platform: 'linux', arch: 'x64', version: VERSION, glibc: '2.39' }).format, 'tar.gz');
-  assert.deepEqual(allAssets(VERSION), [
-    'pandite-1.2.3-x86_64-pc-windows-msvc.zip',
-    'pandite-1.2.3-aarch64-pc-windows-msvc.zip',
-    'pandite-1.2.3-universal-apple-darwin.zip',
-    'pandite-1.2.3-x86_64-unknown-linux-gnu.tar.gz',
-  ]);
+  // Without the zip of the app, macOS takes the disk image.
+  const noZip = all.filter((n) => !n.endsWith('-apple-darwin.zip'));
+  assert.deepEqual(chooseAsset({ platform: 'darwin', arch: 'arm64', version: '1.2.3', available: noZip }), {
+    name: 'pandite-1.2.3-universal-apple-darwin.dmg',
+    kind: 'dmg',
+  });
+  assert.throws(
+    () => chooseAsset({ platform: 'linux', arch: 'x64', glibc: '2.39', version: '1.2.3', available: ['SHA256SUMS.txt'] }),
+    /release v1\.2\.3 has no pandite-1\.2\.3-x86_64-unknown-linux-gnu\.tar\.gz for Linux x64/,
+  );
+  // End to end: each system downloads its own file.
+  for (const p of PLATFORMS) {
+    const gh = fakeGitHub([rel('1.2.3')], { latest: '1.2.3' });
+    const sys = fakeSystem(p.platform, p.arch);
+    const r = await install(sys, gh, []);
+    assert.equal(r.code, 0, `${p.platform} ${p.arch}: ${r.err.join('\n')}`);
+    assert.deepEqual(gh.downloads(), ['SHA256SUMS.txt', want[`${p.platform} ${p.arch}`][0]]);
+    noTempLeft(sys);
+  }
 });
 
-test('unsupported systems get a clear message', async () => {
+test('an unsupported system gets a clear message, no request and no program start', async () => {
   const cases = [
-    { platform: 'linux', arch: 'arm64', glibc: '2.39', says: 'Linux on arm64' },
-    { platform: 'win32', arch: 'ia32', glibc: null, says: 'Windows on ia32' },
-    { platform: 'freebsd', arch: 'x64', glibc: null, says: 'freebsd on x64' },
-    { platform: 'darwin', arch: 'ppc64', glibc: null, says: 'macOS on ppc64' },
-    { platform: 'linux', arch: 'x64', glibc: null, says: 'musl' },
-    { platform: 'linux', arch: 'x64', glibc: '2.31', says: 'glibc 2.35 or later' },
+    { platform: 'linux', arch: 'arm64', glibc: '2.39', says: 'Linux arm64 is not supported.' },
+    { platform: 'win32', arch: 'ia32', says: 'Windows ia32 is not supported.' },
+    { platform: 'darwin', arch: 'ppc64', says: 'macOS ppc64 is not supported.' },
+    { platform: 'freebsd', arch: 'x64', says: 'freebsd x64 is not supported.' },
+    { platform: 'linux', arch: 'x64', glibc: null, says: 'Linux without glibc (for example with musl) is not supported.' },
+    { platform: 'linux', arch: 'x64', glibc: '2.31', says: 'Linux with glibc 2.31 is not supported.' },
   ];
   for (const c of cases) {
-    const net = fakeNetwork(new Map());
-    const run = fakeSpawn(0);
-    await assert.rejects(
-      main(['a.png'], { ...c, version: VERSION, checksums: { version: VERSION, sha256: {} }, env: { PANDITE_NPM_CACHE: tempDir() }, home: TEMP, request: net.request, spawn: run.spawn, log: quiet }),
-      (error) => error instanceof LauncherError && error.message.includes(c.says) && error.message.includes('Pandite builds exist for'),
+    for (const argv of [[], ['update'], ['uninstall'], ['--dry-run']]) {
+      const gh = fakeGitHub([rel('0.2.0')], { latest: '0.2.0' });
+      const sys = fakeSystem(c.platform, c.arch, { glibc: c.glibc ?? null });
+      const r = await install(sys, gh, argv);
+      assert.equal(r.code, 1, `${c.says} ${argv.join(' ')}`);
+      assert.equal(r.err.length, 1);
+      assert.ok(r.err[0].startsWith(`pandite-installer: ${c.says} Pandite releases exist for Windows x64 and ARM64`), r.err[0]);
+      assert.equal(gh.calls.length, 0);
+      assert.equal(sys.calls.length, 0);
+    }
+  }
+});
+
+test('a download with another SHA-256 is refused and deleted', async () => {
+  for (const [platform, asset] of [
+    ['linux', 'pandite-0.2.0-x86_64-unknown-linux-gnu.tar.gz'],
+    ['win32', 'pandite-0.2.0-x86_64-pc-windows-msvc-setup.exe'],
+    ['darwin', 'pandite-0.2.0-universal-apple-darwin.zip'],
+  ]) {
+    const gh = fakeGitHub([rel('0.2.0', { corrupt: [asset] })], { latest: '0.2.0' });
+    const sys = fakeSystem(platform);
+    const r = await install(sys, gh, []);
+    assert.equal(r.code, 1);
+    const good = sha256(releaseFiles('0.2.0').get(asset));
+    const bad = sha256(Buffer.concat([releaseFiles('0.2.0').get(asset), Buffer.from('evil')]));
+    assert.equal(
+      r.err.at(-1),
+      `pandite-installer: SHA-256 mismatch for ${asset}: SHA256SUMS.txt lists ${good}, the download has ${bad}. The download was deleted. Nothing was installed.`,
     );
-    assert.equal(net.calls.length, 0);
-    assert.equal(run.calls.length, 0);
+    assert.deepEqual(gh.downloads(), ['SHA256SUMS.txt', asset], 'the file was downloaded');
+    assert.deepEqual(programs(sys), [], 'no installer ran');
+    assert.equal(sys.state.setupFiles.length, 0);
+    assert.ok(!existsSync(path.join(sys.data, MARKER)));
+    assert.ok(!existsSync(path.join(sys.home, 'Applications', 'pandite.app')));
+    noTempLeft(sys);
   }
 });
 
-test('first run downloads, checks and unpacks; second run uses the cache', async () => {
-  for (const p of PLATFORMS) {
-    const pick = assetFor({ ...p, version: VERSION });
-    const program = Buffer.from(`fake pandite for ${p.platform} ${p.arch}`);
-    const file = releaseFile(pick, program);
-    const net = fakeNetwork(new Map([[pick.asset, file]]));
-    const cache = tempDir();
-    const deps = {
-      ...p,
-      version: VERSION,
-      checksums: { version: VERSION, sha256: { [pick.asset]: sha256(file) } },
-      env: { PANDITE_NPM_CACHE: cache },
-      home: TEMP,
-      request: net.request,
-      log: quiet,
-    };
-    const exe = path.join(cache, VERSION, pick.target, ...pick.exe.split('/'));
-    // An option makes the launcher wait for the exit code on every system.
-    const first = fakeSpawn(7);
-    assert.deepEqual(await main(['--version'], { ...deps, spawn: first.spawn }), { code: 7, signal: null });
-    assert.equal(net.calls.length, 2, `${p.platform}: one redirect and one download`);
-    assert.ok(net.calls[1].startsWith('https://release-assets.example.com/'));
-    assert.deepEqual(first.calls.map((c) => [c.exe, c.args, c.options.stdio]), [[exe, ['--version'], 'inherit']]);
-    assert.deepEqual(readFileSync(exe), program);
-    if (process.platform !== 'win32' && p.platform !== 'win32') assert.equal(statSync(exe).mode & 0o777, 0o755);
-    assert.ok(!existsSync(path.join(cache, VERSION, pick.target, '__MACOSX')));
-    assert.deepEqual(readdirSync(path.join(cache, VERSION)), [pick.target], 'no download folder is left behind');
+test('a file that SHA256SUMS.txt does not list, or a release without SHA256SUMS.txt, is refused', async () => {
+  const asset = 'pandite-0.2.0-aarch64-pc-windows-msvc-setup.exe';
+  let gh = fakeGitHub([rel('0.2.0', { unlist: [asset] })], { latest: '0.2.0' });
+  let sys = fakeSystem('win32', 'arm64');
+  let r = await install(sys, gh, []);
+  assert.equal(r.code, 1);
+  assert.equal(r.err.at(-1), `pandite-installer: SHA256SUMS.txt of release v0.2.0 does not list ${asset}. Nothing was installed.`);
+  assert.deepEqual(gh.downloads(), ['SHA256SUMS.txt'], 'the unlisted file is not downloaded');
+  assert.equal(sys.state.setupFiles.length, 0);
+  noTempLeft(sys);
 
-    const second = fakeSpawn(3);
-    assert.deepEqual(await main(['--help'], { ...deps, spawn: second.spawn }), { code: 3, signal: null });
-    assert.equal(net.calls.length, 2, `${p.platform}: the second run downloads nothing`);
-    assert.equal(second.calls[0].exe, exe);
-
-    // A copy without its completion marker is not trusted and comes again.
-    rmSync(path.join(cache, VERSION, pick.target, '.pandite-npm.json'));
-    await main(['--help'], { ...deps, spawn: fakeSpawn(0).spawn });
-    assert.equal(net.calls.length, 4, `${p.platform}: an incomplete cache downloads again`);
-  }
+  gh = fakeGitHub([rel('0.2.0', { sums: false })], { latest: '0.2.0' });
+  sys = fakeSystem('linux');
+  r = await install(sys, gh, []);
+  assert.equal(r.code, 1);
+  assert.deepEqual(r.err, ['pandite-installer: release v0.2.0 has no SHA256SUMS.txt, so its files cannot be checked. Nothing was installed.']);
+  assert.deepEqual(gh.downloads(), []);
+  assert.deepEqual(programs(sys), []);
 });
 
-test('on Windows an image opens detached, an option waits', async () => {
-  assert.equal(startsDetached('win32', ['photo.jpg']), true);
-  assert.equal(startsDetached('win32', []), true);
-  assert.equal(startsDetached('win32', ['--background']), true);
-  assert.equal(startsDetached('win32', ['-']), true);
-  assert.equal(startsDetached('win32', ['--', '-odd-.png']), true);
-  assert.equal(startsDetached('win32', ['--version']), false);
-  assert.equal(startsDetached('win32', ['-V']), false);
-  assert.equal(startsDetached('win32', ['/?']), false);
-  assert.equal(startsDetached('win32', ['--smoke', 'a.png']), false);
-  assert.equal(startsDetached('win32', ['--register']), false);
-  assert.equal(startsDetached('linux', ['photo.jpg']), false);
-  assert.equal(startsDetached('darwin', []), false);
-
-  const p = { platform: 'win32', arch: 'x64', glibc: null };
-  const pick = assetFor({ ...p, version: VERSION });
-  const file = releaseFile(pick, Buffer.from('exe'));
-  const run = fakeSpawn(9);
-  const result = await main(['C:\\photos\\a b.jpg'], {
-    ...p,
-    version: VERSION,
-    checksums: { version: VERSION, sha256: { [pick.asset]: sha256(file) } },
-    env: { PANDITE_NPM_CACHE: tempDir() },
-    home: TEMP,
-    request: fakeNetwork(new Map([[pick.asset, file]])).request,
-    spawn: run.spawn,
-    log: quiet,
-  });
-  assert.deepEqual(result, { code: 0, signal: null });
-  assert.deepEqual(run.calls[0].args, ['C:\\photos\\a b.jpg']);
-  assert.equal(run.calls[0].options.detached, true);
-  assert.equal(run.calls[0].options.stdio, 'ignore');
-});
-
-test('a file with another SHA-256 is refused and deleted', async () => {
-  const p = { platform: 'linux', arch: 'x64', glibc: '2.35' };
-  const pick = assetFor({ ...p, version: VERSION });
-  const good = releaseFile(pick, Buffer.from('good'));
-  const evil = releaseFile(pick, Buffer.from('evil'));
-  const cache = tempDir();
-  const run = fakeSpawn(0);
-  const net = fakeNetwork(new Map([[pick.asset, evil]]));
-  await assert.rejects(
-    main(['a.png'], { ...p, version: VERSION, checksums: { version: VERSION, sha256: { [pick.asset]: sha256(good) } }, env: { PANDITE_NPM_CACHE: cache }, home: TEMP, request: net.request, spawn: run.spawn, log: quiet }),
-    (error) => error instanceof LauncherError && /SHA-256 mismatch/.test(error.message) && error.message.includes(sha256(evil)),
+test('redirects go to HTTPS addresses only', async () => {
+  // A release download that redirects to plain HTTP.
+  const gh = fakeGitHub([rel('0.2.0')], { latest: '0.2.0', fileHost: 'http://objects.example.com/' });
+  const sys = fakeSystem('linux');
+  const r = await install(sys, gh, []);
+  assert.equal(r.code, 1);
+  assert.equal(
+    r.err.at(-1),
+    'pandite-installer: refusing the redirect to http://objects.example.com/v0.2.0/SHA256SUMS.txt: only HTTPS addresses are allowed',
   );
-  assert.equal(net.calls.length, 2);
-  assert.equal(run.calls.length, 0, 'the program never starts');
-  assert.deepEqual(readdirSync(path.join(cache, VERSION)), [], 'nothing stays in the cache');
-});
+  assert.ok(gh.calls.every((c) => c.url.startsWith('https://')), 'no plain HTTP request');
+  assert.deepEqual(programs(sys), []);
+  noTempLeft(sys);
 
-test('a redirect to plain HTTP is refused before any request', async () => {
-  const p = { platform: 'win32', arch: 'arm64', glibc: null };
-  const pick = assetFor({ ...p, version: VERSION });
-  const file = releaseFile(pick, Buffer.from('exe'));
-  const net = fakeNetwork(new Map([[pick.asset, file]]), { redirectTo: 'http://release-assets.example.com/' });
-  const cache = tempDir();
-  const run = fakeSpawn(0);
-  await assert.rejects(
-    main(['--version'], { ...p, version: VERSION, checksums: { version: VERSION, sha256: { [pick.asset]: sha256(file) } }, env: { PANDITE_NPM_CACHE: cache }, home: TEMP, request: net.request, spawn: run.spawn, log: quiet }),
-    (error) => error instanceof LauncherError && /only HTTPS/.test(error.message),
-  );
-  assert.deepEqual(net.calls.map((u) => new URL(u).protocol), ['https:']);
-  assert.equal(run.calls.length, 0);
-  assert.deepEqual(readdirSync(path.join(cache, VERSION)), []);
-  // The real request function is never reached for a plain HTTP address.
-  await assert.rejects(download('http://127.0.0.1:9/x', path.join(TEMP, 'never')), /only HTTPS/);
-});
-
-test('redirect loops, missing files and missing checksums fail clearly', async () => {
-  const loop = async (url) => ({ statusCode: 302, headers: { location: `${url}x` }, body: empty() });
-  await assert.rejects(download('https://example.com/a', path.join(tempDir()), { request: loop }), /more than 5 redirects/);
-  const notFound = async () => ({ statusCode: 404, headers: {}, body: empty() });
-  await assert.rejects(download('https://example.com/a', path.join(tempDir()), { request: notFound }), /HTTP 404/);
-  const broken = async () => {
-    throw new Error('getaddrinfo ENOTFOUND example.com');
+  // An API answer that redirects to plain HTTP.
+  const calls = [];
+  const apiToHttp = async (url) => {
+    calls.push(url);
+    return new Response(null, { status: 301, headers: { location: 'http://api.github.com/repos/xls/pandite/releases/latest' } });
   };
-  await assert.rejects(download('https://example.com/a', path.join(tempDir()), { request: broken }), /cannot download .*ENOTFOUND/);
+  const sys2 = fakeSystem('linux');
+  const r2 = await install(sys2, { fetch: apiToHttp }, []);
+  assert.equal(r2.code, 1);
+  assert.match(r2.err[0], /refusing the redirect to http:\/\/api\.github\.com\/.*: only HTTPS addresses are allowed$/);
+  assert.deepEqual(calls, [`${API}/releases/latest`]);
 
-  const p = { platform: 'darwin', arch: 'arm64', glibc: null };
-  const base = { ...p, version: VERSION, env: { PANDITE_NPM_CACHE: tempDir() }, home: TEMP, request: fakeNetwork(new Map()).request, spawn: fakeSpawn(0).spawn, log: quiet };
-  await assert.rejects(main([], { ...base, checksums: { version: VERSION, sha256: {} } }), /no SHA-256 for pandite-1\.2\.3-universal-apple-darwin\.zip/);
-  await assert.rejects(main([], { ...base, checksums: { version: '1.2.2', sha256: {} } }), /checksums\.json is for version 1\.2\.2/);
+  // A plain HTTP address is refused before any request; loops end.
+  const net = { fetch: async () => assert.fail('no request for a plain HTTP address'), userAgent: 'test' };
+  await assert.rejects(download('http://127.0.0.1:9/x', path.join(tempDir(), 'x'), net), /refusing http:\/\/127\.0\.0\.1:9\/x: only HTTPS/);
+  const loop = { fetch: async (url) => new Response(null, { status: 302, headers: { location: `${url}x` } }), userAgent: 'test' };
+  await assert.rejects(download('https://example.com/a', path.join(tempDir(), 'x'), loop), /more than 5 redirects/);
+});
+
+test('the same version is skipped unless --force', async () => {
+  const gh = fakeGitHub([rel('0.2.0'), rel('0.1.0')], { latest: '0.2.0' });
+  const sys = fakeSystem('linux');
+  assert.equal((await install(sys, gh, [])).code, 0);
+  const bin = path.join(sys.home, '.local', 'bin', 'pandite');
+  const again = await install(sys, gh, []);
+  assert.equal(again.code, 0);
+  assert.deepEqual(again.out, [`Pandite 0.2.0 is already installed in ${bin}. To install it again, add --force.`]);
+  assert.equal(gh.downloads().length, 2, 'no second download');
+  const calls = gh.calls.length;
+  const named = await install(sys, gh, ['-v', 'v0.2.0']);
+  assert.equal(named.code, 0);
+  assert.deepEqual(named.out, again.out);
+  assert.equal(gh.calls.length, calls, 'a named version that is installed needs no request');
+  const forced = await install(sys, gh, ['--force']);
+  assert.equal(forced.code, 0);
+  assert.equal(gh.downloads().length, 4);
+  assert.equal(programs(sys).length, 2, 'install.sh ran again');
+
+  // Windows: the uninstall entry of the setup program tells the version.
+  const ghw = fakeGitHub([rel('0.2.0'), rel('0.1.0')], { latest: '0.2.0' });
+  const win = fakeSystem('win32', 'x64');
+  assert.equal((await install(win, ghw, ['-v', '0.1.0'])).code, 0);
+  const skip = await install(win, ghw, ['-v', '0.1.0']);
+  assert.deepEqual(skip.out, [`Pandite 0.1.0 is already installed in ${win.installDir}. To install it again, add --force.`]);
+  assert.equal(win.state.setupFiles.length, 1);
+  assert.equal((await install(win, ghw, ['-v', '0.1.0', '--force'])).code, 0);
+  assert.equal(win.state.setupFiles.length, 2);
+  // A plain install never goes back to an older latest release.
+  const newer = fakeGitHub([rel('0.3.0-rc.1'), rel('0.2.0')], { latest: '0.2.0' });
+  assert.equal((await install(win, newer, ['-v', '0.3.0-rc.1'])).code, 0);
+  const keep = await install(win, newer, []);
+  assert.equal(keep.code, 0);
+  assert.match(keep.out[0], /^Pandite 0\.3\.0-rc\.1 is installed in .*\. It is newer than the latest release 0\.2\.0\./);
+  assert.equal(win.state.setupFiles.length, 3);
+});
+
+test('update: newer installs, same downloads nothing, not installed installs', async () => {
+  // Not installed: update installs the latest release.
+  const gh = fakeGitHub([rel('0.10.0'), rel('0.9.0')], { latest: '0.10.0' });
+  const sys = fakeSystem('linux');
+  let r = await install(sys, gh, ['update']);
+  assert.equal(r.code, 0, r.err.join('\n'));
+  assert.equal(marker(sys).version, '0.10.0');
+  // Same version: "already up to date", one API request, no download.
+  const before = gh.calls.length;
+  r = await install(sys, gh, ['update']);
+  assert.equal(r.code, 0);
+  assert.deepEqual(r.out, ['Pandite 0.10.0 is already up to date (latest release: 0.10.0).']);
+  assert.deepEqual(gh.calls.slice(before).map((c) => c.url), [`${API}/releases/latest`]);
+  // Older version: 0.9.0 is older than 0.10.0 (not a text comparison).
+  assert.equal((await install(sys, gh, ['-v', '0.9.0'])).code, 0);
+  assert.equal(marker(sys).version, '0.9.0');
+  r = await install(sys, gh, ['update']);
+  assert.equal(r.code, 0);
+  assert.equal(marker(sys).version, '0.10.0');
+  assert.equal(readFileSync(path.join(sys.home, '.local', 'bin', 'pandite'), 'utf8'), 'pandite 0.10.0 linux');
+  // A pre-release is older than its final release.
+  const final = fakeGitHub([rel('1.0.0'), rel('1.0.0-rc.1')], { latest: '1.0.0' });
+  const sys2 = fakeSystem('darwin', 'arm64');
+  assert.equal((await install(sys2, final, ['-v', '1.0.0-rc.1'])).code, 0);
+  r = await install(sys2, final, ['update']);
+  assert.equal(r.code, 0);
+  assert.equal(marker(sys2).version, '1.0.0');
+  // An installed version newer than the latest release is up to date.
+  const older = fakeGitHub([rel('0.10.0'), rel('0.9.0')], { latest: '0.9.0' });
+  const sys3 = fakeSystem('linux');
+  assert.equal((await install(sys3, older, ['-v', '0.10.0'])).code, 0);
+  r = await install(sys3, older, ['update']);
+  assert.deepEqual(r.out, ['Pandite 0.10.0 is already up to date (latest release: 0.9.0).']);
+  // Windows: a setup program run by hand counts as installed (no marker).
+  const ghw = fakeGitHub([rel('0.2.0'), rel('0.1.0')], { latest: '0.2.0' });
+  const win = fakeSystem('win32', 'arm64');
+  win.registry.set('HKCU', { DisplayVersion: '0.1.0', InstallLocation: `${win.installDir}\\`, UninstallString: `"${win.uninstaller}"` });
+  r = await install(win, ghw, ['update']);
+  assert.equal(r.code, 0, r.err.join('\n'));
+  assert.ok(r.err.includes('pandite-installer: updating Pandite 0.1.0 to 0.2.0'));
+  assert.deepEqual(ghw.downloads(), ['SHA256SUMS.txt', 'pandite-0.2.0-aarch64-pc-windows-msvc-setup.exe']);
+  r = await install(win, ghw, ['update']);
+  assert.deepEqual(r.out, ['Pandite 0.2.0 is already up to date (latest release: 0.2.0).']);
+
+  // Version order (https://semver.org, section 11).
+  const order = ['0.9.0', '0.10.0', '1.0.0-alpha', '1.0.0-alpha.1', '1.0.0-alpha.beta', '1.0.0-beta', '1.0.0-beta.2', '1.0.0-beta.11', '1.0.0-rc.1', '1.0.0', '1.0.1', '1.10.0', '2.0.0'];
+  for (let i = 0; i < order.length; i += 1) {
+    for (let j = 0; j < order.length; j += 1) {
+      assert.equal(compareVersions(order[i], order[j]), Math.sign(i - j), `${order[i]} vs ${order[j]}`);
+    }
+  }
+  assert.equal(compareVersions('1.0.0+build.5', '1.0.0'), 0, 'build metadata does not count');
+});
+
+test('--dry-run prints the plan and downloads, installs and changes nothing', async () => {
+  for (const p of PLATFORMS) {
+    const gh = fakeGitHub([rel('0.2.0')], { latest: '0.2.0' });
+    const sys = fakeSystem(p.platform, p.arch);
+    const r = await install(sys, gh, ['--dry-run']);
+    assert.equal(r.code, 0, r.err.join('\n'));
+    assert.deepEqual(gh.downloads(), [], 'nothing downloaded');
+    assert.deepEqual(gh.apiCalls(), [`${API}/releases/latest`]);
+    assert.ok(gh.calls.every((c) => c.url.startsWith('https://api.github.com/')), 'no release file requested');
+    assert.deepEqual(programs(sys), [], 'no program started');
+    assert.ok(!existsSync(sys.data), 'no data folder');
+    noTempLeft(sys);
+    const asset = chooseAsset({ ...p, glibc: '2.39', version: '0.2.0', available: [...releaseFiles('0.2.0').keys()] }).name;
+    assert.equal(r.out[0], `Pandite 0.2.0 (latest release) for ${{ win32: 'Windows', darwin: 'macOS', linux: 'Linux' }[p.platform]} ${p.arch}`);
+    assert.ok(r.out.includes(`Would download https://github.com/xls/pandite/releases/download/v0.2.0/${asset} (0.0 MB)`), r.out.join('\n'));
+    assert.equal(r.out.at(-1), 'Dry run: nothing was downloaded, installed or changed.');
+    if (p.platform === 'win32') {
+      const line = r.out.find((l) => l.startsWith('Would run: '));
+      assert.ok(line.endsWith(` ${SETUP_ARGS.join(' ')} /LOG=${path.join(sys.data, 'setup.log')}`), line);
+    }
+  }
+  // update and uninstall too.
+  const gh = fakeGitHub([rel('0.2.0'), rel('0.1.0')], { latest: '0.2.0' });
+  const sys = fakeSystem('win32', 'x64');
+  assert.equal((await install(sys, gh, ['-v', '0.1.0'])).code, 0);
+  const downloads = gh.downloads().length;
+  let r = await install(sys, gh, ['update', '--dry-run']);
+  assert.equal(r.code, 0);
+  assert.equal(gh.downloads().length, downloads);
+  assert.equal(sys.state.setupFiles.length, 1);
+  r = await install(sys, gh, ['uninstall', '--dry-run']);
+  assert.equal(r.code, 0);
+  assert.deepEqual(r.out, [`Would run: ${sys.uninstaller} ${UNINSTALL_ARGS.join(' ')}`, `Would delete ${sys.data}`, 'Dry run: nothing was changed.']);
+  assert.ok(sys.registry.has('HKCU') && existsSync(path.join(sys.data, MARKER)), 'still installed');
+  assert.ok(!programs(sys).some((c) => c.command === sys.uninstaller));
+});
+
+test('the Windows setup program runs silently for the current user', async () => {
+  const gh = fakeGitHub([rel('0.2.0')], { latest: '0.2.0' });
+  const sys = fakeSystem('win32', 'x64');
+  const r = await install(sys, gh, []);
+  assert.equal(r.code, 0, r.err.join('\n'));
+  const started = programs(sys);
+  assert.equal(started.length, 1);
+  assert.equal(path.basename(started[0].command), 'pandite-0.2.0-x86_64-pc-windows-msvc-setup.exe');
+  assert.deepEqual(started[0].args, ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/CURRENTUSER', `/LOG=${path.join(sys.data, 'setup.log')}`]);
+  assert.deepEqual(sys.state.setupFiles, [setupExe('0.2.0', 'x64')], 'the checked file runs');
+  assert.deepEqual(r.out, [`Pandite 0.2.0 installed in ${sys.installDir}. Start it from the Start menu.`]);
+  assert.equal(marker(sys).location, sys.installDir);
+  // reg.exe reads the uninstall entry: HKCU first, then HKLM.
+  const reg = sys.calls.filter((c) => c.command === regExe(sys.env)).map((c) => c.args[1]);
+  assert.deepEqual(reg.slice(0, 2), [`HKCU\\${UNINSTALL_KEY}`, `HKLM\\${UNINSTALL_KEY}`]);
+  assert.equal(UNINSTALL_KEY, 'Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{E5E712AA-D4BF-4DC9-BB19-9841DC38CD1E}_is1');
+  noTempLeft(sys);
+  // A failing setup program: its exit code and log, no marker.
+  const fail = fakeSystem('win32', 'arm64');
+  fail.state.setupExit = 5;
+  const f = await install(fail, fakeGitHub([rel('0.2.0')], { latest: '0.2.0' }), []);
+  assert.equal(f.code, 1);
+  assert.equal(f.err.at(-1), `pandite-installer: the setup program failed with exit code 5. Its log is ${path.join(fail.data, 'setup.log')}`);
+  assert.ok(!existsSync(path.join(fail.data, MARKER)));
+  noTempLeft(fail);
+});
+
+test('the macOS app goes to ~/Applications, or to /Applications with --system', async () => {
+  const gh = fakeGitHub([rel('0.2.0'), rel('0.1.0')], { latest: '0.2.0' });
+  const sys = fakeSystem('darwin', 'arm64');
+  assert.equal((await install(sys, gh, ['-v', '0.1.0'])).code, 0);
+  const apps = path.join(sys.home, 'Applications');
+  const app = path.join(apps, 'pandite.app');
+  const exe = path.join(app, 'Contents', 'MacOS', 'pandite');
+  assert.equal(readFileSync(exe, 'utf8'), 'pandite 0.1.0 universal');
+  writeFileSync(path.join(app, 'Contents', 'stale.txt'), 'from 0.1.0');
+  const r = await install(sys, gh, ['update']);
+  assert.equal(r.code, 0, r.err.join('\n'));
+  assert.equal(readFileSync(exe, 'utf8'), 'pandite 0.2.0 universal');
+  assert.equal(readFileSync(path.join(app, 'Contents', 'Info.plist'), 'utf8'), '<plist>0.2.0</plist>');
+  assert.ok(!existsSync(path.join(app, 'Contents', 'stale.txt')), 'the older copy is replaced, not merged');
+  assert.deepEqual(readdirSync(apps), ['pandite.app'], 'no staging folder and no __MACOSX');
+  assert.deepEqual(r.out, [`Pandite 0.2.0 installed in ${app}. Start it from Launchpad or with: open "${app}"`]);
+  assert.deepEqual(programs(sys), [], 'the zip unpacks without other programs');
+  if (process.platform !== 'win32') assert.equal(readdirSync(path.dirname(exe)).length, 1);
+  noTempLeft(sys);
+
+  // --system, and update keeps that folder.
+  const sys2 = fakeSystem('darwin', 'x64');
+  assert.equal((await install(sys2, gh, ['-v', '0.1.0', '--system'])).code, 0);
+  const sysApp = path.join(sys2.systemApplications, 'pandite.app');
+  assert.ok(existsSync(path.join(sysApp, 'Contents', 'MacOS', 'pandite')));
+  assert.ok(!existsSync(path.join(sys2.home, 'Applications')));
+  assert.equal(marker(sys2).system, true);
+  assert.equal((await install(sys2, gh, ['update'])).code, 0);
+  assert.equal(readFileSync(path.join(sysApp, 'Contents', 'MacOS', 'pandite'), 'utf8'), 'pandite 0.2.0 universal');
+  assert.ok(!existsSync(path.join(sys2.home, 'Applications')));
+
+  // A release without the zip: the disk image, through hdiutil.
+  const dmg = fakeGitHub([rel('0.2.0', { omit: ['pandite-0.2.0-universal-apple-darwin.zip'] })], { latest: '0.2.0' });
+  const sys3 = fakeSystem('darwin', 'arm64');
+  const d = await install(sys3, dmg, []);
+  assert.equal(d.code, 0, d.err.join('\n'));
+  assert.deepEqual(dmg.downloads(), ['SHA256SUMS.txt', 'pandite-0.2.0-universal-apple-darwin.dmg']);
+  const [attach, detach] = programs(sys3);
+  const mount = attach.args[5];
+  assert.deepEqual(attach.args, ['attach', '-nobrowse', '-readonly', '-noautoopen', '-mountpoint', mount, path.join(path.dirname(mount), 'pandite-0.2.0-universal-apple-darwin.dmg')]);
+  assert.deepEqual(detach.args, ['detach', mount, '-force']);
+  assert.equal(attach.command, HDIUTIL);
+  assert.equal(readFileSync(path.join(sys3.home, 'Applications', 'pandite.app', 'Contents', 'MacOS', 'pandite'), 'utf8'), 'pandite 0.2.0 from dmg');
+  noTempLeft(sys3);
+});
+
+test('uninstall on each system', async () => {
+  // Windows: the registered uninstaller, silent, then wait for its entry to go.
+  const gh = fakeGitHub([rel('0.2.0')], { latest: '0.2.0' });
+  const win = fakeSystem('win32', 'x64');
+  assert.equal((await install(win, gh, [])).code, 0);
+  win.state.entryLingers = 2;
+  let r = await install(win, gh, ['uninstall']);
+  assert.equal(r.code, 0, r.err.join('\n'));
+  const ran = programs(win).filter((c) => c.command === win.uninstaller);
+  assert.deepEqual(ran.map((c) => c.args), [['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART']]);
+  assert.equal(win.state.sleeps, 2, 'waits while the entry stays');
+  assert.deepEqual(r.out, [`Pandite removed from ${win.installDir}.`]);
+  assert.ok(!existsSync(win.data), 'marker and log removed');
+  r = await install(win, gh, ['--uninstall']);
+  assert.equal(r.code, 0);
+  assert.deepEqual(r.out, ['Pandite is not installed for this user: the setup program registered no uninstaller. Nothing was removed.']);
+  // A failing uninstaller keeps the marker.
+  const win2 = fakeSystem('win32', 'arm64');
+  assert.equal((await install(win2, gh, [])).code, 0);
+  win2.state.uninstallerExit = 3;
+  r = await install(win2, gh, ['uninstall']);
+  assert.equal(r.code, 1);
+  assert.deepEqual(r.err, ['pandite-installer: running the uninstaller', 'pandite-installer: the uninstaller failed with exit code 3']);
+  assert.ok(existsSync(path.join(win2.data, MARKER)));
+
+  // Linux: the kept install.sh --uninstall with the same PREFIX.
+  const lin = fakeSystem('linux');
+  assert.equal((await install(lin, gh, [])).code, 0);
+  const bin = path.join(lin.home, '.local', 'bin', 'pandite');
+  assert.ok(existsSync(bin));
+  r = await install(lin, gh, ['uninstall']);
+  assert.equal(r.code, 0, r.err.join('\n'));
+  const sh = programs(lin).at(-1);
+  assert.deepEqual([sh.command, sh.args], [SH, [path.join(lin.data, 'linux', 'install.sh'), '--uninstall']]);
+  assert.equal(sh.env.PREFIX, path.join(lin.home, '.local'));
+  assert.ok(!existsSync(bin));
+  assert.ok(!existsSync(lin.data));
+  assert.deepEqual(r.out, [`Pandite removed from ${path.join(lin.home, '.local')}.`]);
+  r = await install(lin, gh, ['uninstall']);
+  assert.equal(r.code, 0);
+  assert.match(r.out[0], /^Pandite is not installed by this installer: .* holds no install\.sh\. Nothing was removed\.$/);
+
+  // macOS: delete the app.
+  const mac = fakeSystem('darwin', 'arm64');
+  assert.equal((await install(mac, gh, [])).code, 0);
+  const app = path.join(mac.home, 'Applications', 'pandite.app');
+  r = await install(mac, gh, ['uninstall']);
+  assert.equal(r.code, 0, r.err.join('\n'));
+  assert.ok(!existsSync(app));
+  assert.ok(!existsSync(mac.data));
+  assert.deepEqual(r.out, [`Pandite removed from ${app}.`]);
+  assert.deepEqual(programs(mac), []);
+  r = await install(mac, gh, ['uninstall']);
+  assert.deepEqual(r.out, [`Pandite is not installed: ${app} does not exist. Nothing was removed.`]);
+  assert.equal(gh.downloads().length, 4 * 2, 'four installs download two files each; uninstall downloads nothing');
+});
+
+test('--list prints the release versions, newest first', async () => {
+  const gh = fakeGitHub([
+    rel('0.9.0'),
+    { version: '0.10.1-rc.1', prerelease: true, files: new Map() },
+    rel('0.10.0'),
+    { tag: 'nightly', files: new Map() },
+    { version: '0.11.0', draft: true, files: new Map() },
+  ]);
+  const sys = fakeSystem('freebsd', 'x64');
+  const r = await install(sys, gh, ['--list']);
+  assert.equal(r.code, 0, r.err.join('\n'));
+  assert.deepEqual(r.out, ['0.10.1-rc.1 (pre-release)', '0.10.0', '0.9.0']);
+  assert.deepEqual(gh.apiCalls(), [`${API}/releases?per_page=100`]);
+  const none = await install(fakeSystem('linux'), fakeGitHub([]), ['--list']);
+  assert.equal(none.code, 1);
+  assert.deepEqual(none.err, ['pandite-installer: no Pandite release found at https://github.com/xls/pandite/releases']);
+});
+
+test('no release, rate limit and network errors give one clear line', async () => {
+  const cases = [
+    [fakeGitHub([]).fetch, 'no Pandite release found at https://github.com/xls/pandite/releases'],
+    [fakeGitHub([], { rateLimit: true }).fetch, 'the GitHub API rate limit for this network is used up (60 requests per hour without sign-in). Try again in 25 minutes.'],
+    [fakeGitHub([], { apiStatus: 500 }).fetch, `GitHub answered HTTP 500 for ${API}/releases/latest`],
+    [
+      async () => {
+        throw new TypeError('fetch failed', { cause: Object.assign(new Error('getaddrinfo ENOTFOUND api.github.com'), { code: 'ENOTFOUND' }) });
+      },
+      'cannot reach api.github.com: getaddrinfo ENOTFOUND api.github.com. Check the network connection.',
+    ],
+  ];
+  for (const [fetch, message] of cases) {
+    for (const argv of [[], ['update'], ['--dry-run'], ['--list']]) {
+      const sys = fakeSystem('linux');
+      const r = await install(sys, { fetch }, argv);
+      if (argv[0] === '--list' && message.startsWith('GitHub answered')) {
+        assert.deepEqual(r.err, [`pandite-installer: GitHub answered HTTP 500 for ${API}/releases?per_page=100`]);
+      } else {
+        assert.deepEqual(r.err, [`pandite-installer: ${message}`], argv.join(' '));
+      }
+      assert.equal(r.code, 1);
+      assert.deepEqual(r.out, []);
+      assert.deepEqual(programs(sys), []);
+    }
+  }
+});
+
+test('the command line', async () => {
+  const sys = fakeSystem('linux');
+  const gh = fakeGitHub([]);
+  let r = await install(sys, gh, ['--help']);
+  assert.equal(r.code, 0);
+  assert.ok(r.out[0].startsWith(`Pandite installer ${INSTALLER_VERSION}\n`));
+  for (const word of ['install', 'update', 'uninstall', '--uninstall', '--list', '--dry-run', '--force', '--system', '--installer-version', '-v, --version']) {
+    assert.ok(r.out[0].includes(word), `--help names ${word}`);
+  }
+  r = await install(sys, gh, ['--installer-version']);
+  assert.deepEqual(r.out, [JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version]);
+  for (const [argv, says] of [
+    [['--frobnicate'], 'unknown option --frobnicate'],
+    [['photo.jpg'], 'unknown command "photo.jpg". This is the Pandite installer; it opens no images'],
+    [['--system'], '--system works on macOS only'],
+    [['update', '-v', '1.0'], 'update takes no version. To install a named version, run: npx pandite install -v 1.0.0'],
+    [['uninstall', '-v', '1.0'], 'uninstall takes no version'],
+    [['install', 'update'], 'choose one command, not install and update'],
+    [['-v'], '-v needs a Pandite version, such as -v 0.1.0 (for the version of the installer: --installer-version)'],
+    [['--version', '--force'], '--version needs a Pandite version'],
+    [['--force=yes'], '--force takes no value'],
+  ]) {
+    r = await install(sys, gh, argv);
+    assert.equal(r.code, 2, argv.join(' '));
+    assert.equal(r.err.length, 1);
+    assert.ok(r.err[0].startsWith(`pandite-installer: ${says}`), r.err[0]);
+    assert.ok(r.err[0].endsWith('Run "npx pandite --help" for the options.'));
+  }
+  assert.equal(gh.calls.length, 0);
+  assert.deepEqual(parseArgs([]), { command: null, version: null, list: false, dryRun: false, force: false, system: false, installerVersion: false, help: false });
+  assert.equal(parseArgs(['--uninstall']).command, 'uninstall');
+  assert.equal(parseArgs(['uninstall', '--uninstall']).command, 'uninstall');
+  assert.equal(parseArgs(['-v', 'v0.1.0', '--force', '--system', '--dry-run']).version, '0.1.0');
+  assert.throws(() => parseArgs(['-v', 'abc']), (e) => e instanceof InstallerError && e.exitCode === 2);
 });
 
 test('archive entries outside their folder and links are refused', () => {
@@ -381,44 +947,42 @@ test('archive entries outside their folder and links are refused', () => {
     makeZip([{ name: 'a\\..\\..\\evil.txt', data: Buffer.from('x') }]),
     makeZip([{ name: 'link', data: Buffer.from('/etc/passwd'), mode: 0o120777 }]),
   ];
-  for (const zip of bad) assert.throws(() => unzip(zip, tempDir()), LauncherError);
-  assert.throws(() => untar(makeTarGz([{ name: '../evil', data: Buffer.from('x') }]), tempDir()), LauncherError);
-  assert.throws(() => untar(makeTarGz([{ name: 'link', type: '2' }]), tempDir()), LauncherError);
-  assert.throws(() => untar(makeTarGz([{ name: 'hard', type: '1' }]), tempDir()), LauncherError);
+  for (const zip of bad) assert.throws(() => unzip(zip, tempDir()), InstallerError);
+  assert.throws(() => untar(makeTarGz([{ name: '../evil', data: Buffer.from('x') }]), tempDir()), InstallerError);
+  assert.throws(() => untar(makeTarGz([{ name: 'link', type: '2' }]), tempDir()), InstallerError);
+  assert.throws(() => untar(makeTarGz([{ name: 'hard', type: '1' }]), tempDir()), InstallerError);
   assert.throws(() => unzip(Buffer.from('not a zip at all, not even close to one'), tempDir()), /not a zip file/);
-  // Long tar names (GNU "L" entries) unpack under their full name.
   const dest = tempDir();
   const long = `top/${'d'.repeat(120)}/file.txt`;
   assert.deepEqual(untar(makeTarGz([{ name: long, data: Buffer.from('long') }]), dest), [long]);
   assert.equal(readFileSync(path.join(dest, ...long.split('/')), 'utf8'), 'long');
 });
 
-test('checksums.json comes from SHA256SUMS.txt', () => {
-  const lines = allAssets(VERSION).map((a, i) => `${String(i).repeat(64)}  ${a}`);
-  lines.push(`${'A'.repeat(64)} *pandite-${VERSION}-windows.msixbundle`);
-  const sums = parseSums(`${lines.join('\n')}\n`);
-  assert.equal(sums.get(`pandite-${VERSION}-windows.msixbundle`), 'a'.repeat(64));
-  const made = makeChecksums(VERSION, sums);
-  assert.equal(made.version, VERSION);
-  assert.deepEqual(Object.keys(made.sha256), allAssets(VERSION));
-  assert.equal(made.sha256[`pandite-${VERSION}-universal-apple-darwin.zip`], '2'.repeat(64));
-  const missing = parseSums(lines.slice(1).join('\n'));
-  assert.throws(() => makeChecksums(VERSION, missing), /no line for pandite-1\.2\.3-x86_64-pc-windows-msvc\.zip/);
-  assert.throws(() => parseSums('abc  file\n'), /not a sha256sum line/);
+test('SHA256SUMS.txt and reg export files parse', () => {
+  const sums = parseSums(`${'A'.repeat(64)}  a.zip\n${'b'.repeat(64)} *b file.exe\r\nnot a line\n\n`);
+  assert.deepEqual([...sums], [['a.zip', 'a'.repeat(64)], ['b file.exe', 'b'.repeat(64)]]);
+  // A user folder with a character outside ASCII survives (reg export writes UTF-16).
+  const location = 'C:\\Users\\Jos\u00e9 \\"Q\\"\\AppData\\Local\\Programs\\Pandite\\';
+  const values = parseRegFile(regFile(`HKCU\\${UNINSTALL_KEY}`, { InstallLocation: location, DisplayVersion: '0.1.0' }));
+  assert.deepEqual(values, { InstallLocation: location, DisplayVersion: '0.1.0' });
 });
 
-let failed = false;
+let failed = 0;
 try {
   for (const [name, fn] of tests) {
     try {
       await fn();
+      console.log(`ok - ${name}`);
     } catch (error) {
-      failed = true;
-      console.error(`STEP FAILED: ${name}\n${error.stack ?? error}`);
+      failed += 1;
+      console.error(`STEP FAILED: ${name}\n${error?.stack ?? error}`);
     }
   }
 } finally {
-  rmSync(TEMP, { recursive: true, force: true });
+  rmSync(TEMP, { recursive: true, force: true, maxRetries: 3 });
 }
-if (failed) process.exit(1);
-console.log('NPM LAUNCHER VERIFIED');
+if (failed) {
+  console.error(`${failed} of ${tests.length} tests failed`);
+  process.exit(1);
+}
+console.log('NPM INSTALLER VERIFIED');

@@ -8,9 +8,13 @@
 #                           in a .dmg and a .zip
 #   Linux x64               .tar.gz with desktop entry, icons, install script,
 #                           and a .deb and an .rpm with the same files
-#   npm                     launcher package (npx pandite) that downloads
-#                           the file for its system and checks its SHA-256
 # then writes SHA256SUMS.txt and publishes a GitHub release with all files.
+#
+# The npm installer (packaging/npm, `npx pandite`) is not part of a release.
+# It finds the releases on GitHub and installs the Windows setup program,
+# the macOS zip or the Linux tarball after it checks SHA256SUMS.txt. Its
+# owner publishes it to npm by hand when the installer code changes; see
+# docs/building.md.
 #
 # A manual run on a branch is a dry run: it builds every package and keeps
 # them as workflow artifacts. A manual run on a tag publishes like a push.
@@ -22,9 +26,6 @@
 # Optional secrets add sideload-signed copies of the MSIX packages:
 #   PANDITE_SIGNING_CERT_BASE64 (a .pfx file, base64), PANDITE_SIGNING_CERT_PASSWORD
 # See docs/store-submission.md.
-# Optional secret NPM_TOKEN (an npm token with publish rights): a tag build
-# also publishes the npm launcher to the npm registry. Without it, the npm
-# package is a release file only.
 
 name: Release
 
@@ -345,29 +346,16 @@ jobs:
           retention-days: 7
 
   checksums:
-    name: npm launcher and checksums
+    name: Checksums
     needs: [version, windows, windows-bundle, macos, linux]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    env:
-      VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v5
-
       - uses: actions/download-artifact@v4
         with:
           pattern: "{windows-*,macos,linux}"
           path: dist
           merge-multiple: true
-
-      - name: Test the npm launcher (offline)
-        run: node packaging/npm/test.mjs
-
-      - name: npm launcher with the SHA-256 of the packages
-        run: |
-          (cd dist && sha256sum -- *) > "$RUNNER_TEMP/packages.sha256"
-          node packaging/npm/build.mjs --version "$VERSION" \
-            --sums "$RUNNER_TEMP/packages.sha256" --out dist
 
       - name: SHA-256 of every file
         working-directory: dist
@@ -396,7 +384,6 @@ jobs:
       TAG: ${{ needs.version.outputs.tag }}
       VERSION: ${{ needs.version.outputs.version }}
       PRERELEASE: ${{ needs.version.outputs.prerelease }}
-      HAS_NPM_TOKEN: ${{ secrets.NPM_TOKEN != '' }}
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -415,9 +402,9 @@ jobs:
           - Debian and Ubuntu (x64): \`pandite_${VERSION}_amd64.deb\`. Install it with \`sudo apt install ./pandite_${VERSION}_amd64.deb\`.
           - Fedora, openSUSE and other RPM systems (x64): \`pandite-$VERSION-1.x86_64.rpm\`. Install it with \`sudo dnf install ./pandite-$VERSION-1.x86_64.rpm\`.
           - Other Linux (x64): \`pandite-$VERSION-x86_64-unknown-linux-gnu.tar.gz\`. Extract it and run \`./install.sh\` to install it for your user.
-          - Node.js 18 or later: \`npx pandite photo.jpg\` downloads the file for your system from this page on the first run, checks its SHA-256 and starts Pandite. \`pandite-$VERSION-npm.tgz\` is that npm package.
+          - Windows, macOS or Linux x64 with Node.js 18 or later: \`npx pandite\` installs the latest release for your user. It downloads the setup program, the macOS zip or the Linux tarball from the release page, checks it against \`SHA256SUMS.txt\` and installs it. \`npx pandite update\` installs a newer release.
 
-          The Linux packages need glibc 2.35 or later. The macOS zip and the Linux tarball are also the files that the npm launcher downloads.
+          The Linux packages need glibc 2.35 or later.
 
           Check downloads against \`SHA256SUMS.txt\`.
           EOF
@@ -429,22 +416,3 @@ jobs:
             gh release create "$TAG" dist/* --verify-tag --title "Pandite $VERSION" \
               --notes-file notes.md --generate-notes "${flags[@]}"
           fi
-
-      # After the GitHub release: the launcher downloads its files from there.
-      - name: Publish the npm launcher (only when the NPM_TOKEN secret exists)
-        if: env.HAS_NPM_TOKEN == 'true'
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          npmrc="$RUNNER_TEMP/npmrc"
-          trap 'rm -f "$npmrc"' EXIT
-          # npm reads the token from the environment; the file holds no secret.
-          printf '//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}\n' > "$npmrc"
-          export NPM_CONFIG_USERCONFIG="$npmrc"
-          if npm view "pandite@$VERSION" version >/dev/null 2>&1; then
-            echo "pandite@$VERSION is on npm already"
-            exit 0
-          fi
-          tag=latest
-          if [ "$PRERELEASE" = "true" ]; then tag=next; fi
-          npm publish "dist/pandite-$VERSION-npm.tgz" --access public --tag "$tag"
