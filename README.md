@@ -4,7 +4,7 @@
 
 <h1 align="center">Pandite</h1>
 
-<p align="center"><b>Sick and tired of slow image viewing? Pandite is for you.</b></p>
+<p align="center"><b>Sick and tired of slow or unresponsive image viewers? Pandite is for you.</b></p>
 
 <p align="center">
   <a href="https://github.com/xls/pandite/actions/workflows/ci.yml"><img src="https://github.com/xls/pandite/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
