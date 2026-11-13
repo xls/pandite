@@ -6,7 +6,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use pandite_app::{cli, console, register, shell};
+use pandite_app::{cli, console, register, resident, shell};
 
 fn main() {
     let cwd = std::env::current_dir().unwrap_or_default();
@@ -28,6 +28,21 @@ fn main() {
     }
     if cli.register || cli.unregister {
         std::process::exit(associations(cli.register));
+    }
+    if cli.quit {
+        resident::ask(&resident::Request::Quit);
+        return;
+    }
+    if shell::may_stay(&cli) {
+        // A pandite that waits in the background shows the image at once.
+        let taken = if cli.background {
+            resident::ask(&resident::Request::Ping).is_some()
+        } else {
+            resident::hand_over(cli.path.as_deref())
+        };
+        if taken {
+            return;
+        }
     }
     let code = shell::run(cli);
     // Worker threads stuck in file reads are not joined.

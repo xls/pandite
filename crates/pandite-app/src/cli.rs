@@ -11,6 +11,10 @@
 //!                        startup image once it shows at full resolution
 //!   --config-dir <dir>   keep settings in this folder instead of the
 //!                        per-user configuration folder
+//!   --background         Windows: start hidden and wait for the first image
+//!                        (for a start at sign-in)
+//!   --quit               Windows: end the pandite that waits in the
+//!                        background
 //!   --register           Windows: add pandite to "Open with" and to Default
 //!                        apps for every supported file type, for this user
 //!   --unregister         Windows: remove what --register added
@@ -33,6 +37,8 @@ Options:
   --smoke-stall       with --smoke: simulate a file that never finishes loading
   --timing            print how long the startup image took to appear
   --config-dir <dir>  keep settings in this folder
+  --background        Windows: start hidden and wait for the first image
+  --quit              Windows: end the pandite that waits in the background
   --register          Windows: add pandite to Open with and Default apps
                       for every supported file type (this user only)
   --unregister        Windows: remove what --register added
@@ -54,6 +60,10 @@ pub struct Cli {
     pub timing: bool,
     /// Settings folder override.
     pub config_dir: Option<PathBuf>,
+    /// Start hidden, as the program that waits in the background.
+    pub background: bool,
+    /// End the program that waits in the background and exit.
+    pub quit: bool,
     /// Register the file associations for this user and exit.
     pub register: bool,
     /// Remove the file associations for this user and exit.
@@ -133,6 +143,8 @@ where
             }
             "--smoke-stall" => cli.smoke_stall = true,
             "--timing" => cli.timing = true,
+            "--background" => cli.background = true,
+            "--quit" => cli.quit = true,
             "--register" => cli.register = true,
             "--unregister" => cli.unregister = true,
             "--config-dir" => {
@@ -224,6 +236,8 @@ mod tests {
         assert!(parse(["--version"], &cwd()).unwrap().version);
         assert!(parse(["--register"], &cwd()).unwrap().register);
         assert!(parse(["--unregister"], &cwd()).unwrap().unregister);
+        assert!(parse(["--background"], &cwd()).unwrap().background);
+        assert!(parse(["--quit"], &cwd()).unwrap().quit);
         assert!(parse(["--register", "--unregister"], &cwd()).is_err());
         assert!(parse(["-V"], &cwd()).unwrap().version);
 

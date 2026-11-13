@@ -8,6 +8,12 @@
 //! when something changed: after input, after a wake, at animation
 //! deadlines and when the interface asks for a timed frame. Between those
 //! the event loop sleeps (`ControlFlow::Wait` or `WaitUntil`).
+//!
+//! On Windows the first pandite of a user session stays when its window
+//! closes (see [`crate::resident`]): it ends the core, drops the renderer
+//! and with them every image, thumbnail and texture, hides the window and
+//! keeps only the open GPU device. The next image opens in that process
+//! without the start-up cost.
 
 mod input;
 mod native;
@@ -19,6 +25,7 @@ use crate::cli::Cli;
 use crate::console;
 use crate::disk::{Disk, StdDisk};
 use crate::platform::Waker;
+use crate::resident::{self, Reply, Request};
 use crate::settings::{self, ensure_on_screen, first_open_rect, Settings, ThemeChoice};
 use pandite_core::{Content, DrawList, Point, Rect, Size};
 use pandite_render::{
@@ -29,7 +36,7 @@ use pandite_ui::{InputEvent, ThemeKind};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, Ime, StartCause, WindowEvent};
@@ -42,6 +49,11 @@ pub const EXIT_NO_GPU: i32 = 3;
 /// How long the settings file may take to load before defaults are used.
 const SETTINGS_LOAD_WAIT: Duration = Duration::from_millis(400);
 
+/// How long a window whose GPU is ready stays hidden for its image, so
+/// that it appears with the image in it. A file that takes longer shows
+/// the loading screen.
+const SHOW_WAIT: Duration = Duration::from_millis(150);
+
 /// How long writing the settings at exit may take.
 const SETTINGS_SAVE_WAIT: Duration = Duration::from_secs(2);
 
@@ -51,6 +63,8 @@ pub enum UserEvent {
     Wake,
     /// The GPU device opened on its start-up thread.
     GpuReady(Result<Arc<Gpu>, String>),
+    /// Another pandite process asks the one in the background.
+    Resident(Request),
     /// An upload finished on the upload thread.
     Prepared {
         /// The renderer the upload was made for.
@@ -87,6 +101,41 @@ fn load_settings(path: Option<PathBuf>) -> (Settings, Option<PathBuf>) {
     }
 }
 
+/// True when this command line may use the pandite that waits in the
+/// background, and may become it. Test and timing runs and runs with
+/// their own settings folder stand alone.
+pub fn may_stay(cli: &Cli) -> bool {
+    cfg!(windows) && cli.smoke.is_none() && !cli.timing && cli.config_dir.is_none()
+}
+
+/// Become the program that waits in the background, when no other process
+/// is. `dormant` is true while it shows no window.
+fn become_resident(proxy: &EventLoopProxy<UserEvent>, dormant: &Arc<AtomicBool>) -> bool {
+    let proxy = Mutex::new(proxy.clone());
+    let dormant = Arc::clone(dormant);
+    let send = move |request: Request| {
+        proxy
+            .lock()
+            .is_ok_and(|p| p.send_event(UserEvent::Resident(request)).is_ok())
+    };
+    resident::listen(move |request| match request {
+        Request::Ping => Reply::Ok,
+        Request::Quit => {
+            send(Request::Quit);
+            Reply::Ok
+        }
+        // Only a hidden program takes the image; one that shows a window
+        // leaves the new process to open its own.
+        open @ Request::Open { .. } => {
+            if dormant.swap(false, Ordering::AcqRel) && send(open) {
+                Reply::Ok
+            } else {
+                Reply::Busy
+            }
+        }
+    })
+}
+
 /// Run the viewer until the window closes. Returns the process exit code.
 pub fn run(cli: Cli) -> i32 {
     let start = Instant::now();
@@ -104,9 +153,21 @@ pub fn run(cli: Cli) -> i32 {
         }
     };
     let proxy = event_loop.create_proxy();
-    let early_gpu = start_gpu(&proxy);
+    let dormant = Arc::new(AtomicBool::new(false));
+    let stays = may_stay(&cli) && settings.stay_ready && become_resident(&proxy, &dormant);
+    if cli.background && !stays {
+        // Nothing to wait for: another process does, or the setting is off.
+        return 0;
+    }
+    if stays {
+        // Do not keep the folder of the first image in use.
+        let _ = std::env::set_current_dir(std::env::temp_dir());
+    }
+    let early_gpu = start_gpu(&proxy, start);
     let mut shell = Shell::new(cli, start, settings, settings_path, proxy);
     shell.early_gpu = early_gpu;
+    shell.resident = stays;
+    shell.dormant = dormant;
     if let Err(err) = event_loop.run_app(&mut shell) {
         console::err(&format!("pandite: event loop failed: {err}"));
         shell.exit_code = shell.exit_code.max(1);
@@ -120,23 +181,35 @@ pub fn run(cli: Cli) -> i32 {
 /// the window brings the first frame forward. Only on Windows: a DirectX 12
 /// device can present to any window, and other platforms want surface
 /// work on the main thread. Returns true when the worker started.
-fn start_gpu(proxy: &EventLoopProxy<UserEvent>) -> bool {
+fn start_gpu(proxy: &EventLoopProxy<UserEvent>, start: Instant) -> bool {
     if !cfg!(windows) {
         return false;
     }
     let proxy = proxy.clone();
+    let trace = std::env::var_os("PANDITE_TRACE").is_some();
+    let mark = move |what: &str| {
+        if trace {
+            console::err(&format!(
+                "pandite trace: {what} at {:.1} ms",
+                start.elapsed().as_secs_f64() * 1000.0
+            ));
+        }
+    };
     std::thread::Builder::new()
         .name("pandite-gpu-start".into())
         .spawn(move || {
             let result = Gpu::new(&GpuOptions::default()).inspect(|gpu| {
+                mark("GPU device open");
                 if let Ok(mut warm) =
                     Renderer::offscreen(Arc::clone(gpu), 4, 4, RenderSettings::default())
                 {
                     let view = pandite_core::ViewState::default();
                     let _ = warm.render(&view, warm.full_viewport(), &DrawList::new());
                 }
+                mark("GPU pipelines built");
                 // Staging memory for the first image's upload, paged in now.
                 gpu.prepare_uploads();
+                mark("GPU ready");
             });
             let _ = proxy.send_event(UserEvent::GpuReady(result.map_err(|e| e.to_string())));
         })
@@ -184,7 +257,24 @@ struct Shell {
     first_frame: bool,
     visible: bool,
     early_gpu: bool,
+    /// The GPU device while no renderer uses it: before the first window
+    /// session and between sessions.
     early_result: Option<Result<Arc<Gpu>, String>>,
+    /// This process stays in the background when its window closes.
+    resident: bool,
+    /// True while the process waits without a window session.
+    dormant: Arc<AtomicBool>,
+    /// Decoders and encoders, kept between window sessions.
+    registry: Option<Arc<pandite_core::Registry>>,
+    /// When the process that asked for the current image started.
+    launched: Option<SystemTime>,
+    image_presented: bool,
+    /// The image load started before the first frame.
+    early_load: bool,
+    /// The hidden window waits for its image until then.
+    show_at: Option<Instant>,
+    /// Take the keyboard focus when the window shows.
+    focus_on_show: bool,
     last_recreate: Option<Instant>,
     image_on_screen: bool,
     trace: bool,
@@ -255,6 +345,14 @@ impl Shell {
             visible: false,
             early_gpu: false,
             early_result: None,
+            resident: false,
+            dormant: Arc::new(AtomicBool::new(false)),
+            registry: None,
+            launched: Some(resident::launch_time()),
+            image_presented: false,
+            early_load: false,
+            show_at: None,
+            focus_on_show: false,
             last_recreate: None,
             image_on_screen: false,
             trace: std::env::var_os("PANDITE_TRACE").is_some(),
@@ -278,6 +376,18 @@ impl Shell {
                 "pandite trace: {what} at {:.1} ms",
                 self.start.elapsed().as_secs_f64() * 1000.0
             ));
+        }
+    }
+
+    /// Like [`Shell::trace`], with the time since the user started the
+    /// process that asked for the image.
+    fn trace_launch(&self, what: &str) {
+        if self.trace {
+            let since = self
+                .launched
+                .and_then(|at| SystemTime::now().duration_since(at).ok())
+                .map_or(0.0, |d| d.as_secs_f64() * 1000.0);
+            self.trace(&format!("{what} ({since:.1} ms after launch)"));
         }
     }
 
@@ -305,7 +415,8 @@ impl Shell {
         }
     }
 
-    /// Create the window, renderer and core, and draw the first frame.
+    /// Create the window, then start the first window session (unless the
+    /// program starts in the background).
     fn create(&mut self, event_loop: &ActiveEventLoop) -> Result<(), (String, i32)> {
         let monitors = native::monitors(
             event_loop.primary_monitor(),
@@ -361,6 +472,9 @@ impl Shell {
             .map(Arc::new)
             .map_err(|e| (format!("cannot create the window: {e}"), 1))?;
         self.trace("window created");
+        // The window appears and disappears at once, without the system's
+        // open and close animation.
+        native::disable_transitions(&window);
         if let Some(rect) = first_rect {
             native::place_client(&window, rect);
         }
@@ -376,6 +490,21 @@ impl Shell {
                 window.set_outer_position(PhysicalPosition::new(p.x, p.y));
             }
         }
+        self.window = Some(window);
+        if self.cli.background {
+            self.trace("waiting in the background");
+            self.dormant.store(true, Ordering::Release);
+            return Ok(());
+        }
+        self.start_session()
+    }
+
+    /// Start the core for the window and draw the first frame, or show
+    /// the window in the theme color until the GPU is ready.
+    fn start_session(&mut self) -> Result<(), (String, i32)> {
+        let Some(window) = self.window.clone() else {
+            return Ok(());
+        };
         self.scale = window.scale_factor();
         let size = window.inner_size();
         let system_theme = window.theme().map(theme_kind);
@@ -392,9 +521,16 @@ impl Shell {
         };
         // Decoders, encoders and the platform text recognizer (none on
         // macOS and Linux yet).
-        let mut registry = pandite_codecs::default_registry();
-        pandite_ocr::register_text_providers(&mut registry);
-        let registry = Arc::new(registry);
+        let registry = match &self.registry {
+            Some(registry) => Arc::clone(registry),
+            None => {
+                let mut registry = pandite_codecs::default_registry();
+                pandite_ocr::register_text_providers(&mut registry);
+                let registry = Arc::new(registry);
+                self.registry = Some(Arc::clone(&registry));
+                registry
+            }
+        };
         let disk: Arc<dyn Disk> = match &self.stall {
             Some(stall) => Arc::clone(stall) as Arc<dyn Disk>,
             None => Arc::new(StdDisk),
@@ -426,19 +562,32 @@ impl Shell {
         let app = App::new(startup, platform)
             .map_err(|e| (format!("cannot start the image library: {e}"), 1))?;
         let background = app.background();
-        self.window = Some(Arc::clone(&window));
         self.app = Some(app);
+        self.trace("core started");
+        if self.early_result.is_some() && self.smoke.is_none() && self.timing.is_none() {
+            // The GPU is ready and the image comes first: it is read and
+            // decoded while the renderer starts. Not while the GPU still
+            // opens (the decoders slow that down by more than they gain),
+            // and not in test and timing runs, which keep the measured
+            // order (the load starts with the first frame).
+            let now = self.now();
+            if let Some(app) = self.app.as_mut() {
+                app.first_frame_shown(now);
+                self.early_load = app.loading_path().is_some();
+            }
+        }
         if self.early_gpu {
+            native::paint_background(&window, background);
+            if let Some(result) = self.early_result.take() {
+                // The GPU is ready (always so when the program waited in
+                // the background): the window shows with its first frame.
+                return self.gpu_ready(result);
+            }
             // The GPU opens on its worker: show the window now, painted in
             // the theme color, and attach the renderer when it is ready.
-            native::paint_background(&window, background);
             window.set_visible(true);
             self.visible = true;
             self.trace("window shown");
-            if let Some(result) = self.early_result.take() {
-                // The GPU was ready before the window.
-                return self.gpu_ready(result);
-            }
             return Ok(());
         }
         let renderer = Renderer::for_window(
@@ -467,17 +616,48 @@ impl Shell {
         if let Some(smoke) = &mut self.smoke {
             smoke.window_ready();
         }
-        if !self.visible {
-            // Draw once while hidden (pipelines and glyphs get built), then
-            // show the window and draw it at once, so it never appears
-            // blank.
+        if let Some(update) = self.uploads.queued.take() {
+            // The image was decoded before the renderer was ready.
+            self.start_upload(update);
+        }
+        self.flush_content();
+        if self.visible {
             self.redraw();
-            window.set_visible(true);
-            self.visible = true;
+            self.trace("first frame");
+        } else if self.early_load {
+            // The image is on its way: draw once while hidden (glyphs get
+            // built) and show the window when the image is in it, or
+            // after a short wait with the loading screen.
+            self.redraw();
+            self.trace("hidden frame");
+            self.show_at = Some(Instant::now() + SHOW_WAIT);
+            window.request_redraw();
+        } else {
+            self.show();
+        }
+        self.flush_content();
+    }
+
+    /// Show the window with a frame in it, so it never appears blank.
+    fn show(&mut self) {
+        self.show_at = None;
+        let Some(window) = self.window.clone() else {
+            return;
+        };
+        if self.visible {
+            return;
+        }
+        // Draw once while hidden (pipelines and glyphs get built), then
+        // show the window and draw it at once.
+        self.redraw();
+        window.set_visible(true);
+        self.visible = true;
+        self.trace("window shown");
+        if std::mem::take(&mut self.focus_on_show) {
+            window.focus_window();
         }
         self.redraw();
         self.trace("first frame");
-        self.flush_content();
     }
 
     /// The GPU worker finished: make the window's renderer from its device,
@@ -511,6 +691,88 @@ impl Shell {
         Ok(())
     }
 
+    /// The window closed and the process stays: end the core, free every
+    /// image, thumbnail and texture, hide the window and keep the GPU
+    /// device for the next image.
+    fn sleep(&mut self) {
+        if let Some(window) = &self.window {
+            window.set_visible(false);
+        }
+        self.visible = false;
+        if let Some(app) = self.app.take() {
+            self.settings = app.settings();
+            let _ = app.shutdown(SETTINGS_SAVE_WAIT);
+        }
+        self.measurer = None;
+        self.content = None;
+        self.list = DrawList::new();
+        // An upload still running belongs to the renderer dropped here.
+        self.uploads = Uploads {
+            epoch: self.uploads.epoch + 1,
+            ..Uploads::default()
+        };
+        if let Some(renderer) = self.renderer.take() {
+            let gpu = Arc::clone(renderer.gpu());
+            drop(renderer);
+            gpu.release_memory();
+            if !gpu.is_lost() {
+                self.early_result = Some(Ok(gpu));
+            }
+        }
+        self.pending_drop = None;
+        self.last_frame = None;
+        self.anim_deadline = None;
+        self.minimized = false;
+        self.occluded = false;
+        self.first_frame = false;
+        self.image_on_screen = false;
+        self.image_presented = false;
+        self.early_load = false;
+        self.show_at = None;
+        self.focus_on_show = false;
+        resident::trim_memory();
+        self.trace("waiting in the background");
+        self.dormant.store(true, Ordering::Release);
+    }
+
+    /// Another pandite process handed over its image.
+    fn wake(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        path: Option<PathBuf>,
+        at: Option<SystemTime>,
+    ) {
+        self.dormant.store(false, Ordering::Release);
+        let Some(window) = self.window.clone() else {
+            // The request came before the window: open the image with it.
+            self.cli.background = false;
+            self.cli.path = path;
+            return;
+        };
+        if let Some(app) = self.app.as_mut() {
+            // A window session runs (the request raced with one starting).
+            if let Some(path) = path {
+                app.open(path, self.start.elapsed());
+            }
+            window.focus_window();
+            return;
+        }
+        // The session clock starts over, as in a new process.
+        self.start = Instant::now();
+        self.launched = at;
+        self.cli.path = path;
+        self.trace_launch("woke up");
+        window.set_minimized(false);
+        self.focus_on_show = true;
+        if let Err((message, code)) = self.start_session() {
+            self.fail_start(event_loop, message, code);
+            return;
+        }
+        if self.visible && std::mem::take(&mut self.focus_on_show) {
+            window.focus_window();
+        }
+    }
+
     /// Report a start-up failure and leave.
     fn fail_start(&mut self, event_loop: &ActiveEventLoop, message: String, code: i32) {
         console::err(&format!("pandite: {message}"));
@@ -542,7 +804,9 @@ impl Shell {
                     self.uploads.queued = None;
                 }
                 Some(_) => {
-                    if self.uploads.in_flight.is_some() {
+                    if self.uploads.in_flight.is_some() || self.renderer.is_none() {
+                        // An upload runs, or the GPU is not ready yet: the
+                        // newest image waits.
                         self.uploads.queued = Some(update);
                     } else {
                         self.start_upload(update);
@@ -632,6 +896,10 @@ impl Shell {
                         self.image_on_screen = true;
                         self.trace("first image uploaded");
                     }
+                    if self.show_at.is_some() {
+                        // The window waited for this image.
+                        self.show();
+                    }
                 }
             }
             Err(err) => {
@@ -718,6 +986,7 @@ impl Shell {
             console::err(&format!("pandite: {err}"));
         }
         let lost = renderer.gpu().is_lost();
+        let mut presented = false;
         match status {
             Ok(status) => {
                 let current = self.uploads.shown == self.uploads.latest && self.uploads.latest > 0;
@@ -740,6 +1009,7 @@ impl Shell {
                     // The full image is on screen: background work that
                     // waited for it (text recognition) may start.
                     app.content_presented(self.uploads.shown, self.start.elapsed());
+                    presented = self.visible;
                 }
             }
             Err(err) => {
@@ -758,6 +1028,10 @@ impl Shell {
                     self.recreate_renderer();
                 }
             }
+        }
+        if presented && !self.image_presented {
+            self.image_presented = true;
+            self.trace_launch("image on screen");
         }
         if self.smoke.is_none() && !self.timing_printed {
             if let Some(line) = self.timing.as_ref().and_then(timing::Timing::line) {
@@ -834,6 +1108,10 @@ impl Shell {
         let wants_exit = self.app.as_ref().is_some_and(App::exit_requested)
             || self.smoke.as_ref().is_some_and(smoke::Smoke::finished);
         if wants_exit {
+            if self.resident && self.exit_code == 0 && self.app.is_some() {
+                self.sleep();
+                return;
+            }
             if let Some(window) = &self.window {
                 // Disappear at once; settings are written after the loop.
                 window.set_visible(false);
@@ -871,10 +1149,26 @@ impl ApplicationHandler<UserEvent> for Shell {
                 }
                 self.flush_content();
             }
+            UserEvent::Resident(Request::Open { path, launched }) => {
+                self.wake(event_loop, path, launched);
+            }
+            UserEvent::Resident(Request::Quit) => {
+                self.resident = false;
+                match self.app.as_mut() {
+                    Some(app) => app.request_exit(),
+                    None => event_loop.exit(),
+                }
+            }
+            UserEvent::Resident(Request::Ping) => {}
             UserEvent::GpuReady(result) => {
-                if self.window.is_none() {
-                    // The window comes in `resumed`; it takes the device then.
+                if self.app.is_none() {
+                    // No window session yet (the window comes in `resumed`,
+                    // or the program waits in the background): the next
+                    // session takes the device.
                     self.early_result = Some(result);
+                    if self.dormant.load(Ordering::Acquire) {
+                        resident::trim_memory();
+                    }
                 } else if self.renderer.is_none() {
                     if let Err((message, code)) = self.gpu_ready(result) {
                         self.fail_start(event_loop, message, code);
@@ -1039,6 +1333,10 @@ impl ApplicationHandler<UserEvent> for Shell {
         }
         self.flush_content();
         self.check_exit(event_loop);
+        if self.show_at.is_some_and(|at| at <= Instant::now()) {
+            // The image takes long: show the loading screen.
+            self.show();
+        }
         let Some(window) = self.window.clone() else {
             return;
         };
@@ -1060,6 +1358,9 @@ impl ApplicationHandler<UserEvent> for Shell {
         }
         if let Some(deadline) = self.smoke.as_ref().map(smoke::Smoke::deadline) {
             wake = Some(wake.map_or(deadline, |w| w.min(deadline)));
+        }
+        if let Some(at) = self.show_at {
+            wake = Some(wake.map_or(at, |w| w.min(at)));
         }
         match wake {
             Some(t) if t <= Instant::now() => {

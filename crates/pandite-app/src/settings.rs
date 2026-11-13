@@ -142,6 +142,9 @@ pub struct Settings {
     pub jpeg_quality: u8,
     /// Text recognition (`ocr = auto | off`).
     pub ocr: TextRecognition,
+    /// Windows: when the window closes, stay in the background without
+    /// any image in memory, so the next image opens at once.
+    pub stay_ready: bool,
 }
 
 impl Default for Settings {
@@ -158,6 +161,7 @@ impl Default for Settings {
             wrap_around: true,
             jpeg_quality: 90,
             ocr: TextRecognition::Auto,
+            stay_ready: true,
         }
     }
 }
@@ -211,6 +215,15 @@ impl Settings {
             "\n# Read text in images so it can be selected and copied: auto or off."
         );
         let _ = writeln!(s, "ocr = {}", self.ocr.as_str());
+        let _ = writeln!(
+            s,
+            "\n# Windows: stay in the background when the window closes (no image is"
+        );
+        let _ = writeln!(
+            s,
+            "# kept in memory), so the next image opens at once. pandite --quit ends it."
+        );
+        let _ = writeln!(s, "stay_ready = {}", self.stay_ready);
         s
     }
 
@@ -272,6 +285,7 @@ impl Settings {
                         .ok_or_else(bad)?;
                 }
                 "wrap_around" => s.wrap_around = parse_bool(value).ok_or_else(bad)?,
+                "stay_ready" => s.stay_ready = parse_bool(value).ok_or_else(bad)?,
                 "jpeg_quality" => {
                     s.jpeg_quality = parse_num::<u8>(value)
                         .filter(|v| (1..=100).contains(v))
@@ -507,6 +521,7 @@ mod tests {
             wrap_around: false,
             jpeg_quality: 77,
             ocr: TextRecognition::Off,
+            stay_ready: false,
         };
         assert_eq!(Settings::parse(&s.to_text()).unwrap(), s);
         assert_eq!(

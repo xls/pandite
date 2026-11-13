@@ -399,6 +399,19 @@ impl Gpu {
         }
     }
 
+    /// Free the staging buffers and let the device release what dropped
+    /// renderers and images held. For a program that keeps the device open
+    /// while it shows nothing; [`Gpu::prepare_uploads`] is not needed
+    /// afterwards, the next upload allocates again.
+    pub fn release_memory(&self) {
+        self.staging
+            .free
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        let _ = self.device.poll(wgpu::PollType::Poll);
+    }
+
     /// Measure content uploads: when on, every upload waits for the GPU
     /// after the pixel conversion and after mip generation and records
     /// both durations (see [`crate::PreparedContent::upload_timings`]).
