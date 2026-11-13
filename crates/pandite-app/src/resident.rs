@@ -54,6 +54,8 @@ pub enum Reply {
     Stale,
 }
 
+// The pipe is the only user of the reply text.
+#[cfg(any(windows, test))]
 impl Reply {
     fn text(self) -> &'static str {
         match self {
