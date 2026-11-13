@@ -10,6 +10,9 @@ import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join, delimiter } from 'node:path';
 import process from 'node:process';
+import { reuseGate } from './reuse.mjs';
+
+reuseGate('workspace');
 
 const env = { ...process.env };
 env.PATH = [join(homedir(), '.cargo', 'bin'), env.PATH ?? env.Path ?? ''].join(delimiter);

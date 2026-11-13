@@ -11,6 +11,9 @@
 // the content is correct is proven later by the decoder's pixel tests.
 import { readFileSync, existsSync } from 'node:fs';
 import process from 'node:process';
+import { reuseGate } from './reuse.mjs';
+
+reuseGate('rawspec');
 
 const fail = (m) => { console.error(`STEP FAILED: ${m}`); process.exit(1); };
 const formats = process.argv.slice(2);

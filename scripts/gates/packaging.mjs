@@ -17,6 +17,9 @@ import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join, delimiter, dirname } from 'node:path';
 import process from 'node:process';
+import { reuseGate } from './reuse.mjs';
+
+reuseGate('packaging');
 
 const fail = (msg) => {
   console.error(`STEP FAILED: ${msg}`);

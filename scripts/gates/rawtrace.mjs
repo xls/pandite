@@ -6,6 +6,9 @@
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import process from 'node:process';
+import { reuseGate } from './reuse.mjs';
+
+reuseGate('rawtrace');
 
 const fmt = process.argv[2];
 if (!fmt) { console.error('usage: rawtrace.mjs <format>'); process.exit(2); }

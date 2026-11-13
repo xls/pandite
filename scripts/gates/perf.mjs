@@ -18,6 +18,9 @@ import { spawnSync } from 'node:child_process';
 import { readdirSync, existsSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import process from 'node:process';
+import { reuseGate } from './reuse.mjs';
+
+reuseGate('perf');
 
 const fail = (m) => { console.error(`STEP FAILED: ${m}`); process.exit(1); };
 const args = process.argv.slice(2);

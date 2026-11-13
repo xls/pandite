@@ -19,6 +19,9 @@ import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join, delimiter } from 'node:path';
 import process from 'node:process';
+import { reuseGate } from './reuse.mjs';
+
+reuseGate('downscale');
 
 const fail = (m) => { console.error(`STEP FAILED: ${m}`); process.exit(1); };
 const args = process.argv.slice(2);

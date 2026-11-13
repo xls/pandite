@@ -16,6 +16,7 @@ import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join, delimiter } from 'node:path';
 import process from 'node:process';
+import { reuseStep } from './reuse.mjs';
 
 const args = process.argv.slice(2);
 const crate = args[0];
@@ -64,9 +65,16 @@ function run(label, cargoArgs) {
   return out;
 }
 
-run('fmt', ['fmt', '-p', crate, '--', '--check']);
-run('clippy', ['clippy', '-p', crate, '--all-targets', ...featureArgs, '--', '-D', 'warnings']);
-const testOut = run('test', ['test', '-p', crate, ...featureArgs]);
+// The cargo steps do not depend on --tests: ledgers that name the same crate
+// with the same features and environment share one run on one source tree.
+const stepEnv = args.filter((a, i) => args[i - 1] === '--env').sort();
+const step = reuseStep(['crate', crate, featureArgs, stepEnv], () => {
+  run('fmt', ['fmt', '-p', crate, '--', '--check']);
+  run('clippy', ['clippy', '-p', crate, '--all-targets', ...featureArgs, '--', '-D', 'warnings']);
+  return run('test', ['test', '-p', crate, ...featureArgs]);
+});
+const testOut = step.output;
+if (step.reusedAt) console.log(`REUSED: cargo steps for ${crate} passed on this exact source tree at ${step.reusedAt}`);
 
 const passed = [...testOut.matchAll(/^test (\S+) \.\.\. ok\s*$/gm)].map((m) => m[1]);
 if (passed.length === 0) {

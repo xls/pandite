@@ -14,6 +14,9 @@ import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join, delimiter } from 'node:path';
 import process from 'node:process';
+import { reuseGate } from './reuse.mjs';
+
+reuseGate('no-network');
 
 const BANNED = [
   'reqwest', 'hyper', 'hyper-util', 'h2', 'h3', 'ureq', 'curl', 'curl-sys', 'isahc', 'attohttpc',

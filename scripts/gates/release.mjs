@@ -15,6 +15,9 @@ import { statSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, delimiter } from 'node:path';
 import process from 'node:process';
+import { reuseGate } from './reuse.mjs';
+
+reuseGate('release');
 
 const args = process.argv.slice(2);
 let budgetMb = 16;
