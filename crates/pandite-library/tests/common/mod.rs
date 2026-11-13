@@ -167,6 +167,9 @@ pub struct FakeDecoder {
     cv: Condvar,
     /// Decode reduced images cheaply for a target size (staged loading).
     reduced: AtomicBool,
+    /// Held decodes ignore their cancel token, like a decoder inside a
+    /// call that cannot be interrupted.
+    deaf: AtomicBool,
 }
 
 impl FakeDecoder {
@@ -194,6 +197,11 @@ impl FakeDecoder {
     pub fn release_all(&self) {
         lock(&self.state).holds.clear();
         self.cv.notify_all();
+    }
+
+    /// Held decodes stop only on release, not on cancellation.
+    pub fn ignore_cancel(&self) {
+        self.deaf.store(true, Ordering::SeqCst);
     }
 
     pub fn fail(&self, name: &str) {
@@ -321,7 +329,7 @@ impl DecoderProvider for FakeDecoder {
         // flag with no notification, so it is checked every millisecond;
         // the outcome does not depend on that period.
         while g.holds.contains(&call) {
-            if options.cancel.is_cancelled() {
+            if options.cancel.is_cancelled() && !self.deaf.load(Ordering::SeqCst) {
                 self.finish(g, call, End::Cancelled);
                 return Err(Error::Cancelled);
             }

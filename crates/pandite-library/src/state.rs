@@ -139,6 +139,10 @@ enum Role {
     Pool,
     /// Stuck in a cancelled read; replaced and no longer counted.
     WrittenOff,
+    /// Kept free for the current image: it takes no other work, so a newly
+    /// selected file never waits for background work to finish. Not counted
+    /// toward the configured worker count.
+    Reserved,
 }
 
 struct ThreadSlot {
@@ -668,19 +672,41 @@ impl State {
     pub fn wants_thread(&self) -> bool {
         let (pool, off) = self.thread_counts();
         !self.shutdown
-            && pool < self.cfg.workers
             && pool + off < self.cfg.workers + self.cfg.max_written_off
+            && (pool < self.cfg.workers || self.reserved_thread().is_none())
+    }
+
+    /// The live thread kept for the current image, when there is one.
+    pub fn reserved_thread(&self) -> Option<u64> {
+        self.threads
+            .iter()
+            .find(|(_, t)| !t.exited && t.role == Role::Reserved)
+            .map(|(&tid, _)| tid)
+    }
+
+    /// True when `tid` is the thread kept for the current image.
+    pub fn is_reserved(&self, tid: u64) -> bool {
+        self.threads
+            .get(&tid)
+            .is_some_and(|t| t.role == Role::Reserved)
     }
 
     /// Register a thread before it is spawned, so it finds its slot.
     pub fn reserve_thread(&mut self) -> u64 {
         let tid = self.new_id();
+        // The thread for the current image comes first: it must exist
+        // before background work can occupy the pool.
+        let role = if self.reserved_thread().is_none() {
+            Role::Reserved
+        } else {
+            Role::Pool
+        };
         self.threads.insert(
             tid,
             ThreadSlot {
                 handle: None,
                 os_id: None,
-                role: Role::Pool,
+                role,
                 io: false,
                 exited: false,
             },

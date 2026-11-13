@@ -235,7 +235,7 @@ impl State {
         let in_io = self
             .threads
             .get(&tid)
-            .is_some_and(|t| t.io && t.role == Role::Pool);
+            .is_some_and(|t| t.io && t.role != Role::WrittenOff);
         if in_io {
             if let Some(running) = self.running_mut(kind).remove(path) {
                 self.write_off(tid);
@@ -270,7 +270,9 @@ impl State {
     /// has no worker, the least useful running read-ahead decode.
     pub(super) fn preempt(&mut self) {
         let Some(current) = self.current else { return };
-        let active = |r: &Running| !r.cancel.is_cancelled();
+        // Jobs on the reserved thread hold no pool worker.
+        let reserved = self.reserved_thread();
+        let active = |r: &Running| !r.cancel.is_cancelled() && Some(r.thread) != reserved;
         let busy = self.running_full.values().filter(|r| active(r)).count()
             + self.running_screen.values().filter(|r| active(r)).count()
             + self.running_thumb.values().filter(|r| active(r)).count()
@@ -304,7 +306,32 @@ impl State {
         let current_waits = full_positions
             .first()
             .is_some_and(|&p| matches!(self.classify(p), Class::Go));
-        if current_waits && free == 0 {
+        if !current_waits {
+            return;
+        }
+        // The reserved thread takes the current image when it is idle. When
+        // it still works on an earlier selection, it leaves its role and
+        // the caller starts a fresh reserved thread at once. This does not
+        // look at `free`: a cancelled job that has not stopped yet still
+        // holds its pool worker.
+        if let Some(tid) = reserved {
+            let occupied = [
+                &self.running_full,
+                &self.running_screen,
+                &self.running_thumb,
+            ]
+            .iter()
+            .any(|map| map.values().any(|r| r.thread == tid));
+            if !occupied {
+                return;
+            }
+            let (_, off) = self.thread_counts();
+            if off < self.cfg.max_written_off {
+                self.write_off(tid);
+                return;
+            }
+        }
+        if free == 0 {
             let ranker = self.full_ranker();
             let victim = self
                 .running_full
@@ -478,6 +505,10 @@ impl State {
         let first = usize::from(self.current.is_some());
         if let Some(pos) = self.scan(first) {
             return Some(self.start(pos, tid));
+        }
+        // The reserved thread takes the current image and nothing else.
+        if self.is_reserved(tid) {
+            return None;
         }
         if let Some((gen, target)) = self.list_pending.take() {
             let id = self.new_id();

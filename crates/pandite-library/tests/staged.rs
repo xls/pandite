@@ -161,3 +161,46 @@ fn current_image_decodes_alone() {
         assert!(lib.thumbnail(i).is_ready(), "thumbnail {i}");
     }
 }
+
+/// One thread is kept for the selected image: it decodes at once even when
+/// every pool worker is inside background work that cannot be interrupted,
+/// and when that thread is itself still busy with an earlier selection, a
+/// new one takes its place.
+#[test]
+fn selected_image_never_waits_for_background_work() {
+    let mut h = Harness::new("reserved-thread", |c| c.workers = 2);
+    h.dec.ignore_cancel();
+    let paths = h.dir.images(8, 64, 48);
+    // Everything blocks except the full decodes of images 0, 5 and 7.
+    for i in 0..8 {
+        h.dec.hold(Call::thumb(&img(i)));
+        if ![0, 5, 7].contains(&i) {
+            h.dec.hold(Call::full(&img(i)));
+        }
+    }
+    let lib = Arc::clone(h.lib());
+    lib.set_items(paths);
+    lib.set_current(0);
+    assert!(h.wait_for(|e| matches!(e, Event::Ready { index: 0, .. })));
+    // Both pool workers get stuck in held background decodes.
+    let stuck = || h.dec.starts().len() - h.dec.count(&Call::full(&img(0)));
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while stuck() < 2 {
+        assert!(std::time::Instant::now() < deadline, "pool never filled");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    lib.set_current(5);
+    assert!(
+        h.wait_for(|e| matches!(e, Event::Ready { index: 5, .. })),
+        "the selected image waited for background work"
+    );
+    // The reserved thread itself gets stuck on image 6; image 7 still loads.
+    lib.set_current(6);
+    assert!(h.dec.wait_started(&Call::full(&img(6))));
+    lib.set_current(7);
+    assert!(
+        h.wait_for(|e| matches!(e, Event::Ready { index: 7, .. })),
+        "no replacement for the busy reserved thread"
+    );
+    h.dec.release_all();
+}

@@ -61,6 +61,11 @@ fn worker_main(shared: Arc<Shared>, tid: u64) {
                 }
                 break task;
             }
+            // The reserved thread refuses background work: when a wake-up
+            // meant for that work reached it, pass the wake-up on.
+            if st.is_reserved(tid) && st.waiting > 0 && st.has_work() {
+                shared.notify_one_work();
+            }
             shared.idle_cv.notify_all();
             st.waiting += 1;
             // Held back by a current image whose file lookup has not
