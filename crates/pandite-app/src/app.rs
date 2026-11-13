@@ -584,6 +584,11 @@ impl App {
         &self.st.library
     }
 
+    /// Record whether this computer has a discrete GPU, for the next start.
+    pub fn set_gpu_discrete_seen(&mut self, seen: bool) {
+        self.st.settings.gpu_discrete_seen = seen;
+    }
+
     /// Current settings, with the window placement as it is now.
     pub fn settings(&self) -> Settings {
         self.st.final_settings()

@@ -42,7 +42,7 @@ pub struct GpuOptions {
 
 /// How often and how long to wait for a discrete GPU that is expected but
 /// missing from the adapter list.
-const DISCRETE_RETRIES: u32 = 6;
+const DISCRETE_RETRIES: u32 = 25;
 const DISCRETE_RETRY_WAIT: std::time::Duration = std::time::Duration::from_millis(80);
 
 /// True when the adapter list should be read again: a discrete GPU is

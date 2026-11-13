@@ -248,6 +248,10 @@ struct Shell {
     settings_path: Option<PathBuf>,
     proxy: EventLoopProxy<UserEvent>,
     wake_pending: Arc<AtomicBool>,
+    /// Set by a late look at the adapter list that found a discrete GPU.
+    discrete_late: Arc<AtomicBool>,
+    /// The GPU in use is a discrete one.
+    gpu_discrete: bool,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     measurer: Option<TextMeasurer>,
@@ -335,6 +339,8 @@ impl Shell {
             settings_path,
             proxy,
             wake_pending: Arc::new(AtomicBool::new(false)),
+            discrete_late: Arc::new(AtomicBool::new(false)),
+            gpu_discrete: false,
             window: None,
             renderer: None,
             measurer: None,
@@ -623,10 +629,7 @@ impl Shell {
             renderer.gpu().set_measure_uploads(true);
         }
         self.measurer = Some(renderer.text_measurer());
-        // Remember a discrete GPU, so the next start waits for it when the
-        // system is slow to list it; forget it when it is gone for good.
-        self.settings.gpu_discrete_seen = renderer.gpu().adapter_summary().device_type
-            == pandite_render::wgpu::DeviceType::DiscreteGpu;
+        self.note_gpu(&renderer);
         self.renderer = Some(renderer);
         if let Some(smoke) = &mut self.smoke {
             smoke.window_ready();
@@ -714,6 +717,7 @@ impl Shell {
             window.set_visible(false);
         }
         self.visible = false;
+        self.sync_gpu_seen();
         if let Some(app) = self.app.take() {
             self.settings = app.settings();
             let _ = app.shutdown(SETTINGS_SAVE_WAIT);
@@ -1098,8 +1102,45 @@ impl Shell {
         }
     }
 
+    /// Remember a discrete GPU, so the next start waits for it when the
+    /// system is slow to list it. Forget it only when this start waited
+    /// for it in vain. A start that did not expect one and got another
+    /// GPU looks again a little later, off the main thread.
+    fn note_gpu(&mut self, renderer: &Renderer) {
+        let discrete = renderer.gpu().adapter_summary().device_type
+            == pandite_render::wgpu::DeviceType::DiscreteGpu;
+        self.gpu_discrete = discrete;
+        if discrete || self.settings.gpu_discrete_seen {
+            self.settings.gpu_discrete_seen = discrete;
+        } else if self.smoke.is_none() {
+            let late = Arc::clone(&self.discrete_late);
+            let _ = std::thread::Builder::new()
+                .name("pandite-gpu-list".into())
+                .spawn(move || {
+                    std::thread::sleep(Duration::from_secs(2));
+                    let listed = pandite_render::list_adapters(&GpuOptions::default())
+                        .iter()
+                        .any(|a| a.device_type == pandite_render::wgpu::DeviceType::DiscreteGpu);
+                    late.store(listed, Ordering::Release);
+                });
+        }
+        self.sync_gpu_seen();
+    }
+
+    /// Hand the remembered GPU fact to the core, which saves the settings.
+    fn sync_gpu_seen(&mut self) {
+        if self.discrete_late.load(Ordering::Acquire) {
+            self.settings.gpu_discrete_seen = true;
+        }
+        let seen = self.settings.gpu_discrete_seen;
+        if let Some(app) = &mut self.app {
+            app.set_gpu_discrete_seen(seen);
+        }
+    }
+
     /// Report a finished smoke run and decide the exit code.
     fn finish(mut self) -> i32 {
+        self.sync_gpu_seen();
         if let Some(app) = self.app.take() {
             let _ = app.shutdown(SETTINGS_SAVE_WAIT);
         }
@@ -1127,7 +1168,11 @@ impl Shell {
         let wants_exit = self.app.as_ref().is_some_and(App::exit_requested)
             || self.smoke.as_ref().is_some_and(smoke::Smoke::finished);
         if wants_exit {
-            if self.resident && self.exit_code == 0 && self.app.is_some() {
+            // A process that holds another GPU than the discrete one this
+            // computer has does not stay: the next start picks the right one.
+            self.sync_gpu_seen();
+            let wrong_gpu = self.settings.gpu_discrete_seen && !self.gpu_discrete;
+            if self.resident && self.exit_code == 0 && self.app.is_some() && !wrong_gpu {
                 self.sleep();
                 return;
             }
