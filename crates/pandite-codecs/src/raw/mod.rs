@@ -22,6 +22,7 @@
 //! covers the target is used, which makes thumbnails fast.
 
 mod arw;
+mod orf;
 mod srw;
 pub(crate) mod tone;
 
@@ -66,7 +67,7 @@ pub(crate) struct Developer {
 /// The formats developed from sensor data, tried in order. To add a
 /// format, declare its module (`mod <fmt>;`) and add `&<fmt>::DEVELOPER`
 /// to this table; nothing else in this file changes.
-const DEVELOPERS: &[&Developer] = &[&arw::DEVELOPER, &srw::DEVELOPER];
+const DEVELOPERS: &[&Developer] = &[&arw::DEVELOPER, &srw::DEVELOPER, &orf::DEVELOPER];
 
 /// Decodes camera RAW files (DNG from sensor data, other formats through
 /// their embedded preview).

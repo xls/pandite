@@ -22,13 +22,13 @@
 
 mod color;
 mod develop;
-mod ifd;
+pub(crate) mod ifd;
 mod meta;
 mod preview;
 mod sensor;
 
 #[cfg(test)]
-mod fixtures;
+pub(crate) mod fixtures;
 #[cfg(test)]
 mod tests;
 
