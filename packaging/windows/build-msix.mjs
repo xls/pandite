@@ -466,7 +466,8 @@ function main() {
   if (!existsSync(exe)) fail(`binary not found: ${exe}`);
   // A Store package must run on a clean system: no separate C runtime.
   checkCrt(exe, Boolean(opts['require-static-crt'] || opts['require-identity']));
-  const fileName = opts.name || `pandite-${display}-${ARCH_TRIPLE[arch]}.msix`;
+  // The file name says windows, not the full target: x86_64-windows.msix.
+  const fileName = opts.name || `pandite-${display}-${ARCH_TRIPLE[arch].replace('-pc-windows-msvc', '-windows')}.msix`;
   const out = stageAndPack({ exe, arch, version, outDir, fileName, id, keepStage: opts['keep-stage'] });
   const entries = verifyPackage(out, { version, arch });
   console.log(`${out}: ${statSync(out).size} bytes, ${entries} entries, version ${version}, ${arch}, unsigned`);

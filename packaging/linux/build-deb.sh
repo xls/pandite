@@ -3,7 +3,7 @@
 #
 # Usage: packaging/linux/build-deb.sh <version> <out_dir> <tarball>
 #
-# <tarball> is pandite-<version>-x86_64-unknown-linux-gnu.tar.gz from
+# <tarball> is pandite-<version>-x86_64-linux.tar.gz from
 # build-tarball.sh. Writes <out_dir>/pandite_<version>_amd64.deb with the
 # same program, desktop entry and icons under /usr. dpkg-shlibdeps gives
 # Depends; packaging/linux/debian/control lists the libraries the program
@@ -15,7 +15,7 @@ usage='usage: build-deb.sh <version> <out_dir> <tarball>'
 VERSION=${1:?$usage}
 OUT=${2:?$usage}
 TARBALL=${3:?$usage}
-TARGET=x86_64-unknown-linux-gnu
+TARGET=x86_64-linux
 NAME="pandite-$VERSION-$TARGET"
 
 HERE=$(cd "$(dirname "$0")" && pwd)

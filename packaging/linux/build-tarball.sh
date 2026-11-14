@@ -4,14 +4,14 @@
 # Usage: packaging/linux/build-tarball.sh <version> <out_dir> [<binary>]
 #
 # <binary> defaults to target/x86_64-unknown-linux-gnu/release/pandite.
-# Writes <out_dir>/pandite-<version>-x86_64-unknown-linux-gnu.tar.gz with
+# Writes <out_dir>/pandite-<version>-x86_64-linux.tar.gz with
 # fixed owners, order and times, so equal inputs give equal archives.
 set -euo pipefail
 
 VERSION=${1:?usage: build-tarball.sh <version> <out_dir> [<binary>]}
 OUT=${2:?usage: build-tarball.sh <version> <out_dir> [<binary>]}
-TARGET=x86_64-unknown-linux-gnu
-BIN=${3:-target/$TARGET/release/pandite}
+TARGET=x86_64-linux
+BIN=${3:-target/x86_64-unknown-linux-gnu/release/pandite}
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)

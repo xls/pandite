@@ -90,7 +90,7 @@ You need Node.js, Rust and the Windows SDK. See [building.md](building.md).
 5. Bundle the two packages. Replace `0.1.0` with the version:
 
    ```powershell
-   node packaging/windows/build-msix.mjs --bundle dist/pandite-0.1.0-x86_64-pc-windows-msvc.msix dist/pandite-0.1.0-aarch64-pc-windows-msvc.msix
+   node packaging/windows/build-msix.mjs --bundle dist/pandite-0.1.0-x86_64-windows.msix dist/pandite-0.1.0-aarch64-windows.msix
    ```
 
 6. Find `dist\pandite-0.1.0-windows.msixbundle`.
@@ -121,7 +121,7 @@ must be equal to the Publisher value.
 3. Sign a copy of the package:
 
    ```powershell
-   Copy-Item dist\pandite-0.1.0-x86_64-pc-windows-msvc.msix dist\pandite-test.msix
+   Copy-Item dist\pandite-0.1.0-x86_64-windows.msix dist\pandite-test.msix
    $env:PANDITE_SIGN_PASSWORD = "<password>"
    node packaging/windows/sign-msix.mjs --pfx pandite-test.pfx dist\pandite-test.msix
    ```
@@ -141,7 +141,7 @@ must be equal to the Publisher value.
 ### Signed packages in GitHub releases (optional)
 
 When the repository has the two secrets below, the Release workflow also
-adds a signed `pandite-<version>-<target>-sideload.msix` for each
+adds a signed `pandite-<version>-<arch>-windows-sideload.msix` for each
 architecture. Users who trust your certificate can install these files
 without the Store.
 

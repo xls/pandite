@@ -3,7 +3,7 @@
 #
 # Usage: packaging/linux/build-rpm.sh <version> <out_dir> <tarball>
 #
-# <tarball> is pandite-<version>-x86_64-unknown-linux-gnu.tar.gz from
+# <tarball> is pandite-<version>-x86_64-linux.tar.gz from
 # build-tarball.sh. Writes <out_dir>/pandite-<version>-1.x86_64.rpm with the
 # same program, desktop entry and icons under /usr (packaging/linux/pandite.spec).
 # Needs rpmbuild (Debian, Ubuntu: apt install rpm; Fedora: dnf install rpm-build).
@@ -13,7 +13,7 @@ usage='usage: build-rpm.sh <version> <out_dir> <tarball>'
 VERSION=${1:?$usage}
 OUT=${2:?$usage}
 TARBALL=${3:?$usage}
-TARGET=x86_64-unknown-linux-gnu
+TARGET=x86_64-linux
 NAME="pandite-$VERSION-$TARGET"
 
 HERE=$(cd "$(dirname "$0")" && pwd)

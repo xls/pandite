@@ -506,7 +506,8 @@ const built = {
     appScript.includes('cp -R "$APP" "$DMG_SRC/"') &&
     appScript.includes('"$OUT/$NAME.dmg"'),
   tarball: (name) =>
-    name === `${tarBase}.tar.gz` &&
+    // The short name of this build, and the long name of releases up to 0.2.2.
+    (name === `${tarBase}.tar.gz` || name === `pandite-${VERSION}-${installer.LINUX_TARGET_OLD}.tar.gz`) &&
     tarBase === installer.tarballTop(VERSION) &&
     tarScript.includes('"$OUT/$NAME.tar.gz"') &&
     tarScript.includes('-C "$WORK" -cf - "$NAME"') &&
@@ -528,8 +529,8 @@ if (installerKinds.size !== Object.keys(built).length) err(`the npm installer us
 
 for (const [what, pattern] of [
   ['a setup program build with the release version', /build-setup\.ps1\s+-Exe "target\/\$env:TARGET\/release\/pandite\.exe"\s+-Version \$env:VERSION -Target \$env:TARGET/],
-  ['a .deb build from the tarball with the release version', /build-deb\.sh "\$VERSION" dist\s*\\\s*"dist\/pandite-\$VERSION-x86_64-unknown-linux-gnu\.tar\.gz"/],
-  ['an .rpm build from the tarball with the release version', /build-rpm\.sh "\$VERSION" dist\s*\\\s*"dist\/pandite-\$VERSION-x86_64-unknown-linux-gnu\.tar\.gz"/],
+  ['a .deb build from the tarball with the release version', /build-deb\.sh "\$VERSION" dist\s*\\\s*"dist\/pandite-\$VERSION-x86_64-linux\.tar\.gz"/],
+  ['an .rpm build from the tarball with the release version', /build-rpm\.sh "\$VERSION" dist\s*\\\s*"dist\/pandite-\$VERSION-x86_64-linux\.tar\.gz"/],
   ['a pinned Inno Setup 6 version (INNO_SETUP_VERSION)', /INNO_SETUP_VERSION: "6\.\d+\.\d+"/],
   ['the SHA-256 of the Inno Setup download (INNO_SETUP_SHA256)', /INNO_SETUP_SHA256: [0-9a-f]{64}\n/],
   ['release notes that name npx pandite', /- .*\\`npx pandite\\` installs/],

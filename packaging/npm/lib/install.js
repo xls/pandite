@@ -34,7 +34,7 @@ import {
   chooseAsset,
   dataDir,
   systemName,
-  tarballTop,
+  tarballTopOf,
 } from './platform.js';
 import { compareVersions } from './version.js';
 
@@ -292,10 +292,10 @@ async function installTarball(ctx, { file, work, release }) {
   const unpacked = path.join(work, 'unpacked');
   mkdirSync(unpacked);
   untar(readFileSync(file), unpacked);
-  const top = path.join(unpacked, tarballTop(release.version));
+  const top = path.join(unpacked, tarballTopOf(path.basename(file)));
   const script = path.join(top, 'install.sh');
   if (!existsSync(script) || !existsSync(path.join(top, 'pandite'))) {
-    throw new InstallerError(`${path.basename(file)} holds no ${tarballTop(release.version)}/install.sh and pandite`);
+    throw new InstallerError(`${path.basename(file)} holds no ${tarballTopOf(path.basename(file))}/install.sh and pandite`);
   }
   const prefix = linuxPrefix(ctx);
   ctx.info(`running install.sh with PREFIX=${prefix}`);
@@ -330,7 +330,7 @@ function plan(ctx, kind, { file, temp, release, system }) {
   const dest = path.join(macAppsDir(ctx, system), MAC_APP);
   if (kind === 'app-zip') return [`Would unpack ${MAC_APP} from ${path.basename(file)} and move it to ${dest}, in place of an older copy`];
   if (kind === 'dmg') return [`Would mount ${path.basename(file)} with ${HDIUTIL} and copy ${MAC_APP} to ${dest}, in place of an older copy`];
-  const script = path.join(temp, 'unpacked', tarballTop(release.version), 'install.sh');
+  const script = path.join(temp, 'unpacked', tarballTopOf(path.basename(file)), 'install.sh');
   return [
     `Would unpack ${path.basename(file)} and run: PREFIX=${linuxPrefix(ctx)} ${SH} ${script}`,
     `Would keep a copy of install.sh in ${linuxKeep(ctx)} for the uninstall`,

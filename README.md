@@ -128,7 +128,7 @@ Release packages come from the
 | macOS 11+, universal | `pandite-<version>-universal-macos.dmg` | Drag to Applications. The app is signed and notarized by Apple. |
 | Debian, Ubuntu x86_64, glibc 2.35+ | `pandite_<version>_amd64.deb` | `sudo apt install ./pandite_<version>_amd64.deb` |
 | Fedora, openSUSE x86_64, glibc 2.35+ | `pandite-<version>-1.x86_64.rpm` | `sudo dnf install ./pandite-<version>-1.x86_64.rpm` |
-| Linux x86_64, glibc 2.35+ | `pandite-<version>-x86_64-unknown-linux-gnu.tar.gz` | Extract. Run `./install.sh` to install for your user. |
+| Linux x86_64, glibc 2.35+ | `pandite-<version>-x86_64-linux.tar.gz` | Extract. Run `./install.sh` to install for your user. |
 | Windows, macOS, Linux x86_64 with Node.js 18+ | npm package `pandite` (installer) | `npx pandite` installs the latest release for your user. It checks the download against `SHA256SUMS.txt`. `npx pandite update` installs a newer release, `npx pandite -v <version>` a named one, `npx pandite uninstall` removes Pandite. |
 
 On Windows, HEIC needs "HEIF Image Extensions" and "HEVC Video

@@ -133,9 +133,10 @@ jobs:
           cert="$RUNNER_TEMP/pandite-signing.pfx"
           trap 'rm -f "$cert"' EXIT
           printf '%s' "$CERT_BASE64" | base64 --decode --ignore-garbage > "$cert"
-          cp "dist/pandite-$VERSION-$TARGET.msix" "dist/pandite-$VERSION-$TARGET-sideload.msix"
+          short="${TARGET%-pc-windows-msvc}-windows"
+          cp "dist/pandite-$VERSION-$short.msix" "dist/pandite-$VERSION-$short-sideload.msix"
           node packaging/windows/sign-msix.mjs --pfx "$cert" \
-            --timestamp http://timestamp.digicert.com "dist/pandite-$VERSION-$TARGET-sideload.msix"
+            --timestamp http://timestamp.digicert.com "dist/pandite-$VERSION-$short-sideload.msix"
 
       - name: Find Inno Setup 6, or install a pinned copy
         shell: pwsh
@@ -226,8 +227,8 @@ jobs:
       - name: Bundle x64 and ARM64
         run: |
           node packaging/windows/build-msix.mjs --version "$VERSION" --out dist --bundle \
-            "packages/pandite-$VERSION-x86_64-pc-windows-msvc.msix" \
-            "packages/pandite-$VERSION-aarch64-pc-windows-msvc.msix"
+            "packages/pandite-$VERSION-x86_64-windows.msix" \
+            "packages/pandite-$VERSION-aarch64-windows.msix"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -352,13 +353,13 @@ jobs:
         run: |
           SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) \
             bash packaging/linux/build-deb.sh "$VERSION" dist \
-            "dist/pandite-$VERSION-x86_64-unknown-linux-gnu.tar.gz"
+            "dist/pandite-$VERSION-x86_64-linux.tar.gz"
 
       - name: RPM package (from the tarball)
         run: |
           SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) \
             bash packaging/linux/build-rpm.sh "$VERSION" dist \
-            "dist/pandite-$VERSION-x86_64-unknown-linux-gnu.tar.gz"
+            "dist/pandite-$VERSION-x86_64-linux.tar.gz"
 
       - name: Lint the Debian package (findings do not stop the release)
         continue-on-error: true
@@ -438,7 +439,7 @@ jobs:
           - macOS 11 or later: \`pandite-$VERSION-universal-macos.dmg\` (Apple Silicon and Intel).
           - Debian and Ubuntu (x64): \`pandite_${VERSION}_amd64.deb\`. Install it with \`sudo apt install ./pandite_${VERSION}_amd64.deb\`.
           - Fedora, openSUSE and other RPM systems (x64): \`pandite-$VERSION-1.x86_64.rpm\`. Install it with \`sudo dnf install ./pandite-$VERSION-1.x86_64.rpm\`.
-          - Other Linux (x64): \`pandite-$VERSION-x86_64-unknown-linux-gnu.tar.gz\`. Extract it and run \`./install.sh\` to install it for your user.
+          - Other Linux (x64): \`pandite-$VERSION-x86_64-linux.tar.gz\`. Extract it and run \`./install.sh\` to install it for your user.
           - Windows, macOS or Linux x64 with Node.js 18 or later: \`npx pandite\` installs the latest release for your user. It downloads the setup program, the macOS zip or the Linux tarball from the release page, checks it against \`SHA256SUMS.txt\` and installs it. \`npx pandite update\` installs a newer release.
 
           The Linux packages need glibc 2.35 or later.

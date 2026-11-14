@@ -18,7 +18,9 @@ export const MAC_TARGET = 'universal-macos';
 export const MAC_TARGET_OLD = 'universal-apple-darwin';
 /** The app bundle at the top of the macOS zip and disk image. */
 export const MAC_APP = 'Pandite.app';
-export const LINUX_TARGET = 'x86_64-unknown-linux-gnu';
+export const LINUX_TARGET = 'x86_64-linux';
+/** The name in the release files up to 0.2.2. */
+export const LINUX_TARGET_OLD = 'x86_64-unknown-linux-gnu';
 export const SUPPORTED =
   'Windows x64 and ARM64, macOS 11 or later (Apple Silicon and Intel), and Linux x64 with glibc 2.35 or later';
 
@@ -55,6 +57,12 @@ function unsupported(what) {
 }
 
 /** The folder at the top of the Linux tarball. */
+/** The folder at the top of the tarball with this file name. */
+export function tarballTopOf(fileName) {
+  return fileName.replace(/\.tar\.gz$/, '');
+}
+
+/** The folder at the top of the Linux tarball of this build. */
 export function tarballTop(version) {
   return `pandite-${version}-${LINUX_TARGET}`;
 }
@@ -89,7 +97,11 @@ export function candidateAssets({ platform, arch, glibc, version }) {
   if (platform === 'linux' && arch === 'x64') {
     if (!glibc) throw unsupported('Linux without glibc (for example with musl)');
     if (glibcBelow(glibc, MIN_GLIBC)) throw unsupported(`Linux with glibc ${glibc}`);
-    return [{ name: `${tarballTop(version)}.tar.gz`, kind: 'tarball' }];
+    // The short name first; releases up to 0.2.2 carry the full target.
+    return [
+      { name: `${tarballTop(version)}.tar.gz`, kind: 'tarball' },
+      { name: `pandite-${version}-${LINUX_TARGET_OLD}.tar.gz`, kind: 'tarball' },
+    ];
   }
   throw unsupported(system);
 }

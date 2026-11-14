@@ -104,7 +104,7 @@ If the SDK is in a different folder, set `PANDITE_MAKEAPPX` and
    node packaging/windows/build-msix.mjs --build
    ```
 
-2. Find the package at `dist\pandite-<version>-x86_64-pc-windows-msvc.msix`.
+2. Find the package at `dist\pandite-<version>-x86_64-windows.msix`.
 3. For ARM64, add `--target aarch64-pc-windows-msvc`.
 4. To package a binary that you built before, use `--exe <path>` instead of
    `--build`.
@@ -113,7 +113,7 @@ If the SDK is in a different folder, set `PANDITE_MAKEAPPX` and
 6. To bundle the x64 and ARM64 packages into one file, run:
 
    ```sh
-   node packaging/windows/build-msix.mjs --bundle dist/pandite-0.1.0-x86_64-pc-windows-msvc.msix dist/pandite-0.1.0-aarch64-pc-windows-msvc.msix
+   node packaging/windows/build-msix.mjs --bundle dist/pandite-0.1.0-x86_64-windows.msix dist/pandite-0.1.0-aarch64-windows.msix
    ```
 
 The package is unsigned. The Microsoft Store signs the packages that it
@@ -209,7 +209,7 @@ pandite draws with Vulkan or with OpenGL ES. The Mesa drivers supply both.
    bash packaging/linux/build-tarball.sh 0.1.0 dist target/release/pandite
    ```
 
-4. Find `dist/pandite-0.1.0-x86_64-unknown-linux-gnu.tar.gz`.
+4. Find `dist/pandite-0.1.0-x86_64-linux.tar.gz`.
 
 The release workflow builds the Linux binary on Ubuntu 22.04. That binary
 needs glibc 2.35 or later.
@@ -229,13 +229,13 @@ program, desktop entry and icons under `/usr`.
 3. Make the Debian package:
 
    ```sh
-   bash packaging/linux/build-deb.sh 0.1.0 dist dist/pandite-0.1.0-x86_64-unknown-linux-gnu.tar.gz
+   bash packaging/linux/build-deb.sh 0.1.0 dist dist/pandite-0.1.0-x86_64-linux.tar.gz
    ```
 
 4. Make the RPM package:
 
    ```sh
-   bash packaging/linux/build-rpm.sh 0.1.0 dist dist/pandite-0.1.0-x86_64-unknown-linux-gnu.tar.gz
+   bash packaging/linux/build-rpm.sh 0.1.0 dist dist/pandite-0.1.0-x86_64-linux.tar.gz
    ```
 
 5. Find `dist/pandite_0.1.0_amd64.deb` and

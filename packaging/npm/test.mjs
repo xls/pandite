@@ -483,9 +483,25 @@ test('the release file of every supported system', async () => {
     name: 'pandite-1.2.3-universal-apple-darwin.dmg',
     kind: 'dmg',
   });
+  // A release with the short names: every system takes those.
+  const short = [
+    'pandite-1.2.3-x86_64-windows-setup.exe',
+    'pandite-1.2.3-aarch64-windows-setup.exe',
+    'pandite-1.2.3-universal-macos.dmg',
+    'pandite-1.2.3-x86_64-linux.tar.gz',
+    'SHA256SUMS.txt',
+  ];
+  for (const [system, name, kind] of [
+    [{ platform: 'win32', arch: 'x64' }, short[0], 'setup'],
+    [{ platform: 'win32', arch: 'arm64' }, short[1], 'setup'],
+    [{ platform: 'darwin', arch: 'arm64' }, short[2], 'dmg'],
+    [{ platform: 'linux', arch: 'x64', glibc: '2.39' }, short[3], 'tarball'],
+  ]) {
+    assert.deepEqual(chooseAsset({ ...system, version: '1.2.3', available: short }), { name, kind });
+  }
   assert.throws(
     () => chooseAsset({ platform: 'linux', arch: 'x64', glibc: '2.39', version: '1.2.3', available: ['SHA256SUMS.txt'] }),
-    /release v1\.2\.3 has no pandite-1\.2\.3-x86_64-unknown-linux-gnu\.tar\.gz for Linux x64/,
+    /release v1\.2\.3 has no pandite-1\.2\.3-x86_64-linux\.tar\.gz or pandite-1\.2\.3-x86_64-unknown-linux-gnu\.tar\.gz for Linux x64/,
   );
   // End to end: each system downloads its own file.
   for (const p of PLATFORMS) {
