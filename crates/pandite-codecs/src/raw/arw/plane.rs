@@ -5,7 +5,7 @@ use super::{fail, ArwResult};
 
 /// A plane of `u16` samples. Row-major storage is one tile as wide and as
 /// tall as the plane.
-pub(super) struct Plane {
+pub(crate) struct Plane {
     /// The samples, tile after tile, each tile row-major.
     pub data: Vec<u16>,
     /// Tile width.
@@ -27,7 +27,7 @@ pub(super) fn zeroed(len: usize) -> ArwResult<Vec<u16>> {
 
 impl Plane {
     /// A row-major plane of `w` x `h` samples.
-    pub(super) fn row_major(w: usize, h: usize) -> ArwResult<Self> {
+    pub(crate) fn row_major(w: usize, h: usize) -> ArwResult<Self> {
         let len = w.checked_mul(h).ok_or_else(|| fail("plane size"))?;
         Ok(Plane {
             data: zeroed(len)?,
