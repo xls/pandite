@@ -124,7 +124,7 @@ Release packages come from the
 | System | Package | Steps |
 |---|---|---|
 | Windows x64, ARM64 | `pandite-<version>-<target>-setup.exe` | Run it. It installs for your user, without administrator rights, and associates image files. It is not code-signed: at the SmartScreen warning, select More info, then Run anyway. |
-| Windows x64, ARM64, portable | `pandite-<version>-<target>-portable.zip` | Extract. Run `pandite.exe --register` once to add Pandite to Open with and Default apps. |
+| Windows x64, ARM64, portable | `pandite-<version>-<arch>-windows-portable.zip` | Extract. Run `pandite.exe --register` once to add Pandite to Open with and Default apps. |
 | macOS 11+, universal | `pandite-<version>-universal-apple-darwin.dmg` | Drag to Applications. The app is signed and notarized by Apple. |
 | Debian, Ubuntu x86_64, glibc 2.35+ | `pandite_<version>_amd64.deb` | `sudo apt install ./pandite_<version>_amd64.deb` |
 | Fedora, openSUSE x86_64, glibc 2.35+ | `pandite-<version>-1.x86_64.rpm` | `sudo dnf install ./pandite-<version>-1.x86_64.rpm` |

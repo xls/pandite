@@ -6,7 +6,7 @@
 .DESCRIPTION
   Stages pandite.exe, the license, the third-party notices and the README in
   a folder named pandite-<version>-<target> and compresses it to
-  <OutDir>\pandite-<version>-<target>-portable.zip.
+  <OutDir>\pandite-<version>-<arch>-windows-portable.zip.
 
 .EXAMPLE
   pwsh packaging/windows/build-zip.ps1 -Exe target/x86_64-pc-windows-msvc/release/pandite.exe `
@@ -24,7 +24,8 @@ $root = Resolve-Path (Join-Path $PSScriptRoot '..\..')
 
 if (-not (Test-Path -LiteralPath $Exe -PathType Leaf)) { throw "binary not found: $Exe" }
 
-$name = "pandite-$Version-$Target-portable"
+# The file name says windows, not the full target: x86_64-windows-portable.
+$name = "pandite-$Version-" + ($Target -replace '-pc-windows-msvc$', '-windows') + '-portable'
 $work = Join-Path ([System.IO.Path]::GetTempPath()) ("pandite-zip-" + [System.Guid]::NewGuid().ToString('N'))
 $stage = Join-Path $work $name
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
