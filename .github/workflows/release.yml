@@ -433,7 +433,7 @@ jobs:
           Which file to download:
 
           - Windows, to install: \`pandite-$VERSION-x86_64-pc-windows-msvc-setup.exe\` (x64) or \`pandite-$VERSION-aarch64-pc-windows-msvc-setup.exe\` (ARM64). It installs Pandite for your user account, without administrator rights, adds it to the Start menu and opens image files with it. The setup programs are not code-signed, so Windows SmartScreen warns when you start one: select More info, then Run anyway.
-          - Windows, portable: \`pandite-$VERSION-x86_64-pc-windows-msvc.zip\` (x64) or \`pandite-$VERSION-aarch64-pc-windows-msvc.zip\` (ARM64). Extract it and run \`pandite.exe\`. Nothing is installed.
+          - Windows, portable: \`pandite-$VERSION-x86_64-pc-windows-msvc-portable.zip\` (x64) or \`pandite-$VERSION-aarch64-pc-windows-msvc-portable.zip\` (ARM64). Extract it and run \`pandite.exe\`. Nothing is installed.
           - Windows, Microsoft Store: \`pandite-$VERSION-windows.msixbundle\` holds both architectures for Store submission. The MSIX files are unsigned and do not install by double-click.
           - macOS 11 or later: \`pandite-$VERSION-universal-apple-darwin.dmg\` (Apple Silicon and Intel).
           - Debian and Ubuntu (x64): \`pandite_${VERSION}_amd64.deb\`. Install it with \`sudo apt install ./pandite_${VERSION}_amd64.deb\`.

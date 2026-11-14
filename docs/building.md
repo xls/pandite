@@ -63,7 +63,7 @@ When you change `RUSTFLAGS`, cargo builds everything again.
    pwsh packaging/windows/build-zip.ps1 -Exe target/release/pandite.exe -Version 0.1.0 -Target x86_64-pc-windows-msvc -OutDir dist
    ```
 
-2. Find the zip at `dist\pandite-0.1.0-x86_64-pc-windows-msvc.zip`.
+2. Find the zip at `dist\pandite-0.1.0-x86_64-pc-windows-msvc-portable.zip`.
 
 ### Setup program
 
