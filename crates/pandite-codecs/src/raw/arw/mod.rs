@@ -30,15 +30,15 @@ mod ifd;
 mod lj92;
 mod meta;
 mod plane;
-mod preview;
+pub(crate) mod preview;
 mod render;
 mod strips;
 mod tiles;
 
 #[cfg(test)]
-mod fixtures;
+pub(crate) mod fixtures;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub(crate) use meta::{Class, Rect, Variant, WbSource};
 

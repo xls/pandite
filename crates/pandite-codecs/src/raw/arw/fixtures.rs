@@ -220,7 +220,7 @@ pub(super) fn strip_raw(w: u32, h: u32, bits: u16, compression: u16, rows: u32) 
 }
 
 /// Parse a hex dump with optional "0000:" address prefixes.
-pub(super) fn hex(s: &str) -> Vec<u8> {
+pub(crate) fn hex(s: &str) -> Vec<u8> {
     s.lines()
         .flat_map(|l| {
             let l = l.split_once(':').map_or(l, |(_, rest)| rest);
