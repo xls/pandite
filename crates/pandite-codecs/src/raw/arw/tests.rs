@@ -157,7 +157,7 @@ fn without(mut raw: Vec<(u16, Val)>, tag: u16) -> Vec<(u16, Val)> {
 }
 
 /// A deterministic pseudo-random sequence.
-fn noise(seed: u32) -> impl FnMut() -> u32 {
+pub(crate) fn noise(seed: u32) -> impl FnMut() -> u32 {
     let mut s = seed.max(1);
     move || {
         s ^= s << 13;
