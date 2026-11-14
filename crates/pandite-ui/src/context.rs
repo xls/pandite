@@ -184,6 +184,11 @@ pub struct UiContext<'a> {
     /// The rows of the information panel, in display order. Empty when
     /// nothing is open.
     pub info: &'a [InfoRow],
+    /// Folder indices of the selected images, in ascending order without
+    /// repeats. The gallery strip draws a checked box on these thumbnails,
+    /// the image on screen shows a badge when its index is here, and the
+    /// toolbar shows the count. The bulk dialog offers them as a source.
+    pub selected: &'a [usize],
 }
 
 impl Default for UiContext<'_> {
@@ -210,11 +215,23 @@ impl Default for UiContext<'_> {
             text: None,
             info_visible: false,
             info: &[],
+            selected: &[],
         }
     }
 }
 
 impl UiContext<'_> {
+    /// True when the image with folder index `index` is selected.
+    pub fn is_selected(&self, index: usize) -> bool {
+        self.selected.binary_search(&index).is_ok()
+    }
+
+    /// True when the image on screen (folder index [`UiContext::index`])
+    /// is selected.
+    pub fn current_selected(&self) -> bool {
+        self.is_selected(self.index)
+    }
+
     /// The thumbnail state of `index`.
     pub fn thumbnail(&self, index: usize) -> ThumbState {
         self.thumbnails.get(index).copied().unwrap_or_default()

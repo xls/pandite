@@ -203,38 +203,80 @@ pub(crate) fn copy_image(out: Outbox, job: CopyJob) -> std::io::Result<()> {
 /// How a file removal ended: on failure, the kind of error and why.
 pub(crate) type Removal = Result<(), (std::io::ErrorKind, String)>;
 
+/// How a file removal goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RemoveMode {
+    /// To the trash. A file whose drive or volume has no trash goes for
+    /// good instead: Delete with nothing selected asks nothing.
+    TrashOrDelete,
+    /// To the trash only. A file without a trash stays: a question named
+    /// the trash for it.
+    Trash,
+    /// For good.
+    Delete,
+}
+
 /// What a file removal needs.
 pub(crate) struct DeleteJob {
     pub id: u64,
     pub path: PathBuf,
-    /// Remove the file for good instead of moving it to the trash.
-    pub permanent: bool,
+    pub mode: RemoveMode,
 }
 
 /// Move a file to the trash of the system, or remove it for good. The
-/// event loop never waits for this thread.
+/// report says which of the two was done or tried last. A file that has
+/// no trash is never handed to the trash of the system for a removal for
+/// good: the trash refuses it first. The event loop never waits for this
+/// thread.
 pub(crate) fn delete(out: Outbox, disk: Arc<dyn Disk>, job: DeleteJob) -> std::io::Result<()> {
     spawn("pandite-delete", move || {
-        let DeleteJob {
-            id,
-            path,
-            permanent,
-        } = job;
-        let result = catch_unwind(AssertUnwindSafe(|| {
-            if permanent {
-                disk.remove_file(&path)
-            } else {
-                disk.trash(&path)
-            }
+        let DeleteJob { id, path, mode } = job;
+        let (permanent, result) = catch_unwind(AssertUnwindSafe(|| match mode {
+            RemoveMode::Delete => (true, disk.remove_file(&path)),
+            RemoveMode::Trash => (false, disk.trash(&path)),
+            RemoveMode::TrashOrDelete => match disk.trash(&path) {
+                Err(err) if crate::trash::is_no_trash(&err) => (true, disk.remove_file(&path)),
+                other => (false, other),
+            },
         }))
-        .unwrap_or_else(|_| Err(std::io::Error::other("the delete stopped unexpectedly")))
-        .map_err(|err| (err.kind(), err.to_string()));
+        .unwrap_or_else(|_| {
+            let err = std::io::Error::other("the delete stopped unexpectedly");
+            (mode == RemoveMode::Delete, Err(err))
+        });
+        let result = result.map_err(|err| (err.kind(), err.to_string()));
         out.send(Msg::Deleted {
             id,
             path,
             permanent,
             result,
         });
+    })
+}
+
+/// Find out which of `files` have a trash, one question per folder, for
+/// the question before a delete of several files. The event loop never
+/// waits for this thread.
+pub(crate) fn check_trash(
+    out: Outbox,
+    disk: Arc<dyn Disk>,
+    id: u64,
+    files: Vec<PathBuf>,
+) -> std::io::Result<()> {
+    spawn("pandite-trash-check", move || {
+        let mut folders: Vec<(PathBuf, bool)> = Vec::new();
+        let mut checked = Vec::with_capacity(files.len());
+        for file in files {
+            let folder = file.parent().map(Path::to_path_buf).unwrap_or_default();
+            let known = folders.iter().find(|(f, _)| *f == folder).map(|(_, h)| *h);
+            let has = known.unwrap_or_else(|| {
+                // A check that stops unexpectedly promises nothing.
+                let has = catch_unwind(AssertUnwindSafe(|| disk.has_trash(&file))).unwrap_or(false);
+                folders.push((folder, has));
+                has
+            });
+            checked.push((file, has));
+        }
+        out.send(Msg::TrashChecked { id, files: checked });
     })
 }
 
@@ -329,6 +371,8 @@ pub(crate) fn bulk(
             BulkSource::Folder { path, recursive } => {
                 list_images(&*disk, &registry, path, *recursive).map_err(|e| e.to_string())
             }
+            // The core turns a selection into its files before the start.
+            BulkSource::Selection => Ok(Vec::new()),
         };
         let inputs = match inputs {
             Ok(inputs) if inputs.is_empty() => {

@@ -28,6 +28,8 @@ impl Ui {
         self.draw_text_selection(ctx, theme, content, out);
         if self.crop.is_some() {
             self.draw_crop(ctx, measure, &m, theme, out);
+        } else {
+            self.draw_badge(ctx, &m, theme, content, out);
         }
         if let Some(l) = splash {
             self.draw_splash(ctx, &l, measure, &m, theme, content, out);
@@ -83,6 +85,72 @@ impl Ui {
             }
         }
         out.clip(None);
+    }
+
+    /// A check badge in the top right corner of the visible image while
+    /// the image on screen is selected. It keeps below the toolbar band
+    /// when the image leaves room for that.
+    fn draw_badge(
+        &self,
+        ctx: &UiContext<'_>,
+        m: &Metrics,
+        t: &Theme,
+        content: Rect,
+        out: &mut DrawList,
+    ) {
+        let Some(info) = ctx.image else { return };
+        if !ctx.current_selected() {
+            return;
+        }
+        let Some(visible) = info.screen_rect.intersect(content) else {
+            return;
+        };
+        let side = m.badge();
+        let margin = m.px(10.0);
+        let top = visible.y + margin;
+        let mut y = top.max(content.y + m.toolbar_h() + margin);
+        if y + side + margin > visible.bottom() {
+            y = top.max(visible.bottom() - margin - side);
+        }
+        let x = (visible.right() - margin - side).max(visible.x);
+        let r = Rect::new(x.round(), y.round(), side, side);
+        out.rect(
+            paint::outset(r, m.px(2.0)),
+            t.shadow,
+            side * 0.5 + m.px(2.0),
+        );
+        out.rect(r, t.accent, side * 0.5);
+        paint::icon(out, r, Icon::Check, m.icon(), t.accent_text);
+    }
+
+    /// The check box of a thumbnail: filled with a check mark when the
+    /// image is selected, empty otherwise. `hot` marks the pointer over
+    /// the box itself.
+    fn draw_check_box(
+        &self,
+        b: Rect,
+        checked: bool,
+        hot: bool,
+        m: &Metrics,
+        t: &Theme,
+        out: &mut DrawList,
+    ) {
+        let radius = m.radius_small();
+        if checked {
+            out.rect(
+                paint::outset(b, m.hairline()),
+                t.shadow,
+                radius + m.hairline(),
+            );
+            out.rect(b, t.accent, radius);
+            paint::icon(out, b, Icon::Check, m.icon(), t.accent_text);
+        } else {
+            out.rect(b, fade(t.panel_solid, 0.8), radius);
+            out.border(b, t.text, m.px(2.0), radius);
+        }
+        if hot {
+            out.rect(b, t.hover, radius);
+        }
     }
 
     fn draw_toolbar(
@@ -167,9 +235,20 @@ impl Ui {
         let gap = m.px(14.0);
         let position = (ctx.count > 0)
             .then(|| format!("{} / {}", ctx.index.min(ctx.count - 1) + 1, ctx.count));
+        // The number of selected images sits beside the position.
+        let selected =
+            (!ctx.selected.is_empty()).then(|| format!("{} selected", ctx.selected.len()));
         let Some(info) = ctx.image else {
-            if let Some(pos) = position {
-                paint::text_right(out, measure, area, &pos, font, fade(t.text_dim, alpha));
+            let mut right = area.right();
+            for (text, color) in [(position, t.text_dim), (selected, t.accent)] {
+                let Some(text) = text else { continue };
+                let w = measure.measure(&text, font).w;
+                if right - w < area.x {
+                    break;
+                }
+                let r = Rect::new(right - w, area.y, w, area.h);
+                paint::text_left(out, measure, r, &text, font, fade(color, alpha));
+                right -= w + gap;
             }
             return;
         };
@@ -180,14 +259,17 @@ impl Ui {
         };
         let dims = format!("{} x {}", info.width, info.height);
         // Parts from right to left; the file name takes what is left.
-        let mut parts: Vec<(String, Color)> = Vec::with_capacity(4);
+        let mut parts: Vec<(String, Color)> = Vec::with_capacity(5);
         if let Some(p) = position {
             parts.push((p, t.text_dim));
+        }
+        if let Some(n) = selected {
+            parts.push((n, t.accent));
         }
         parts.push((zoom, t.text_dim));
         parts.push((dims, t.text_dim));
         let mut right = area.right();
-        let mut drawn = Vec::with_capacity(4);
+        let mut drawn = Vec::with_capacity(5);
         for (text, color) in parts {
             let w = measure.measure(&text, font).w;
             if right - w < area.x {
@@ -259,12 +341,20 @@ impl Ui {
                     paint::icon(out, cell, Icon::Picture, m.icon(), fade(t.text_dim, 0.6));
                 }
             }
-            if self.gallery.hover == Some(i) && !current {
+            let hovered = self.gallery.hover == Some(i);
+            if hovered && !current {
                 out.rect(cell, t.hover, radius);
             }
             if current {
                 let ring = paint::outset(cell, m.px(2.0));
                 out.border(ring, t.accent, m.px(2.0), radius + m.px(2.0));
+            }
+            // A selected image always shows its checked box; an unselected
+            // one offers an empty box under the pointer, outside crop mode.
+            let checked = ctx.is_selected(i);
+            if checked || (hovered && self.crop.is_none()) {
+                let hot = hovered && self.gallery.hover_check && self.crop.is_none();
+                self.draw_check_box(layout.check_rect(cell), checked, hot, m, t, out);
             }
         }
         out.clip(None);

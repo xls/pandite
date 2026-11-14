@@ -104,6 +104,18 @@ impl Metrics {
     pub fn gallery_pad(&self) -> f32 {
         self.px(10.0)
     }
+    /// Side of the check box in a thumbnail corner.
+    pub fn gallery_check(&self) -> f32 {
+        self.px(18.0)
+    }
+    /// Gap between a thumbnail corner and its check box.
+    pub fn gallery_check_inset(&self) -> f32 {
+        self.px(4.0)
+    }
+    /// Side of the check badge on a selected image.
+    pub fn badge(&self) -> f32 {
+        self.px(26.0)
+    }
 
     pub fn menu_item_h(&self) -> f32 {
         self.px(28.0)

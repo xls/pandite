@@ -183,6 +183,9 @@ struct DiskState {
     /// Removals that succeeded, in order: "trash" or "remove_file", and the
     /// file name.
     removals: Vec<(&'static str, String)>,
+    /// Files whose drive has no trash, by name: `trash` refuses them with
+    /// the no-trash error before it touches them, and `has_trash` says no.
+    no_trash: HashSet<String>,
 }
 
 /// The folder the fake trash of [`TestDisk`] moves a file into: a hidden
@@ -197,7 +200,9 @@ pub const FAKE_TRASH: &str = ".fake-trash";
 ///
 /// The trash of the system is never touched: `trash` moves the file into
 /// [`FAKE_TRASH`] beside it, and `remove_file` removes it. Either fails on
-/// demand ([`TestDisk::fail_removal`]).
+/// demand ([`TestDisk::fail_removal`]). A file can also sit on a drive
+/// without a trash ([`TestDisk::no_trash`]), like a file on a network
+/// share.
 #[derive(Default)]
 pub struct TestDisk {
     state: Mutex<DiskState>,
@@ -264,6 +269,23 @@ impl TestDisk {
         lock(&self.state).fail_removal.remove(name);
     }
 
+    /// The drive of `name` has no trash: `trash` refuses it with
+    /// [`pandite_app::trash::no_trash`] before anything else, and
+    /// `has_trash` answers false.
+    pub fn no_trash(&self, name: &str) {
+        lock(&self.state).no_trash.insert(name.into());
+    }
+
+    /// The operations called on `name`, in order.
+    pub fn ops_on(&self, name: &str) -> Vec<&'static str> {
+        lock(&self.state)
+            .calls
+            .iter()
+            .filter(|c| c.name == name)
+            .map(|c| c.op)
+            .collect()
+    }
+
     /// Removals that succeeded, in order: ("trash" or "remove_file", name).
     pub fn removals(&self) -> Vec<(&'static str, String)> {
         lock(&self.state).removals.clone()
@@ -280,8 +302,18 @@ impl TestDisk {
 
     fn remove(&self, op: &'static str, path: &Path) -> io::Result<()> {
         let name = self.enter(op, path, false);
-        let fail = lock(&self.state).fail_removal.get(&name).copied();
+        let (fail, no_trash) = {
+            let g = lock(&self.state);
+            (
+                g.fail_removal.get(&name).copied(),
+                g.no_trash.contains(&name),
+            )
+        };
         let result = match fail {
+            // A drive without a trash refuses first, as the real one does.
+            _ if op == "trash" && no_trash => Err(pandite_app::trash::no_trash(
+                "the test disk has no trash here",
+            )),
             Some(kind) => Err(io::Error::new(kind, "the test disk refuses")),
             None if op == "trash" => {
                 let bin = path.parent().unwrap_or(Path::new(".")).join(FAKE_TRASH);
@@ -448,6 +480,13 @@ impl Disk for TestDisk {
 
     fn remove_file(&self, path: &Path) -> io::Result<()> {
         self.remove("remove_file", path)
+    }
+
+    fn has_trash(&self, path: &Path) -> bool {
+        let name = self.enter("has_trash", path, false);
+        let has = !lock(&self.state).no_trash.contains(&name);
+        self.leave("has_trash", name);
+        has
     }
 }
 

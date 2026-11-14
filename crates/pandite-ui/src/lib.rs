@@ -70,6 +70,22 @@
 //! gallery strip ([`Ui::info_panel_rect`]). It is not a dialog: keys,
 //! Escape included, act as without it, and it hides in crop mode.
 //!
+//! # Selection
+//!
+//! The application keeps the set of selected files and reports their
+//! folder indices in [`UiContext::selected`]. Space emits
+//! [`Action::ToggleSelect`] for the image on screen and Backspace emits
+//! [`Action::ClearSelection`]; neither navigates. A selected thumbnail
+//! draws a checked box in its top left corner, and the thumbnail under the
+//! pointer an empty one. A click on that box emits
+//! [`Action::ToggleSelect`] for its index and does not show the image. The
+//! image on screen draws a check badge while it is selected, and the
+//! toolbar shows the count. The context menu offers both commands. Space
+//! and Backspace never change the selection in crop mode, in a dialog or
+//! in the shortcut overlay; in a text field they edit the text. The bulk
+//! dialog opens with the selected images as its source
+//! ([`BulkSource::Selection`]).
+//!
 //! # Escape
 //!
 //! Escape closes the topmost menu, shortcut overlay or dialog. When none

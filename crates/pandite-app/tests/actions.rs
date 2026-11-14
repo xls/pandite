@@ -71,6 +71,8 @@ fn sample(kind: ActionKind, dir: &std::path::Path) -> Action {
             accepted: true,
         },
         ActionKind::Quit => Action::Quit,
+        ActionKind::ToggleSelect => Action::ToggleSelect(0),
+        ActionKind::ClearSelection => Action::ClearSelection,
     }
 }
 
@@ -117,6 +119,8 @@ fn kind_of(action: &Action) -> ActionKind {
         Action::ToggleInfo => ActionKind::ToggleInfo,
         Action::ConfirmResult { .. } => ActionKind::ConfirmResult,
         Action::Quit => ActionKind::Quit,
+        Action::ToggleSelect(_) => ActionKind::ToggleSelect,
+        Action::ClearSelection => ActionKind::ClearSelection,
     }
 }
 
@@ -176,6 +180,11 @@ fn every_action_has_a_handler() {
             ActionKind::ConfirmResult => {
                 assert_eq!(result, Handled::Ignored, "unknown confirmation id")
             }
+            ActionKind::ToggleSelect => {
+                assert_eq!(h.app().selected_indices(), [0]);
+                assert_eq!(h.app().selection().len(), 1);
+            }
+            ActionKind::ClearSelection => assert!(h.app().selection().is_empty()),
             _ => {}
         }
         assert!(
@@ -185,7 +194,7 @@ fn every_action_has_a_handler() {
         handled.push(kind);
         h.pump();
     }
-    assert_eq!(handled.len(), 39);
+    assert_eq!(handled.len(), 41);
     // The dialogs asked for: open, save, bulk files, bulk folder and bulk
     // destination.
     assert_eq!(lock(&h.dialogs).shown.len(), 5);

@@ -18,6 +18,8 @@ On macOS, Ctrl is the Command key and Alt is the Option key.
 | Copy selected text | Ctrl+C |
 | Copy file path | Ctrl+Shift+C |
 | Select all text | Ctrl+A |
+| Select image | Space |
+| Clear selection | Backspace |
 | Move to Recycle Bin (Windows), Move to Trash (macOS, Linux) | Del |
 | Delete permanently... | Shift+Del |
 | Undo | Ctrl+Z |
@@ -36,8 +38,8 @@ On macOS, Ctrl is the Command key and Alt is the Option key.
 | Pan down | Down, Ctrl+Down |
 | Pan left | Ctrl+Left |
 | Pan right | Ctrl+Right |
-| Previous image | Left, Backspace |
-| Next image | Right, Space |
+| Previous image | Left |
+| Next image | Right |
 | Back one gallery page | PgUp |
 | Forward one gallery page | PgDn |
 | First image | Home |
@@ -76,6 +78,8 @@ On macOS, Ctrl is the Command key and Alt is the Option key.
   the Trash (macOS, Linux) without a question, because you can restore it.
   Then the next image shows, or the previous image if the file was the
   last. See [Delete a file](#delete-a-file).
+- When images are selected, Del and Shift+Del act on the selected images
+  and ask first. See [Select images](#select-images).
 - Ctrl+C copies the selected text when text in the image is selected.
   Otherwise, Ctrl+C copies the image. See [Copy the image](#copy-the-image).
 - Ctrl+Shift+C copies the full path of the file. The copy path button on
@@ -105,7 +109,9 @@ On macOS, Ctrl is the Command key and Alt is the Option key.
 
 ## Delete a file
 
-Del and Shift+Del act on the file of the current image.
+When no image is selected, Del and Shift+Del act on the file of the
+current image. When images are selected, they act on the selected images.
+See [Delete the selected images](#delete-the-selected-images).
 
 - Del moves the file to the Recycle Bin (Windows) or the Trash (macOS,
   Linux). pandite does not ask first. To get the file back, restore it from
@@ -125,14 +131,71 @@ Del and Shift+Del act on the file of the current image.
 - One key press deletes one file. A held key does not delete more files.
 - The keys do nothing while a dialog is open, in crop mode, or while a text
   field has the focus. In a text field, Del deletes text.
-- On Windows, only fixed drives have a Recycle Bin. On a network drive or a
-  removable drive, Del does not delete the file and the message says why.
-  When Windows cannot put a file in the Recycle Bin of a fixed drive (the
-  file is too large for it, or it is turned off), Windows asks before it
-  deletes the file permanently.
+- When the drive of the file has no Recycle Bin or Trash, Del deletes the
+  file permanently, without a question and without a message.
+- On Windows, only fixed drives have a Recycle Bin. A network drive or a
+  removable drive has no Recycle Bin. When Windows cannot put a file in the
+  Recycle Bin of a fixed drive (the file is too large for it, or it is
+  turned off), Windows asks before it deletes the file permanently.
 - On Linux, the file goes to the trash in your home folder
   (`$XDG_DATA_HOME/Trash`), or to the trash at the top of its drive when it
   is on another drive. This follows the FreeDesktop Trash specification.
+
+## Select images
+
+Select images to delete or convert them together.
+
+- Space selects the current image. When the current image is selected,
+  Space clears its selection.
+- Backspace clears the selection of all images. When no image is selected,
+  Backspace does nothing.
+- In the gallery strip, each thumbnail has a check box in its top left
+  corner. A selected image always shows a checked box. Another thumbnail
+  shows an empty box while the pointer is on it.
+- Click the check box to select the image or to clear its selection. The
+  current image does not change. Click the thumbnail outside the box to
+  show the image.
+- A check mark in the top right corner of the image shows that the
+  current image is selected.
+- The toolbar shows the number of selected images, for example
+  "3 selected", next to the position.
+- The context menu has Select image and Clear selection.
+- The selection holds files of the current folder. It stays when you move
+  to other images. A selected file that leaves the folder also leaves the
+  selection. When you open a file of another folder, no image is selected.
+- Space and Backspace do nothing in crop mode, while a dialog is open and
+  in the keyboard shortcut overlay. In a text field, they edit the text.
+  Esc does not clear the selection.
+
+### Delete the selected images
+
+- Del asks first and gives the number of images, for example "Move 3
+  images to the Recycle Bin?". Move is the default button. To keep the
+  images, press Esc or click Cancel.
+- When the drive of the images has no Recycle Bin or Trash, Del asks
+  "Delete 3 images permanently?". Keep is the default button.
+- When only some of the images are on a drive without a Recycle Bin or
+  Trash, the question gives their number. These images are deleted
+  permanently.
+- Shift+Del asks "Delete 3 images permanently?". Keep is the default
+  button. To delete the images, press Right and then Enter, or click
+  Delete.
+- Only the selected images go. The current image goes only when it is
+  selected.
+- After the delete, the current image stays when it was not selected.
+  When it was selected, the next remaining image shows, or the previous
+  remaining image when it was the last.
+- When a file cannot go, a message at the bottom gives the reason. That
+  file stays in the folder and in the selection. The other files go.
+
+### Convert the selected images
+
+- When images are selected, the bulk convert dialog (Ctrl+B) opens with
+  the selected images as the source. The job converts only these images.
+- To convert other images, click Add files, Add folder or Current folder.
+  To use the selected images again, click Selected images.
+- When no image is selected, the dialog does not show the Selected images
+  button.
 
 ## Copy the image
 
@@ -172,6 +235,7 @@ editor, a document or a chat.
 | Right-click | Context menu |
 | Back and Forward side buttons | Previous image and next image |
 | Click a thumbnail | Show that image |
+| Click the check box of a thumbnail | Select that image, or clear its selection |
 | Drag the gallery strip | Scroll the strip |
 
 The text actions work only where pandite read text in the image (on

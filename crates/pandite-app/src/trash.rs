@@ -1,19 +1,27 @@
 //! Move a file to the trash of the system.
 //!
 //! [`trash`] is the one entry point. It blocks for as long as the system
-//! takes: call it on a worker thread.
+//! takes: call it on a worker thread. When the drive or volume of the file
+//! has no trash, [`trash`] refuses before it touches the file, with an
+//! error that [`is_no_trash`] recognizes; the caller decides whether to
+//! delete the file for good instead. [`has_trash`] asks the same question
+//! without moving anything.
 //!
 //! - Windows: the Recycle Bin through `SHFileOperationW`. Only fixed
 //!   drives have a Recycle Bin; on a network, removable or optical drive
-//!   [`trash`] refuses instead of letting Windows delete the file for good.
+//!   [`trash`] refuses instead of letting Windows delete the file for good,
+//!   and the shell is never called for such a file.
 //!   When Windows cannot recycle a file on a fixed drive (the file is
 //!   larger than the Recycle Bin, or the Recycle Bin is turned off), it
 //!   asks the user before it deletes the file for good.
-//! - macOS: the Trash through `NSFileManager trashItemAtURL`.
+//! - macOS: the Trash through `NSFileManager trashItemAtURL`. A volume
+//!   without a Trash makes that call fail, which [`trash`] reports as no
+//!   trash. [`has_trash`] cannot tell in advance and answers true.
 //! - Other Unix systems: the FreeDesktop Trash specification 1.0. A file
 //!   on the device of the home trash (`$XDG_DATA_HOME/Trash`) goes there;
 //!   a file on another mount goes to `$topdir/.Trash/$uid` or
-//!   `$topdir/.Trash-$uid` at the top of its volume.
+//!   `$topdir/.Trash-$uid` at the top of its volume. A volume where
+//!   neither can exist has no trash.
 //!
 //! The text and name rules of these formats are plain functions with unit
 //! tests on every system.
@@ -27,6 +35,50 @@ pub const TRASH_NAME: &str = if cfg!(windows) {
 } else {
     "the Trash"
 };
+
+/// The name of the trash on this system without the article.
+pub const TRASH_TITLE: &str = if cfg!(windows) {
+    "Recycle Bin"
+} else {
+    "Trash"
+};
+
+/// The cause inside the error of [`no_trash`].
+#[derive(Debug)]
+struct NoTrash(&'static str);
+
+impl std::fmt::Display for NoTrash {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for NoTrash {}
+
+/// The error for a file whose drive or volume has no trash, with `why` as
+/// its text. Nothing happened to the file. Its kind is
+/// [`io::ErrorKind::Unsupported`]; [`is_no_trash`] tells it apart from
+/// other errors of that kind.
+pub fn no_trash(why: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::Unsupported, NoTrash(why))
+}
+
+/// True when `err` came from [`no_trash`]: the drive or volume of the file
+/// has no trash and the file is where it was.
+pub fn is_no_trash(err: &io::Error) -> bool {
+    err.get_ref().is_some_and(|e| e.is::<NoTrash>())
+}
+
+/// True unless the drive or volume of the file `path` is known to have no
+/// trash, so that [`trash`] would refuse it with [`no_trash`]. Creates and
+/// moves nothing. It blocks for as long as the system takes (a network
+/// drive): call it on a worker thread.
+pub fn has_trash(path: &Path) -> bool {
+    match std::path::absolute(path) {
+        Ok(path) => platform::has_trash(&path),
+        Err(_) => true,
+    }
+}
 
 /// Move the file `path` to the trash of the system. A symbolic link moves
 /// itself, not its target. A folder is refused with
@@ -199,7 +251,7 @@ fn same_ascii_folded(a: &[u16], b: &[u16]) -> bool {
 #[cfg(windows)]
 #[allow(unsafe_code)]
 mod platform {
-    use super::{invalid, shell_path_list, with_verbatim, without_verbatim};
+    use super::{invalid, no_trash, shell_path_list, with_verbatim, without_verbatim};
     use std::ffi::c_void;
     use std::io;
     use std::os::windows::ffi::OsStrExt;
@@ -290,6 +342,21 @@ mod platform {
     /// file for good. A drive whose type cannot be found is let through:
     /// Windows asks before it deletes for good.
     fn check_drive(wide: &[u16]) -> io::Result<()> {
+        if drive_has_bin(wide) {
+            Ok(())
+        } else {
+            Err(no_trash("this drive has no Recycle Bin"))
+        }
+    }
+
+    pub(super) fn has_trash(path: &Path) -> bool {
+        let wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+        drive_has_bin(&wide)
+    }
+
+    /// False for a drive that is not fixed (network, removable, optical,
+    /// RAM disk); true for a fixed drive and for a drive of unknown type.
+    fn drive_has_bin(wide: &[u16]) -> bool {
         let input = nul_terminated(wide);
         let mut volume = vec![0u16; (wide.len() + 2).max(MAX_PATH + 2)];
         // SAFETY: `input` is NUL-terminated and `volume` is valid for
@@ -298,20 +365,13 @@ mod platform {
             unsafe { GetVolumePathNameW(input.as_ptr(), volume.as_mut_ptr(), volume.len() as u32) }
                 != 0;
         if !ok {
-            return Ok(());
+            return true;
         }
         let end = volume.iter().position(|&u| u == 0).unwrap_or(volume.len());
         let root = nul_terminated(&without_verbatim(&volume[..end]));
         // SAFETY: `root` is a NUL-terminated root path.
         let kind = unsafe { GetDriveTypeW(root.as_ptr()) };
-        if kind == DRIVE_FIXED {
-            Ok(())
-        } else {
-            Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "this drive has no Recycle Bin",
-            ))
-        }
+        kind == DRIVE_FIXED
     }
 
     /// The 8.3 form of a path longer than the shell takes, as a path list.
@@ -387,7 +447,7 @@ mod platform {
 #[cfg(target_vendor = "apple")]
 #[allow(unsafe_code)]
 mod platform {
-    use super::invalid;
+    use super::{invalid, no_trash};
     use objc2_foundation::{NSFileManager, NSURL};
     use std::ffi::CString;
     use std::io;
@@ -406,6 +466,11 @@ mod platform {
     /// NSFeatureUnsupportedError: the volume has no trash.
     const UNSUPPORTED: isize = 3328;
 
+    /// The Trash of a volume shows only when the move fails.
+    pub(super) fn has_trash(_path: &Path) -> bool {
+        true
+    }
+
     pub(super) fn trash(path: &Path) -> io::Result<()> {
         let bytes = CString::new(path.as_os_str().as_bytes())
             .map_err(|_| invalid("the path holds a NUL byte"))?;
@@ -422,11 +487,13 @@ mod platform {
             NSFileManager::defaultManager()
                 .trashItemAtURL_resultingItemURL_error(&url, None)
                 .map_err(|err| {
+                    if err.code() == UNSUPPORTED {
+                        return no_trash("this volume has no Trash");
+                    }
                     let kind = match err.code() {
                         NO_SUCH_FILE => io::ErrorKind::NotFound,
                         READ_NO_PERMISSION | WRITE_NO_PERMISSION => io::ErrorKind::PermissionDenied,
                         VOLUME_READ_ONLY => io::ErrorKind::ReadOnlyFilesystem,
-                        UNSUPPORTED => io::ErrorKind::Unsupported,
                         _ => io::ErrorKind::Other,
                     };
                     io::Error::new(kind, err.localizedDescription().to_string())
@@ -440,7 +507,7 @@ mod platform {
 #[cfg(all(unix, not(target_vendor = "apple")))]
 #[allow(unsafe_code)]
 mod platform {
-    use super::{copy_name, deletion_date, invalid, trash_info};
+    use super::{copy_name, deletion_date, invalid, no_trash, trash_info};
     use std::ffi::OsStr;
     use std::fs::{self, DirBuilder, OpenOptions};
     use std::io::{self, Write};
@@ -459,6 +526,59 @@ mod platform {
             .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
         let date = deletion_date(now, local_offset(now));
         trash_with(path, &home_trash()?, uid, &date)
+    }
+
+    pub(super) fn has_trash(path: &Path) -> bool {
+        // SAFETY: getuid takes nothing, touches no memory and cannot fail.
+        let uid = unsafe { libc::getuid() };
+        match home_trash() {
+            Ok(home) => has_trash_with(path, &home, uid),
+            Err(_) => false,
+        }
+    }
+
+    /// True when [`trash_with`] can find or make a trash for `path`: the
+    /// home trash `home` on the same device, or a trash of the volume that
+    /// exists or that this user can make. Makes nothing. A file that
+    /// cannot be looked at counts as having a trash: the move then says
+    /// what is wrong.
+    pub(crate) fn has_trash_with(path: &Path, home: &Path, uid: u32) -> bool {
+        let Some(name) = path.file_name() else {
+            return true;
+        };
+        let Ok(parent) = fs::canonicalize(path.parent().unwrap_or(Path::new("/"))) else {
+            return true;
+        };
+        let Ok(meta) = fs::symlink_metadata(parent.join(name)) else {
+            return true;
+        };
+        let dev = meta.dev();
+        if device(home).is_ok_and(|d| d == dev) {
+            return true;
+        }
+        let top = volume_top(&parent, dev);
+        let shared = top.join(".Trash");
+        let sticky =
+            fs::symlink_metadata(&shared).is_ok_and(|m| m.is_dir() && m.mode() & 0o1000 != 0);
+        let mine = shared.join(uid.to_string());
+        if sticky && (own_dir(&mine, uid) || (!exists(&mine) && writable(&shared))) {
+            return true;
+        }
+        let mine = top.join(format!(".Trash-{uid}"));
+        own_dir(&mine, uid) || (!exists(&mine) && writable(&top))
+    }
+
+    fn exists(path: &Path) -> bool {
+        fs::symlink_metadata(path).is_ok()
+    }
+
+    /// True when this process may make entries in the folder `dir`.
+    fn writable(dir: &Path) -> bool {
+        let Ok(text) = std::ffi::CString::new(dir.as_os_str().as_bytes()) else {
+            return false;
+        };
+        // SAFETY: `text` is a NUL-terminated path that lives for the call.
+        unsafe { libc::access(text.as_ptr(), libc::W_OK | libc::X_OK) == 0 }
     }
 
     /// Seconds the local time zone is ahead of UTC at `secs`; 0 when the
@@ -489,7 +609,7 @@ mod platform {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .filter(|p| p.is_absolute())
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME is not set"))?;
+            .ok_or_else(|| no_trash("HOME is not set, so there is no trash"))?;
         Ok(home.join(".local/share/Trash"))
     }
 
@@ -547,10 +667,7 @@ mod platform {
         if own_dir(&mine, uid) {
             Ok(mine)
         } else {
-            Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "this volume has no trash",
-            ))
+            Err(no_trash("this volume has no trash"))
         }
     }
 
@@ -657,6 +774,11 @@ mod platform {
             }
             // A folder is refused before anything moves.
             assert!(super::super::trash(&folder).is_err());
+            // Beside the home trash, every file has a trash.
+            let file = folder.join("c.png");
+            fs::write(&file, "c").unwrap();
+            assert!(has_trash_with(&file, &home, uid));
+            assert!(file.exists(), "the question moves nothing");
             fs::remove_dir_all(&root).unwrap();
         }
     }
@@ -667,11 +789,12 @@ mod platform {
     use std::io;
     use std::path::Path;
 
+    pub(super) fn has_trash(_path: &Path) -> bool {
+        false
+    }
+
     pub(super) fn trash(_path: &Path) -> io::Result<()> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "this system has no trash pandite knows",
-        ))
+        Err(super::no_trash("this system has no trash pandite knows"))
     }
 }
 
@@ -681,6 +804,22 @@ mod tests {
 
     fn wide(s: &str) -> Vec<u16> {
         s.encode_utf16().collect()
+    }
+
+    #[test]
+    fn no_trash_is_its_own_outcome() {
+        let err = no_trash("this drive has no Recycle Bin");
+        assert!(is_no_trash(&err));
+        assert_eq!(err.kind(), io::ErrorKind::Unsupported);
+        assert_eq!(err.to_string(), "this drive has no Recycle Bin");
+        // Other errors, also of the same kind or with the same text, are not.
+        for other in [
+            io::Error::new(io::ErrorKind::Unsupported, "this drive has no Recycle Bin"),
+            io::Error::from(io::ErrorKind::Unsupported),
+            io::Error::new(io::ErrorKind::PermissionDenied, "access is denied"),
+        ] {
+            assert!(!is_no_trash(&other), "{other}");
+        }
     }
 
     #[test]

@@ -3,10 +3,10 @@
 //! [`Disk`] extends the library's [`FileAccess`] with the few calls the
 //! application needs besides reading images: a bounded read of a file's
 //! head (to probe its size), small reads and atomic writes (settings, Save
-//! As), directory creation and the removal of a file (to the trash or for
-//! good). The application calls these only from
-//! worker threads; tests inject implementations that stall or record the
-//! calling thread.
+//! As), directory creation, the removal of a file (to the trash or for
+//! good) and whether a file has a trash. The application calls these only
+//! from worker threads; tests inject implementations that stall or record
+//! the calling thread.
 
 use pandite_core::Registry;
 use pandite_library::{natural_cmp, FileAccess, StdFiles};
@@ -46,9 +46,16 @@ pub trait Disk: FileAccess {
     }
 
     /// Move the file `path` to the trash of the system. See
-    /// [`crate::trash::trash`].
+    /// [`crate::trash::trash`]. When its drive or volume has no trash, the
+    /// file stays and the error is [`crate::trash::no_trash`].
     fn trash(&self, path: &Path) -> io::Result<()> {
         crate::trash::trash(path)
+    }
+
+    /// False when the drive or volume of the file `path` is known to have
+    /// no trash. Moves nothing. See [`crate::trash::has_trash`].
+    fn has_trash(&self, path: &Path) -> bool {
+        crate::trash::has_trash(path)
     }
 
     /// Remove the file `path` for good.

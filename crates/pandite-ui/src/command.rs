@@ -24,6 +24,10 @@ pub enum Command {
     MoveToTrash,
     /// Remove the current file for good, after a question.
     DeleteFile,
+    /// Select the current image, or unselect it when it is selected.
+    ToggleSelect,
+    /// Unselect every image.
+    ClearSelection,
     /// Undo the last view edit.
     Undo,
     /// Rotate 90 degrees counterclockwise.
@@ -97,13 +101,15 @@ pub enum Command {
 
 impl Command {
     /// Every command, in the order the shortcut overlay lists them.
-    pub const ALL: [Command; 40] = [
+    pub const ALL: [Command; 42] = [
         Command::Open,
         Command::SaveAs,
         Command::CopyImage,
         Command::CopyPath,
         Command::CopyText,
         Command::SelectAllText,
+        Command::ToggleSelect,
+        Command::ClearSelection,
         Command::MoveToTrash,
         Command::DeleteFile,
         Command::Undo,
@@ -150,6 +156,8 @@ impl Command {
             Command::MoveToTrash if cfg!(windows) => "Move to Recycle Bin",
             Command::MoveToTrash => "Move to Trash",
             Command::DeleteFile => "Delete permanently...",
+            Command::ToggleSelect => "Select image",
+            Command::ClearSelection => "Clear selection",
             Command::Undo => "Undo",
             Command::RotateLeft => "Rotate left",
             Command::RotateRight => "Rotate right",
@@ -386,6 +394,8 @@ pub const SHORTCUTS: &[Shortcut] = &[
     Shortcut::new(Key::A, CTRL, Command::SelectAllText),
     Shortcut::new(Key::Delete, N, Command::MoveToTrash),
     Shortcut::new(Key::Delete, SHIFT, Command::DeleteFile),
+    Shortcut::new(Key::Space, N, Command::ToggleSelect),
+    Shortcut::new(Key::Backspace, N, Command::ClearSelection),
     Shortcut::new(Key::Z, CTRL, Command::Undo),
     Shortcut::new(Key::R, SHIFT, Command::RotateLeft),
     Shortcut::new(Key::L, N, Command::RotateLeft),
@@ -408,9 +418,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
     Shortcut::new(Key::Left, CTRL, Command::PanLeft),
     Shortcut::new(Key::Right, CTRL, Command::PanRight),
     Shortcut::new(Key::Left, N, Command::Previous),
-    Shortcut::new(Key::Backspace, N, Command::Previous),
     Shortcut::new(Key::Right, N, Command::Next),
-    Shortcut::new(Key::Space, N, Command::Next),
     Shortcut::new(Key::PageUp, N, Command::PagePrevious),
     Shortcut::new(Key::PageDown, N, Command::PageNext),
     Shortcut::new(Key::Home, N, Command::First),
@@ -564,6 +572,28 @@ mod tests {
             Command::DeleteFile.tooltip(),
             "Delete permanently  (Shift+Del)"
         );
+    }
+
+    #[test]
+    fn selection_keys() {
+        // Space selects and Backspace clears; neither navigates any more.
+        assert_eq!(
+            command_for_key(Key::Space, Modifiers::NONE, false),
+            Some(Command::ToggleSelect)
+        );
+        assert_eq!(
+            command_for_key(Key::Backspace, Modifiers::NONE, false),
+            Some(Command::ClearSelection)
+        );
+        assert_eq!(Command::Next.shortcut_label().as_deref(), Some("Right"));
+        assert_eq!(Command::Previous.shortcut_label().as_deref(), Some("Left"));
+        for cmd in [Command::ToggleSelect, Command::ClearSelection] {
+            assert!(
+                !cmd.repeats() && !cmd.allowed_in_crop() && !cmd.needs_image(),
+                "{cmd:?}"
+            );
+        }
+        assert_eq!(Command::ToggleSelect.tooltip(), "Select image  (Space)");
     }
 
     #[test]

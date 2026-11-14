@@ -50,6 +50,8 @@ impl Ui {
                 self.pointer = None;
                 if self.capture.is_none() {
                     self.set_hover(Target::None);
+                    self.gallery.hover = None;
+                    self.gallery.hover_check = false;
                 }
             }
             InputEvent::Wheel { pos, delta } => self.on_wheel(pos, delta, ctx, &m, &mut out),
@@ -171,6 +173,7 @@ impl Ui {
             Some((
                 Capture::Gallery {
                     index,
+                    check,
                     start,
                     start_scroll,
                     dragging,
@@ -189,6 +192,7 @@ impl Ui {
                 self.capture = Some((
                     Capture::Gallery {
                         index,
+                        check,
                         start,
                         start_scroll,
                         dragging,
@@ -247,9 +251,10 @@ impl Ui {
             } => Some((id, index)),
             _ => None,
         };
-        self.gallery.hover = match target {
-            Target::Gallery(i) => i,
-            _ => None,
+        (self.gallery.hover, self.gallery.hover_check) = match target {
+            Target::Gallery(i) => (i, false),
+            Target::GalleryCheck(i) => (Some(i), true),
+            _ => (None, false),
         };
     }
 
@@ -316,13 +321,21 @@ impl Ui {
             Target::Toolbar(cmd) if button == PointerButton::Left => Capture::Toolbar(cmd),
             Target::More if button == PointerButton::Left => Capture::More,
             Target::CropBar(b) if button == PointerButton::Left => Capture::CropBar(b),
-            Target::Gallery(index) => match button {
-                PointerButton::Left => Capture::Gallery {
-                    index,
-                    start: pos,
-                    start_scroll: self.gallery.scroll,
-                    dragging: false,
-                },
+            Target::Gallery(_) | Target::GalleryCheck(_) => match button {
+                PointerButton::Left => {
+                    let (index, check) = match target {
+                        Target::GalleryCheck(i) => (Some(i), true),
+                        Target::Gallery(index) => (index, false),
+                        _ => (None, false),
+                    };
+                    Capture::Gallery {
+                        index,
+                        check,
+                        start: pos,
+                        start_scroll: self.gallery.scroll,
+                        dragging: false,
+                    }
+                }
                 PointerButton::Right => Capture::RightPress,
                 _ => Capture::Swallow,
             },
@@ -545,11 +558,24 @@ impl Ui {
             }
             Capture::Gallery {
                 index: Some(i),
+                check,
                 dragging: false,
                 ..
             } => {
-                if target == Target::Gallery(Some(i)) && self.crop.is_none() && i < ctx.count {
-                    out.push(Action::GoTo(i));
+                // A click on the check box selects; a click elsewhere on
+                // the cell shows the image. A release off the pressed part
+                // does neither.
+                let wanted = if check {
+                    Target::GalleryCheck(i)
+                } else {
+                    Target::Gallery(Some(i))
+                };
+                if target == wanted && self.crop.is_none() && i < ctx.count {
+                    out.push(if check {
+                        Action::ToggleSelect(i)
+                    } else {
+                        Action::GoTo(i)
+                    });
                 }
             }
             Capture::Gallery { .. } => {}
@@ -558,6 +584,7 @@ impl Ui {
                     target,
                     Target::Content
                         | Target::Gallery(_)
+                        | Target::GalleryCheck(_)
                         | Target::ToolbarBar
                         | Target::CropBarPanel
                         | Target::InfoPanel
@@ -639,7 +666,7 @@ impl Ui {
             return;
         }
         match target {
-            Target::Gallery(_) => {
+            Target::Gallery(_) | Target::GalleryCheck(_) => {
                 if let Some(layout) = self.gallery_layout(ctx, m) {
                     // Both axes scroll the strip; positive values reveal
                     // earlier items.
