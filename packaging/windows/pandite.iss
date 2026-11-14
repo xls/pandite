@@ -23,6 +23,9 @@
 #ifndef NumericVersion
   #error Pass /DNumericVersion=<x.y.z.0>, or build with packaging/windows/build-setup.ps1
 #endif
+#ifndef FileTarget
+  #error Pass /DFileTarget=<arch>-windows, or build with packaging/windows/build-setup.ps1
+#endif
 #ifndef Target
   #error Pass /DTarget=<rust target>, or build with packaging/windows/build-setup.ps1
 #endif
@@ -81,7 +84,7 @@ Compression=lzma2/max
 SolidCompression=yes
 SetupLogging=yes
 OutputDir={#OutDir}
-OutputBaseFilename=pandite-{#Version}-{#Target}-setup
+OutputBaseFilename=pandite-{#Version}-{#FileTarget}-setup
 
 [Languages]
 Name: "en"; MessagesFile: "compiler:Default.isl"

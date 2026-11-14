@@ -79,7 +79,7 @@ different folder, set `PANDITE_ISCC` to its full path.
    ```
 
 3. Find the setup program at
-   `dist\pandite-0.1.0-x86_64-pc-windows-msvc-setup.exe`.
+   `dist\pandite-0.1.0-x86_64-windows-setup.exe`.
 4. For ARM64, use the ARM64 binary and `-Target aarch64-pc-windows-msvc`.
 
 The setup program installs the files of the portable zip for the current

@@ -67,7 +67,11 @@ export function candidateAssets({ platform, arch, glibc, version }) {
   if (platform === 'win32') {
     const target = WINDOWS_TARGETS[arch];
     if (!target) throw unsupported(system);
-    return [{ name: `pandite-${version}-${target}-setup.exe`, kind: 'setup' }];
+    // The short name first; releases up to 0.2.2 carry the full target.
+    return [
+      { name: `pandite-${version}-${target.replace('-pc-windows-msvc', '-windows')}-setup.exe`, kind: 'setup' },
+      { name: `pandite-${version}-${target}-setup.exe`, kind: 'setup' },
+    ];
   }
   if (platform === 'darwin') {
     if (arch !== 'x64' && arch !== 'arm64') throw unsupported(system);

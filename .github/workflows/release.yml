@@ -177,7 +177,7 @@ jobs:
         if: matrix.arch == 'x64'
         shell: pwsh
         run: |
-          $setup = "dist/pandite-$env:VERSION-$env:TARGET-setup.exe"
+          $setup = "dist/pandite-$env:VERSION-$($env:TARGET -replace '-pc-windows-msvc$', '-windows')-setup.exe"
           $dir = Join-Path $env:RUNNER_TEMP 'pandite-setup-test'
           $log = Join-Path $env:RUNNER_TEMP 'pandite-setup.log'
           # No file associations and no desktop shortcut on the runner.
@@ -432,7 +432,7 @@ jobs:
           cat > notes.md <<EOF
           Which file to download:
 
-          - Windows, to install: \`pandite-$VERSION-x86_64-pc-windows-msvc-setup.exe\` (x64) or \`pandite-$VERSION-aarch64-pc-windows-msvc-setup.exe\` (ARM64). It installs Pandite for your user account, without administrator rights, adds it to the Start menu and opens image files with it. The setup programs are not code-signed, so Windows SmartScreen warns when you start one: select More info, then Run anyway.
+          - Windows, to install: \`pandite-$VERSION-x86_64-windows-setup.exe\` (x64) or \`pandite-$VERSION-aarch64-windows-setup.exe\` (ARM64). It installs Pandite for your user account, without administrator rights, adds it to the Start menu and opens image files with it. The setup programs are not code-signed, so Windows SmartScreen warns when you start one: select More info, then Run anyway.
           - Windows, portable: \`pandite-$VERSION-x86_64-windows-portable.zip\` (x64) or \`pandite-$VERSION-aarch64-windows-portable.zip\` (ARM64). Extract it and run \`pandite.exe\`. Nothing is installed.
           - Windows, Microsoft Store: \`pandite-$VERSION-windows.msixbundle\` holds both architectures for Store submission. The MSIX files are unsigned and do not install by double-click.
           - macOS 11 or later: \`pandite-$VERSION-universal-apple-darwin.dmg\` (Apple Silicon and Intel).

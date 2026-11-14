@@ -289,7 +289,7 @@ const want = {
   PrivilegesRequired: 'lowest',
   DefaultDirName: '{localappdata}\\Programs\\Pandite',
   UninstallDisplayIcon: '{app}\\pandite.exe',
-  OutputBaseFilename: 'pandite-{#Version}-{#Target}-setup',
+  OutputBaseFilename: 'pandite-{#Version}-{#FileTarget}-setup',
   OutputDir: '{#OutDir}',
 };
 for (const [key, value] of Object.entries(want)) {
@@ -490,7 +490,12 @@ const tarTarget = /^TARGET=(\S+)$/m.exec(tarScript)?.[1];
 const tarBase = /^NAME="([^"]+)"$/m.exec(tarScript)?.[1]?.replace('$VERSION', VERSION).replace('$TARGET', tarTarget);
 const built = {
   setup: (name) =>
-    winTargets.some((t) => name === `${setupBase.replace('{#Version}', VERSION).replace('{#Target}', t)}.exe`),
+    // The short name of this build, and the long name of releases up to 0.2.2.
+    winTargets.some(
+      (t) =>
+        name === `${setupBase.replace('{#Version}', VERSION).replace('{#FileTarget}', t.replace('-pc-windows-msvc', '-windows'))}.exe` ||
+        name === `pandite-${VERSION}-${t}-setup.exe`,
+    ) && buildSetup.includes("$fileTarget = $Target -replace '-pc-windows-msvc$', '-windows'"),
   // Releases up to 0.2.2 also carry the app as a zip. The installer takes
   // it there and takes the disk image in every later release.
   'app-zip': (name) => name === `${macBase}.zip`,

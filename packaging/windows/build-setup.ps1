@@ -5,7 +5,7 @@
 
 .DESCRIPTION
   Compiles packaging/windows/pandite.iss into
-  <OutDir>\pandite-<version>-<target>-setup.exe. The setup program installs
+  <OutDir>\pandite-<version>-<arch>-windows-setup.exe. The setup program installs
   the files of the portable zip for the current user.
 
   ISCC.exe comes from -Iscc, else from $env:PANDITE_ISCC, else from the
@@ -62,6 +62,8 @@ if ($FindIscc) {
 }
 
 if ($Version -notmatch '^\d+\.\d+\.\d+([-+][0-9A-Za-z.+-]+)?$') { throw "version is not x.y.z[-pre][+build]: $Version" }
+# The file name says windows, not the full target: x86_64-windows-setup.
+$fileTarget = $Target -replace '-pc-windows-msvc$', '-windows'
 $arch = switch ($Target) {
   'x86_64-pc-windows-msvc' { 'x64' }
   'aarch64-pc-windows-msvc' { 'arm64' }
@@ -82,9 +84,9 @@ $out = (Resolve-Path -LiteralPath $OutDir).Path
 $script = Join-Path $PSScriptRoot 'pandite.iss'
 
 Write-Output "ISCC.exe: $Iscc"
-& $Iscc /Qp "/DVersion=$Version" "/DNumericVersion=$numeric" "/DTarget=$Target" "/DArch=$arch" "/DExe=$exePath" "/DOutDir=$out" $script
+& $Iscc /Qp "/DVersion=$Version" "/DNumericVersion=$numeric" "/DTarget=$Target" "/DFileTarget=$fileTarget" "/DArch=$arch" "/DExe=$exePath" "/DOutDir=$out" $script
 if ($LASTEXITCODE -ne 0) { throw "ISCC.exe failed with exit code $LASTEXITCODE" }
 
-$setup = Join-Path $out "pandite-$Version-$Target-setup.exe"
+$setup = Join-Path $out "pandite-$Version-$fileTarget-setup.exe"
 if (-not (Test-Path -LiteralPath $setup -PathType Leaf)) { throw "ISCC.exe did not write $setup" }
 Write-Output "wrote $setup"
