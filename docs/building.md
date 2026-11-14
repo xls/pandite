@@ -151,8 +151,7 @@ accepts. For the Store identity values and for signing, see
    bash packaging/macos/build-app.sh 0.1.0 dist target
    ```
 
-3. Find `pandite-0.1.0-universal-apple-darwin.dmg` and
-   `pandite-0.1.0-universal-apple-darwin.zip` in `dist`.
+3. Find `pandite-0.1.0-universal-apple-darwin.dmg` in `dist`.
 
 Without more settings, the script signs the app ad hoc and does not notarize
 it. macOS then warns the user before the first start.
@@ -253,7 +252,7 @@ packages.
 The npm package `pandite` in `packaging/npm` is an installer for Node.js 18
 or later. It is a separate Node.js script. The program itself has no
 network code. `npx pandite` reads the releases from the GitHub API. It
-downloads the setup program, the macOS zip or the Linux tarball of a
+downloads the setup program, the macOS disk image or the Linux tarball of a
 release. It checks the file against `SHA256SUMS.txt` of the same release
 and installs it. See `packaging/npm/README.md` for the commands.
 

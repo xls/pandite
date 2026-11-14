@@ -491,11 +491,14 @@ const tarBase = /^NAME="([^"]+)"$/m.exec(tarScript)?.[1]?.replace('$VERSION', VE
 const built = {
   setup: (name) =>
     winTargets.some((t) => name === `${setupBase.replace('{#Version}', VERSION).replace('{#Target}', t)}.exe`),
-  'app-zip': (name) =>
-    name === `${macBase}.zip` &&
-    appScript.includes('ditto -c -k --sequesterRsrc --keepParent "$APP" "$OUT/$NAME.zip"') &&
-    appScript.includes(`APP="$WORK/${installer.MAC_APP}"`),
-  dmg: (name) => name === `${macBase}.dmg` && appScript.includes('cp -R "$APP" "$DMG_SRC/"') && appScript.includes('"$OUT/$NAME.dmg"'),
+  // Releases up to 0.2.2 also carry the app as a zip. The installer takes
+  // it there and takes the disk image in every later release.
+  'app-zip': (name) => name === `${macBase}.zip`,
+  dmg: (name) =>
+    name === `${macBase}.dmg` &&
+    appScript.includes(`APP="$WORK/${installer.MAC_APP}"`) &&
+    appScript.includes('cp -R "$APP" "$DMG_SRC/"') &&
+    appScript.includes('"$OUT/$NAME.dmg"'),
   tarball: (name) =>
     name === `${tarBase}.tar.gz` &&
     tarBase === installer.tarballTop(VERSION) &&

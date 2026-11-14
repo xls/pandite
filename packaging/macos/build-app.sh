@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Build the universal Pandite.app, sign it and pack it as .dmg and .zip.
+# Build the universal Pandite.app, sign it and pack it as a .dmg.
 #
 # Usage: packaging/macos/build-app.sh <version> <out_dir> [<cargo_target_dir>]
 #
 # Needs both release binaries:
 #   <cargo_target_dir>/aarch64-apple-darwin/release/pandite
 #   <cargo_target_dir>/x86_64-apple-darwin/release/pandite
-# Writes <out_dir>/pandite-<version>-universal-apple-darwin.dmg and .zip.
+# Writes <out_dir>/pandite-<version>-universal-apple-darwin.dmg.
 # PANDITE_BUNDLE_ID overrides the placeholder bundle identifier.
 #
 # Signature:
@@ -111,13 +111,12 @@ codesign --verify --strict --verbose=2 "$APP"
 rm -f "$OUT/$NAME.zip" "$OUT/$NAME.dmg"
 if [ "$NOTARIZE" = 1 ]; then
   # The service takes an archive. The ticket then goes into the app, and
-  # the zip and the disk image below carry the app with its ticket.
+  # the disk image below carries the app with its ticket.
   ditto -c -k --sequesterRsrc --keepParent "$APP" "$WORK/notary.zip"
   notarize "$WORK/notary.zip"
   xcrun stapler staple "$APP"
   xcrun stapler validate "$APP"
 fi
-ditto -c -k --sequesterRsrc --keepParent "$APP" "$OUT/$NAME.zip"
 
 DMG_SRC="$WORK/dmg"
 mkdir -p "$DMG_SRC"
@@ -146,4 +145,3 @@ if [ "$NOTARIZE" = 1 ]; then
 fi
 
 echo "wrote $OUT/$NAME.dmg"
-echo "wrote $OUT/$NAME.zip"

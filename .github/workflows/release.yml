@@ -5,14 +5,14 @@
 #                           (Inno Setup), Store-ready unsigned .msix, and
 #                           one .msixbundle with both architectures
 #   macOS                   universal .app (arm64 + x86_64), ad hoc signed,
-#                           in a .dmg and a .zip
+#                           in a .dmg
 #   Linux x64               .tar.gz with desktop entry, icons, install script,
 #                           and a .deb and an .rpm with the same files
 # then writes SHA256SUMS.txt and publishes a GitHub release with all files.
 #
 # The npm installer (packaging/npm, `npx pandite`) is not part of a release.
 # It finds the releases on GitHub and installs the Windows setup program,
-# the macOS zip or the Linux tarball after it checks SHA256SUMS.txt. Its
+# the macOS disk image or the Linux tarball after it checks SHA256SUMS.txt. Its
 # owner publishes it to npm by hand when the installer code changes; see
 # docs/building.md.
 #
@@ -282,7 +282,7 @@ jobs:
           echo "PANDITE_MACOS_SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
           echo "PANDITE_MACOS_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
 
-      - name: Universal app, disk image and zip
+      - name: Universal app in a disk image
         env:
           PANDITE_APPLE_ID: ${{ secrets.PANDITE_APPLE_ID }}
           PANDITE_APPLE_TEAM_ID: ${{ secrets.PANDITE_APPLE_TEAM_ID }}
