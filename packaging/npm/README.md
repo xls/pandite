@@ -49,7 +49,7 @@ token. The installer sends no other data.
 | System | Release file | Install |
 |---|---|---|
 | Windows x64, ARM64 | `pandite-<version>-<target>-setup.exe` | Runs the setup program silently for the current user, without administrator rights: `%LOCALAPPDATA%\Programs\Pandite`, Start menu, image file associations. |
-| macOS 11 or later | `pandite-<version>-universal-apple-darwin.zip`, else the `.dmg` | Copies `pandite.app` to `~/Applications`, or to `/Applications` with `--system`. Replaces an older copy. |
+| macOS 11 or later | `pandite-<version>-universal-apple-darwin.zip`, else the `.dmg` | Copies `Pandite.app` to `~/Applications`, or to `/Applications` with `--system`. Replaces an older copy. |
 | Linux x64, glibc 2.35 or later | `pandite-<version>-x86_64-unknown-linux-gnu.tar.gz` | Runs the `install.sh` of the tarball with `PREFIX=~/.local`: `~/.local/bin/pandite`, desktop entry, icons. |
 
 Other systems get a "not supported" message.

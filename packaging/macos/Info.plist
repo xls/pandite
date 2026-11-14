@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Info.plist of pandite.app. packaging/macos/build-app.sh sets the two
+  Info.plist of Pandite.app. packaging/macos/build-app.sh sets the two
   version keys from the release version and can override the bundle id.
 
   PLACEHOLDER: net.rizos.pandite is a placeholder bundle identifier. Replace
@@ -16,7 +16,7 @@
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleDisplayName</key>
-  <string>pandite</string>
+  <string>Pandite</string>
   <key>CFBundleExecutable</key>
   <string>pandite</string>
   <key>CFBundleIconFile</key>
@@ -26,7 +26,7 @@
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>pandite</string>
+  <string>Pandite</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>

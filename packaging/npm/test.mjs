@@ -139,12 +139,12 @@ const setupExe = (version, arch) => Buffer.from(`MZ fake setup program of Pandit
 
 function macZip(version) {
   return makeZip([
-    { name: 'pandite.app/' },
-    { name: 'pandite.app/Contents/' },
-    { name: 'pandite.app/Contents/MacOS/' },
-    { name: 'pandite.app/Contents/MacOS/pandite', data: Buffer.from(`pandite ${version} universal`), mode: 0o100755 },
-    { name: 'pandite.app/Contents/Info.plist', data: Buffer.from(`<plist>${version}</plist>`) },
-    { name: '__MACOSX/pandite.app/._Info.plist', data: Buffer.from('xattr') },
+    { name: 'Pandite.app/' },
+    { name: 'Pandite.app/Contents/' },
+    { name: 'Pandite.app/Contents/MacOS/' },
+    { name: 'Pandite.app/Contents/MacOS/pandite', data: Buffer.from(`pandite ${version} universal`), mode: 0o100755 },
+    { name: 'Pandite.app/Contents/Info.plist', data: Buffer.from(`<plist>${version}</plist>`) },
+    { name: '__MACOSX/Pandite.app/._Info.plist', data: Buffer.from('xattr') },
   ]);
 }
 
@@ -351,7 +351,7 @@ function fakeSystem(platform, arch = 'x64', { glibc = platform === 'linux' ? '2.
       if (args[0] === 'attach') {
         const mount = args[args.indexOf('-mountpoint') + 1];
         const version = /^dmg (.+)$/.exec(readFileSync(args[args.length - 1], 'utf8'))[1];
-        const exe = path.join(mount, 'pandite.app', 'Contents', 'MacOS', 'pandite');
+        const exe = path.join(mount, 'Pandite.app', 'Contents', 'MacOS', 'pandite');
         mkdirSync(path.dirname(exe), { recursive: true });
         writeFileSync(exe, `pandite ${version} from dmg`);
         return ok();
@@ -541,7 +541,7 @@ test('a download with another SHA-256 is refused and deleted', async () => {
     assert.deepEqual(programs(sys), [], 'no installer ran');
     assert.equal(sys.state.setupFiles.length, 0);
     assert.ok(!existsSync(path.join(sys.data, MARKER)));
-    assert.ok(!existsSync(path.join(sys.home, 'Applications', 'pandite.app')));
+    assert.ok(!existsSync(path.join(sys.home, 'Applications', 'Pandite.app')));
     noTempLeft(sys);
   }
 });
@@ -759,7 +759,7 @@ test('the macOS app goes to ~/Applications, or to /Applications with --system', 
   const sys = fakeSystem('darwin', 'arm64');
   assert.equal((await install(sys, gh, ['-v', '0.1.0'])).code, 0);
   const apps = path.join(sys.home, 'Applications');
-  const app = path.join(apps, 'pandite.app');
+  const app = path.join(apps, 'Pandite.app');
   const exe = path.join(app, 'Contents', 'MacOS', 'pandite');
   assert.equal(readFileSync(exe, 'utf8'), 'pandite 0.1.0 universal');
   writeFileSync(path.join(app, 'Contents', 'stale.txt'), 'from 0.1.0');
@@ -768,7 +768,7 @@ test('the macOS app goes to ~/Applications, or to /Applications with --system', 
   assert.equal(readFileSync(exe, 'utf8'), 'pandite 0.2.0 universal');
   assert.equal(readFileSync(path.join(app, 'Contents', 'Info.plist'), 'utf8'), '<plist>0.2.0</plist>');
   assert.ok(!existsSync(path.join(app, 'Contents', 'stale.txt')), 'the older copy is replaced, not merged');
-  assert.deepEqual(readdirSync(apps), ['pandite.app'], 'no staging folder and no __MACOSX');
+  assert.deepEqual(readdirSync(apps), ['Pandite.app'], 'no staging folder and no __MACOSX');
   assert.deepEqual(r.out, [`Pandite 0.2.0 installed in ${app}. Start it from Launchpad or with: open "${app}"`]);
   assert.deepEqual(programs(sys), [], 'the zip unpacks without other programs');
   if (process.platform !== 'win32') assert.equal(readdirSync(path.dirname(exe)).length, 1);
@@ -777,7 +777,7 @@ test('the macOS app goes to ~/Applications, or to /Applications with --system', 
   // --system, and update keeps that folder.
   const sys2 = fakeSystem('darwin', 'x64');
   assert.equal((await install(sys2, gh, ['-v', '0.1.0', '--system'])).code, 0);
-  const sysApp = path.join(sys2.systemApplications, 'pandite.app');
+  const sysApp = path.join(sys2.systemApplications, 'Pandite.app');
   assert.ok(existsSync(path.join(sysApp, 'Contents', 'MacOS', 'pandite')));
   assert.ok(!existsSync(path.join(sys2.home, 'Applications')));
   assert.equal(marker(sys2).system, true);
@@ -796,7 +796,7 @@ test('the macOS app goes to ~/Applications, or to /Applications with --system', 
   assert.deepEqual(attach.args, ['attach', '-nobrowse', '-readonly', '-noautoopen', '-mountpoint', mount, path.join(path.dirname(mount), 'pandite-0.2.0-universal-apple-darwin.dmg')]);
   assert.deepEqual(detach.args, ['detach', mount, '-force']);
   assert.equal(attach.command, HDIUTIL);
-  assert.equal(readFileSync(path.join(sys3.home, 'Applications', 'pandite.app', 'Contents', 'MacOS', 'pandite'), 'utf8'), 'pandite 0.2.0 from dmg');
+  assert.equal(readFileSync(path.join(sys3.home, 'Applications', 'Pandite.app', 'Contents', 'MacOS', 'pandite'), 'utf8'), 'pandite 0.2.0 from dmg');
   noTempLeft(sys3);
 });
 
@@ -845,7 +845,7 @@ test('uninstall on each system', async () => {
   // macOS: delete the app.
   const mac = fakeSystem('darwin', 'arm64');
   assert.equal((await install(mac, gh, [])).code, 0);
-  const app = path.join(mac.home, 'Applications', 'pandite.app');
+  const app = path.join(mac.home, 'Applications', 'Pandite.app');
   r = await install(mac, gh, ['uninstall']);
   assert.equal(r.code, 0, r.err.join('\n'));
   assert.ok(!existsSync(app));

@@ -33,7 +33,7 @@
     ProcessorArchitecture="x64" />
 
   <Properties>
-    <DisplayName>pandite</DisplayName>
+    <DisplayName>Pandite</DisplayName>
     <PublisherDisplayName>REPLACE-ME publisher display name</PublisherDisplayName>
     <Logo>assets\StoreLogo.png</Logo>
     <Description>Fast offline image viewer.</Description>
@@ -50,7 +50,7 @@
   <Applications>
     <Application Id="pandite" Executable="pandite.exe" EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
-        DisplayName="pandite"
+        DisplayName="Pandite"
         Description="Fast offline image viewer."
         BackgroundColor="transparent"
         Square150x150Logo="assets\Square150x150Logo.png"

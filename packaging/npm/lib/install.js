@@ -232,7 +232,7 @@ function macStage(dir, system) {
   }
 }
 
-/** Move `stage`/pandite.app to `dir`, in place of an older copy. */
+/** Move `stage`/Pandite.app to `dir`, in place of an older copy. */
 function placeApp(stage, dir, release, system) {
   const app = path.join(stage, MAC_APP);
   const exe = path.join(app, 'Contents', 'MacOS', 'pandite');

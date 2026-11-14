@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the universal pandite.app, sign it and pack it as .dmg and .zip.
+# Build the universal Pandite.app, sign it and pack it as .dmg and .zip.
 #
 # Usage: packaging/macos/build-app.sh <version> <out_dir> [<cargo_target_dir>]
 #
@@ -44,7 +44,7 @@ OUT=$(cd "$OUT" && pwd)
 
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
-APP="$WORK/pandite.app"
+APP="$WORK/Pandite.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 lipo -create -output "$APP/Contents/MacOS/pandite" "$ARM" "$X64"
@@ -127,7 +127,7 @@ cp "$ROOT/LICENSE" "$DMG_SRC/LICENSE.txt"
 # hdiutil fails now and then with "Resource busy" on build machines.
 made=0
 for attempt in 1 2 3 4 5; do
-  if hdiutil create -volname "pandite $VERSION" -srcfolder "$DMG_SRC" -fs HFS+ -format UDZO -ov "$OUT/$NAME.dmg"; then
+  if hdiutil create -volname "Pandite $VERSION" -srcfolder "$DMG_SRC" -fs HFS+ -format UDZO -ov "$OUT/$NAME.dmg"; then
     made=1
     break
   fi

@@ -15,7 +15,7 @@ export const WINDOWS_APP_ID = '{E5E712AA-D4BF-4DC9-BB19-9841DC38CD1E}';
 export const WINDOWS_TARGETS = { x64: 'x86_64-pc-windows-msvc', arm64: 'aarch64-pc-windows-msvc' };
 export const MAC_TARGET = 'universal-apple-darwin';
 /** The app bundle at the top of the macOS zip and disk image. */
-export const MAC_APP = 'pandite.app';
+export const MAC_APP = 'Pandite.app';
 export const LINUX_TARGET = 'x86_64-unknown-linux-gnu';
 export const SUPPORTED =
   'Windows x64 and ARM64, macOS 11 or later (Apple Silicon and Intel), and Linux x64 with glibc 2.35 or later';

@@ -1,6 +1,6 @@
 {
   "name": "pandite",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Installer for Pandite, the fast offline image viewer: npx pandite installs or updates the latest GitHub release for your system",
   "keywords": [
     "pandite",

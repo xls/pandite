@@ -194,7 +194,7 @@ const linuxWant = new Set([...exts].filter((e) => !LINUX_EXCLUDED.has(e)));
 if (!setEq(linuxExts, linuxWant)) {
   err(`pandite.desktop MIME types differ: missing [${diff(linuxWant, linuxExts)}] extra [${diff(linuxExts, linuxWant)}]`);
 }
-for (const key of ['Type=Application', 'Name=pandite', 'Exec=pandite %f', 'Icon=pandite']) {
+for (const key of ['Type=Application', 'Name=Pandite', 'Exec=pandite %f', 'Icon=pandite']) {
   if (!desktop.split(/\r?\n/).includes(key)) err(`pandite.desktop lacks "${key}"`);
 }
 for (const n of [16, 32, 48, 64, 128, 256, 512]) {
