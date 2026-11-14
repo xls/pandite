@@ -1736,12 +1736,12 @@ impl State {
                 } else {
                     ""
                 };
-                format!("{}{edited} - pandite", shown.name)
+                format!("{}{edited} - Pandite", shown.name)
             }
-            (None, Some(t)) => format!("{} - pandite", file_name(&t.path)),
+            (None, Some(t)) => format!("{} - Pandite", file_name(&t.path)),
             (None, None) => match &self.loading {
-                Some(load) => format!("{} - pandite", load.name),
-                None => "pandite".to_string(),
+                Some(load) => format!("{} - Pandite", load.name),
+                None => "Pandite".to_string(),
             },
         };
         if title != self.title {

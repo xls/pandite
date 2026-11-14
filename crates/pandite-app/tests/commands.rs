@@ -303,7 +303,7 @@ fn navigation_next_previous() {
     assert!(h.wait_shown(&paths[2]));
     h.act(Action::GoTo(1));
     assert!(h.wait_shown(&paths[1]));
-    assert_eq!(h.app().title(), "b.png - pandite");
+    assert_eq!(h.app().title(), "b.png - Pandite");
 
     // Held keys repeat quickly: every press moves on at once and only the
     // final image ends up on screen.

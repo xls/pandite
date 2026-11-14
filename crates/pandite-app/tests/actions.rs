@@ -262,5 +262,5 @@ fn edits_are_view_only_until_save() {
     }
     assert_eq!(pixels(&saved), expected);
     assert!(!h.app().is_edited(), "saved edits are no longer pending");
-    assert!(h.app().title().starts_with("b.png - pandite"));
+    assert!(h.app().title().starts_with("b.png - Pandite"));
 }

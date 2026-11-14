@@ -81,7 +81,7 @@ fn delete_moves_to_trash_and_shows_next() {
     assert_eq!(h.app().thumbnails().len(), 2);
     assert!(h.wait_shown(&paths[2]));
     assert_eq!(first_pixel(&h), decode_first_pixel(&paths[2]));
-    assert_eq!(h.app().title(), "c.png - pandite");
+    assert_eq!(h.app().title(), "c.png - Pandite");
     let list = h.frame();
     assert!(has_text(&list, "2 / 2"));
     assert!(has_text(&list, "Moved b.png to"), "a short confirmation");
@@ -198,7 +198,7 @@ fn delete_only_image_leaves_empty_window() {
     assert_eq!(h.app().loading_path(), None);
     assert_eq!(h.app().count(), 0);
     assert!(h.app().library().is_empty());
-    assert_eq!(h.app().title(), "pandite");
+    assert_eq!(h.app().title(), "Pandite");
     let list = h.frame();
     assert!(has_text(&list, "No image open"));
     assert_eq!(

@@ -47,7 +47,7 @@ fn window_appears_before_file_is_read() {
         h.disk.calls().is_empty(),
         "no file system call before the first frame"
     );
-    assert_eq!(h.app().title(), "slow.png - pandite");
+    assert_eq!(h.app().title(), "slow.png - Pandite");
 
     // Only now does the load start, on a worker.
     let now = h.now;

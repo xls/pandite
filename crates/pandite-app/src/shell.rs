@@ -475,7 +475,7 @@ impl Shell {
             ThemeChoice::Light => Some(Theme::Light),
         };
         let mut attrs = Window::default_attributes()
-            .with_title("pandite")
+            .with_title("Pandite")
             .with_visible(false)
             .with_min_inner_size(LogicalSize::new(320.0, 240.0))
             .with_theme(theme)
@@ -830,8 +830,8 @@ impl Shell {
             smoke.fail(message.clone());
         } else {
             let _ = rfd::MessageDialog::new()
-                .set_title("pandite")
-                .set_description(format!("pandite cannot start: {message}"))
+                .set_title("Pandite")
+                .set_description(format!("Pandite cannot start: {message}"))
                 .set_level(rfd::MessageLevel::Error)
                 .show();
         }
@@ -998,7 +998,7 @@ impl Shell {
                     smoke.fail(format!("GPU lost: {err}"));
                 } else {
                     let _ = rfd::MessageDialog::new()
-                        .set_title("pandite")
+                        .set_title("Pandite")
                         .set_description(format!("The graphics device stopped working: {err}"))
                         .set_level(rfd::MessageLevel::Error)
                         .show();
