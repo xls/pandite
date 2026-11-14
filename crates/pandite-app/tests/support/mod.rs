@@ -191,6 +191,12 @@ struct DiskState {
     other_drive: HashSet<String>,
     /// Files whose copy stops half way, by name.
     fail_copy: HashSet<String>,
+    /// Folders, by name, on a drive that cannot rename without the risk of
+    /// replacing a file (FAT): a rename into them answers Unsupported.
+    no_safe_rename: HashSet<String>,
+    /// A file another program writes at the start of the next copy: its
+    /// path and its bytes.
+    appear: Option<(PathBuf, Vec<u8>)>,
 }
 
 /// The folder the fake trash of [`TestDisk`] moves a file into: a hidden
@@ -290,6 +296,18 @@ impl TestDisk {
     /// A copy of `name` writes half of the file, then fails.
     pub fn fail_copy(&self, name: &str) {
         lock(&self.state).fail_copy.insert(name.into());
+    }
+
+    /// The drive of the folder `name` cannot rename a file without the risk
+    /// of replacing another: renames into it answer
+    /// [`io::ErrorKind::Unsupported`].
+    pub fn no_safe_rename(&self, folder: &str) {
+        lock(&self.state).no_safe_rename.insert(folder.into());
+    }
+
+    /// Another program writes `bytes` at `path` as the next copy starts.
+    pub fn appear_on_copy(&self, path: &Path, bytes: &[u8]) {
+        lock(&self.state).appear = Some((path.to_path_buf(), bytes.to_vec()));
     }
 
     /// The operations called on `name`, in order.
@@ -501,8 +519,20 @@ impl Disk for TestDisk {
     /// Stalls like a read when [`TestDisk::stall_read`] names the file.
     fn rename_new(&self, from: &Path, to: &Path) -> io::Result<()> {
         let name = self.enter("rename_new", from, true);
-        let across = lock(&self.state).other_drive.contains(&name);
-        let r = if across {
+        let (across, unsafe_dir) = {
+            let g = lock(&self.state);
+            let folder = to.parent().map(name_of).unwrap_or_default();
+            (
+                g.other_drive.contains(&name),
+                g.no_safe_rename.contains(&folder),
+            )
+        };
+        let r = if unsafe_dir {
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "the test disk cannot rename without the risk of replacing",
+            ))
+        } else if across {
             Err(io::Error::new(
                 io::ErrorKind::CrossesDevices,
                 "the test disk puts these on two drives",
@@ -516,6 +546,10 @@ impl Disk for TestDisk {
 
     fn copy_new(&self, from: &Path, to: &Path) -> io::Result<u64> {
         let name = self.enter("copy_new", from, false);
+        let appear = lock(&self.state).appear.take();
+        if let Some((path, bytes)) = appear {
+            std::fs::write(path, bytes)?;
+        }
         let fail = lock(&self.state).fail_copy.contains(&name);
         let r = if fail {
             // Half the file reaches the copy, then the disk stops.
