@@ -186,6 +186,11 @@ struct DiskState {
     /// Files whose drive has no trash, by name: `trash` refuses them with
     /// the no-trash error before it touches them, and `has_trash` says no.
     no_trash: HashSet<String>,
+    /// Files on another drive than any folder they move to, by name: a
+    /// rename of them fails as a rename across drives does.
+    other_drive: HashSet<String>,
+    /// Files whose copy stops half way, by name.
+    fail_copy: HashSet<String>,
 }
 
 /// The folder the fake trash of [`TestDisk`] moves a file into: a hidden
@@ -274,6 +279,17 @@ impl TestDisk {
     /// `has_trash` answers false.
     pub fn no_trash(&self, name: &str) {
         lock(&self.state).no_trash.insert(name.into());
+    }
+
+    /// A move of `name` into another folder crosses drives: its rename
+    /// fails with [`io::ErrorKind::CrossesDevices`], so it is copied.
+    pub fn other_drive(&self, name: &str) {
+        lock(&self.state).other_drive.insert(name.into());
+    }
+
+    /// A copy of `name` writes half of the file, then fails.
+    pub fn fail_copy(&self, name: &str) {
+        lock(&self.state).fail_copy.insert(name.into());
     }
 
     /// The operations called on `name`, in order.
@@ -480,6 +496,42 @@ impl Disk for TestDisk {
 
     fn remove_file(&self, path: &Path) -> io::Result<()> {
         self.remove("remove_file", path)
+    }
+
+    /// Stalls like a read when [`TestDisk::stall_read`] names the file.
+    fn rename_new(&self, from: &Path, to: &Path) -> io::Result<()> {
+        let name = self.enter("rename_new", from, true);
+        let across = lock(&self.state).other_drive.contains(&name);
+        let r = if across {
+            Err(io::Error::new(
+                io::ErrorKind::CrossesDevices,
+                "the test disk puts these on two drives",
+            ))
+        } else {
+            pandite_app::disk::rename_new(from, to)
+        };
+        self.leave("rename_new", name);
+        r
+    }
+
+    fn copy_new(&self, from: &Path, to: &Path) -> io::Result<u64> {
+        let name = self.enter("copy_new", from, false);
+        let fail = lock(&self.state).fail_copy.contains(&name);
+        let r = if fail {
+            // Half the file reaches the copy, then the disk stops.
+            std::fs::read(from).and_then(|bytes| {
+                let mut out = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(to)?;
+                io::Write::write_all(&mut out, &bytes[..bytes.len() / 2])?;
+                Err(io::Error::other("the test disk stops the copy"))
+            })
+        } else {
+            pandite_app::disk::copy_new(from, to)
+        };
+        self.leave("copy_new", name);
+        r
     }
 
     fn has_trash(&self, path: &Path) -> bool {

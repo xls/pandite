@@ -104,17 +104,21 @@ impl Metrics {
     pub fn gallery_pad(&self) -> f32 {
         self.px(10.0)
     }
-    /// Side of the check box in a thumbnail corner.
-    pub fn gallery_check(&self) -> f32 {
-        self.px(18.0)
+    /// Side of the round badge on a selected thumbnail.
+    pub fn thumb_badge(&self) -> f32 {
+        self.px(14.0)
     }
-    /// Gap between a thumbnail corner and its check box.
-    pub fn gallery_check_inset(&self) -> f32 {
+    /// Gap between a thumbnail corner and its badge.
+    pub fn thumb_badge_inset(&self) -> f32 {
         self.px(4.0)
     }
-    /// Side of the check badge on a selected image.
-    pub fn badge(&self) -> f32 {
-        self.px(26.0)
+    /// Height of the "Marked" pill on a selected image.
+    pub fn marked_h(&self) -> f32 {
+        self.px(20.0)
+    }
+    /// Space left and right of the "Marked" label in its pill.
+    pub fn marked_pad(&self) -> f32 {
+        self.px(8.0)
     }
 
     pub fn menu_item_h(&self) -> f32 {

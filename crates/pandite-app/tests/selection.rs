@@ -1,9 +1,11 @@
-//! The selection end to end: Space and the check boxes of the gallery
-//! strip select files, the selection follows the files through deletes,
+//! The selection end to end: Space, Shift+Left, Shift+Right and the menu
+//! select files (a click on a thumbnail never does), the selection follows
+//! the files through deletes,
 //! rescans and folder changes, Delete and Shift+Delete act on it after a
-//! question, and bulk convert offers it as its source. A drive without a
-//! trash takes Delete as a removal for good. These tests use the fake
-//! trash of the test disk only.
+//! question, bulk convert offers it as its source, and Move to moves it
+//! into another folder. Shift+Left and Shift+Right select as they move.
+//! A drive without a trash takes Delete as a removal for good. These tests
+//! use the fake trash of the test disk only.
 
 mod support;
 
@@ -173,35 +175,44 @@ fn selection_toggle_adds_and_removes() {
     assert_eq!(h.app().selection(), [paths[1].clone()]);
     assert_eq!(h.app().selected_indices(), [1]);
     assert!(has_text(&h.frame(), "1 selected"));
-    // A check box click selects another image and does not show it.
-    let d = cell(&mut h, 3);
-    click_at(&mut h, Point::new(d.x + 6.0, d.y + 6.0));
+    // The menu entry selects too.
+    h.act(Action::ToggleSelect(3));
     assert_eq!(selected(&mut h), ["b.png", "d.png"]);
     assert_eq!(h.app().selected_indices(), [1, 3]);
-    assert_eq!(h.app().index(), Some(1), "the click did not navigate");
-    assert_eq!(h.app().shown_path(), Some(paths[1].as_path()));
     assert!(has_text(&h.frame(), "2 selected"));
 
-    // The same key and the same box unselect again.
-    h.key(Key::Space, NONE);
-    assert_eq!(selected(&mut h), ["d.png"]);
-    assert_eq!(h.app().selected_indices(), [3]);
+    // A click on the corner of a thumbnail, its badge or not, shows that
+    // image and leaves the selection as it is.
+    let c = cell(&mut h, 2);
+    click_at(&mut h, Point::new(c.x + 6.0, c.y + 6.0));
+    assert_eq!(h.app().index(), Some(2));
+    assert!(h.wait_shown(&paths[2]));
+    assert_eq!(selected(&mut h), ["b.png", "d.png"]);
     let d = cell(&mut h, 3);
     click_at(&mut h, Point::new(d.x + 6.0, d.y + 6.0));
+    assert_eq!(h.app().index(), Some(3));
+    assert!(h.wait_shown(&paths[3]));
+    assert_eq!(selected(&mut h), ["b.png", "d.png"]);
+
+    // Space on a selected image unselects it.
+    h.key(Key::Space, NONE);
+    assert_eq!(selected(&mut h), ["b.png"]);
+    assert_eq!(h.app().selected_indices(), [1]);
+    h.act(Action::ToggleSelect(1));
     assert!(h.app().selection().is_empty());
     assert!(h.app().selected_indices().is_empty());
     assert!(!has_text(&h.frame(), "selected"));
 
     // Moving on keeps the selection; Space acts on the new image.
     h.key(Key::Space, NONE);
-    h.key(Key::Right, NONE);
+    h.key(Key::Left, NONE);
     assert!(h.wait_shown(&paths[2]));
     h.key(Key::Space, NONE);
-    assert_eq!(selected(&mut h), ["b.png", "c.png"]);
-    assert_eq!(h.app().selected_indices(), [1, 2]);
+    assert_eq!(selected(&mut h), ["c.png", "d.png"]);
+    assert_eq!(h.app().selected_indices(), [2, 3]);
     // An index that is not in the folder selects nothing.
     assert_eq!(h.act(Action::ToggleSelect(99)), Handled::Ignored);
-    assert_eq!(h.app().selected_indices(), [1, 2]);
+    assert_eq!(h.app().selected_indices(), [2, 3]);
 }
 
 #[test]
@@ -912,4 +923,409 @@ fn delete_selection_without_trash_asks_permanent() {
     let list = h.frame();
     assert!(has_text(&list, "Deleted 2 images"));
     assert!(!has_text(&list, "Could not"));
+}
+
+#[test]
+fn selection_select_does_not_toggle() {
+    let (_dir, paths) = folder("sel-select", &["a.png", "b.png", "c.png"], 8, 8);
+    let mut h = open(&paths[0], 3);
+    // Select adds an image and keeps it, however often it comes.
+    assert_eq!(h.act(Action::Select(1)), Handled::Done);
+    assert_eq!(h.app().selection(), [paths[1].clone()]);
+    for _ in 0..3 {
+        h.act(Action::Select(1));
+    }
+    assert_eq!(h.app().selection(), [paths[1].clone()]);
+    assert_eq!(h.app().selected_indices(), [1]);
+    h.act(Action::Select(2));
+    assert_eq!(selected(&mut h), ["b.png", "c.png"]);
+    // An index that is not in the folder selects nothing.
+    assert_eq!(h.act(Action::Select(9)), Handled::Ignored);
+    assert_eq!(h.app().selected_indices(), [1, 2]);
+    // Space still toggles.
+    h.key(Key::Space, NONE);
+    assert_eq!(selected(&mut h), ["a.png", "b.png", "c.png"]);
+    h.key(Key::Space, NONE);
+    assert_eq!(selected(&mut h), ["b.png", "c.png"]);
+    // Shift+Left on a selected image keeps it selected.
+    h.act(Action::GoTo(2));
+    assert!(h.wait_shown(&paths[2]));
+    h.key(Key::Left, SHIFT);
+    assert_eq!(selected(&mut h), ["b.png", "c.png"]);
+    assert_eq!(h.app().index(), Some(1));
+}
+
+#[test]
+fn shift_right_selects_run_of_images() {
+    let names = ["a.png", "b.png", "c.png", "d.png", "e.png"];
+    let (_dir, paths) = folder("sel-run", &names, 8, 8);
+    let mut h = open(&paths[0], 5);
+    for _ in 0..3 {
+        h.key(Key::Right, SHIFT);
+    }
+    // Images 0, 1 and 2 are selected; image 3 is on screen, not selected.
+    assert_eq!(h.app().selected_indices(), [0, 1, 2]);
+    assert_eq!(selected(&mut h), ["a.png", "b.png", "c.png"]);
+    assert_eq!(h.app().index(), Some(3));
+    assert!(h.wait_shown(&paths[3]));
+    assert!(!h.app().selection().contains(&paths[3]));
+    assert!(has_text(&h.frame(), "3 selected"));
+    // A held key goes on the same way.
+    h.input(InputEvent::KeyDown {
+        key: Key::Right,
+        mods: SHIFT,
+        repeat: true,
+    });
+    assert_eq!(h.app().selected_indices(), [0, 1, 2, 3]);
+    assert_eq!(h.app().index(), Some(4));
+    // Shift+Left selects back the other way.
+    h.key(Key::Left, SHIFT);
+    assert_eq!(h.app().selected_indices(), [0, 1, 2, 3, 4]);
+    assert_eq!(h.app().index(), Some(3));
+}
+
+#[test]
+fn shift_arrow_at_folder_end_still_selects() {
+    // Wrapping is on (the default): a selecting move never wraps.
+    let (_dir, paths) = folder("sel-end", &["a.png", "b.png", "c.png"], 8, 8);
+    let mut h = open(&paths[2], 3);
+    h.key(Key::Right, SHIFT);
+    assert_eq!(h.app().selected_indices(), [2]);
+    assert_eq!(h.app().index(), Some(2), "no move past the last image");
+    h.key(Key::Right, SHIFT);
+    assert_eq!(h.app().selected_indices(), [2]);
+    assert_eq!(h.app().index(), Some(2));
+    h.act(Action::GoTo(0));
+    assert!(h.wait_shown(&paths[0]));
+    h.key(Key::Left, SHIFT);
+    assert_eq!(h.app().selected_indices(), [0, 2]);
+    assert_eq!(h.app().index(), Some(0), "no move before the first image");
+    // A folder of one image.
+    let (_dir, one) = folder("sel-end-one", &["only.png"], 8, 8);
+    let mut h = open(&one[0], 1);
+    h.key(Key::Right, SHIFT);
+    assert_eq!(h.app().selection(), [one[0].clone()]);
+    assert_eq!(h.app().index(), Some(0));
+}
+
+/// A harness on `paths[start]` of a folder and a second folder to move
+/// into.
+fn move_setup(
+    tag: &str,
+    names: &[&str],
+    start: usize,
+) -> (TempDir, Vec<PathBuf>, TempDir, Harness) {
+    let (dir, paths) = folder(tag, names, 8, 8);
+    let out = TempDir::new(&format!("{tag}-to"));
+    let h = open(&paths[start], names.len());
+    (dir, paths, out, h)
+}
+
+/// Press M, pick `folder` in the picker, and wait for the move to end.
+fn move_to(h: &mut Harness, folder: &Path) {
+    h.answer_dialog(vec![folder.to_path_buf()]);
+    h.key(Key::M, NONE);
+    assert!(h.wait_until(|a| !a.moving()), "the move ended");
+}
+
+fn listing(dir: &Path) -> Vec<String> {
+    let mut out: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    out.sort();
+    out
+}
+
+#[test]
+fn move_selection_moves_exactly_selected() {
+    let names = ["a.png", "b.png", "c.png", "d.png", "e.png"];
+    let (dir, paths, out, mut h) = move_setup("mv-sel", &names, 0);
+    let bytes: Vec<Vec<u8>> = paths.iter().map(|p| std::fs::read(p).unwrap()).collect();
+    for i in [1, 3, 4] {
+        h.act(Action::ToggleSelect(i));
+    }
+    move_to(&mut h, out.path());
+    // Exactly the selected files moved, whole; no question was asked.
+    assert_eq!(listing(out.path()), ["b.png", "d.png", "e.png"]);
+    for i in [1, 3, 4] {
+        assert!(!paths[i].exists());
+        assert_eq!(std::fs::read(out.join(names[i])).unwrap(), bytes[i]);
+    }
+    assert_eq!(listing(dir.path()), ["a.png", "c.png"]);
+    assert_eq!(h.disk.removal_calls(), 0, "nothing was deleted");
+    assert_eq!(names_of(&h), ["a.png", "c.png"]);
+    assert!(h.app().selection().is_empty());
+    assert_eq!(h.app().ui().mode(), UiMode::Normal);
+    let folder_name = name(out.path());
+    assert!(has_text(
+        &h.frame(),
+        &format!("Moved 3 images to {folder_name}")
+    ));
+}
+
+fn names_of(h: &Harness) -> Vec<String> {
+    names(&h.app.as_ref().unwrap().library().paths())
+}
+
+#[test]
+fn move_without_selection_moves_viewed_image() {
+    let (_dir, paths, out, mut h) = move_setup("mv-one", &["a.png", "b.png", "c.png"], 1);
+    move_to(&mut h, out.path());
+    assert_eq!(listing(out.path()), ["b.png"]);
+    assert!(!paths[1].exists());
+    assert_eq!(names_of(&h), ["a.png", "c.png"]);
+    // The next image takes its place, as after a delete.
+    assert!(h.wait_shown(&paths[2]));
+    assert_eq!(h.app().index(), Some(1));
+    // The picker named one image and started in the folder on screen.
+    let shown = lock(&h.dialogs).shown.clone();
+    match shown.last() {
+        Some(pandite_app::platform::DialogKind::PickFolder { start_dir, title }) => {
+            assert_eq!(title, "Move 1 image to");
+            assert_eq!(start_dir.as_deref(), paths[0].parent());
+        }
+        other => panic!("expected a folder picker, got {other:?}"),
+    }
+}
+
+#[test]
+fn move_cancelled_picker_changes_nothing() {
+    let (dir, paths, out, mut h) = move_setup("mv-cancel", &["a.png", "b.png", "c.png"], 0);
+    h.act(Action::ToggleSelect(1));
+    // An empty answer is a cancel.
+    h.answer_dialog(Vec::new());
+    h.key(Key::M, NONE);
+    h.pump();
+    assert!(!h.app().moving());
+    assert_eq!(lock(&h.dialogs).shown.len(), 1, "the picker showed");
+    assert!(listing(out.path()).is_empty());
+    assert_eq!(listing(dir.path()), ["a.png", "b.png", "c.png"]);
+    assert_eq!(names_of(&h), ["a.png", "b.png", "c.png"]);
+    assert_eq!(h.app().selection(), [paths[1].clone()]);
+    assert_eq!(h.app().settings().last_move_dir, None);
+    assert!(!h.app().exit_requested());
+}
+
+#[test]
+fn move_never_overwrites_existing_name() {
+    let (_dir, paths, out, mut h) = move_setup("mv-exists", &["a.png", "b.png", "c.png"], 0);
+    std::fs::write(out.join("b.png"), b"already there").unwrap();
+    h.act(Action::ToggleSelect(1));
+    h.act(Action::ToggleSelect(2));
+    move_to(&mut h, out.path());
+    // c moved; b stayed where it was, and the file there is untouched.
+    assert_eq!(std::fs::read(out.join("b.png")).unwrap(), b"already there");
+    assert!(paths[1].exists());
+    assert!(out.join("c.png").exists() && !paths[2].exists());
+    assert_eq!(names_of(&h), ["a.png", "b.png"]);
+    assert_eq!(h.app().selection(), [paths[1].clone()], "b stays selected");
+    let folder_name = name(out.path());
+    let notice = h.app().notice().expect("the report").to_string();
+    assert_eq!(
+        notice,
+        format!("Did not move b.png: {folder_name} has a file of that name")
+    );
+    let list = h.frame();
+    assert!(has_text(&list, &format!("Moved 1 image to {folder_name}")));
+    // Two names taken: the first reason and how many more. The image on
+    // screen (a) is the last one tried.
+    std::fs::write(out.join("a.png"), b"taken too").unwrap();
+    h.act(Action::ToggleSelect(0));
+    move_to(&mut h, out.path());
+    let notice = h.app().notice().expect("the report").to_string();
+    assert!(
+        notice.starts_with("Did not move b.png") && notice.ends_with("1 more file was not moved."),
+        "{notice}"
+    );
+    assert_eq!(selected(&mut h), ["a.png", "b.png"]);
+    assert_eq!(std::fs::read(out.join("a.png")).unwrap(), b"taken too");
+}
+
+#[test]
+fn move_to_same_folder_is_refused() {
+    let (dir, paths, _out, mut h) = move_setup("mv-same", &["a.png", "b.png"], 0);
+    h.act(Action::ToggleSelect(0));
+    h.act(Action::ToggleSelect(1));
+    move_to(&mut h, dir.path());
+    assert_eq!(listing(dir.path()), ["a.png", "b.png"]);
+    assert_eq!(names_of(&h), ["a.png", "b.png"]);
+    let ops: Vec<&str> = ["a.png", "b.png"]
+        .iter()
+        .flat_map(|n| h.disk.ops_on(n))
+        .filter(|op| matches!(*op, "rename_new" | "copy_new" | "remove_file"))
+        .collect();
+    assert!(ops.is_empty(), "{ops:?}");
+    assert_eq!(selected(&mut h), ["a.png", "b.png"]);
+    let folder_name = name(dir.path());
+    assert!(has_text(
+        &h.frame(),
+        &format!("The images are in {folder_name} already")
+    ));
+    assert!(paths.iter().all(|p| p.exists()));
+}
+
+#[test]
+fn move_across_drives_copies_then_removes_source() {
+    let (dir, paths, out, mut h) = move_setup("mv-drive", &["a.png", "b.png", "c.png"], 0);
+    let bytes = std::fs::read(&paths[1]).unwrap();
+    h.disk.other_drive("b.png");
+    h.act(Action::ToggleSelect(1));
+    move_to(&mut h, out.path());
+    // The copy is whole under its own name; the source is gone; no
+    // temporary file is left in either folder.
+    assert_eq!(std::fs::read(out.join("b.png")).unwrap(), bytes);
+    assert_eq!(listing(out.path()), ["b.png"]);
+    assert!(!paths[1].exists());
+    assert_eq!(listing(dir.path()), ["a.png", "c.png"]);
+    // The rename was refused, then a copy, then the source went.
+    let ops: Vec<&str> = h
+        .disk
+        .ops_on("b.png")
+        .into_iter()
+        .filter(|op| matches!(*op, "rename_new" | "copy_new" | "remove_file"))
+        .collect();
+    assert_eq!(ops, ["rename_new", "copy_new", "remove_file"]);
+    assert_eq!(names_of(&h), ["a.png", "c.png"]);
+    assert!(h.app().notice().is_none());
+}
+
+#[test]
+fn move_copy_failure_keeps_source_and_removes_partial() {
+    let (dir, paths, out, mut h) = move_setup("mv-fail", &["a.png", "b.png", "c.png"], 0);
+    let bytes = std::fs::read(&paths[1]).unwrap();
+    h.disk.other_drive("b.png");
+    h.disk.fail_copy("b.png");
+    h.disk.other_drive("c.png");
+    h.act(Action::ToggleSelect(1));
+    h.act(Action::ToggleSelect(2));
+    move_to(&mut h, out.path());
+    // The half copy of b is gone, b stays whole and selected; c moved.
+    assert_eq!(listing(out.path()), ["c.png"]);
+    assert_eq!(std::fs::read(&paths[1]).unwrap(), bytes);
+    assert_eq!(listing(dir.path()), ["a.png", "b.png"]);
+    assert!(!h.disk.ops_on("b.png").contains(&"remove_file"));
+    assert_eq!(h.app().selection(), [paths[1].clone()]);
+    assert_eq!(names_of(&h), ["a.png", "b.png"]);
+    let folder_name = name(out.path());
+    let notice = h.app().notice().expect("the report").to_string();
+    assert_eq!(
+        notice,
+        format!("Could not move b.png to {folder_name}: the test disk stops the copy")
+    );
+}
+
+#[test]
+fn move_updates_view_and_selection() {
+    let names = ["a.png", "b.png", "c.png", "d.png", "e.png"];
+    // The image on screen and its next neighbor move: the next remaining
+    // image shows.
+    let (_dir, paths, out, mut h) = move_setup("mv-view", &names, 1);
+    h.key(Key::Space, NONE);
+    h.act(Action::ToggleSelect(2));
+    move_to(&mut h, out.path());
+    assert_eq!(names_of(&h), ["a.png", "d.png", "e.png"]);
+    assert!(h.wait_shown(&paths[3]));
+    assert_eq!(h.app().index(), Some(1));
+    assert!(h.app().selection().is_empty());
+    let list = h.frame();
+    assert!(has_text(&list, "2 / 3") && !has_text(&list, "selected"));
+    // The image on screen stays when it does not move.
+    h.act(Action::ToggleSelect(0));
+    move_to(&mut h, out.path());
+    assert_eq!(names_of(&h), ["d.png", "e.png"]);
+    assert_eq!(h.app().shown_path(), Some(paths[3].as_path()));
+    assert_eq!(h.app().index(), Some(0));
+    // Everything moves: the window is empty and still answers.
+    h.act(Action::ToggleSelect(0));
+    h.act(Action::ToggleSelect(1));
+    move_to(&mut h, out.path());
+    assert_eq!(h.app().count(), 0);
+    assert_eq!(h.app().shown_path(), None);
+    assert!(has_text(&h.frame(), "No image open"));
+    assert_eq!(listing(out.path()), names);
+    h.key(Key::M, NONE);
+    h.key(Key::F11, NONE);
+    assert!(h.app().fullscreen());
+    h.key(Key::Escape, NONE);
+    assert!(h.app().exit_requested());
+}
+
+#[test]
+fn move_remembers_last_folder() {
+    let dir = TempDir::new("mv-remember");
+    let settings_path = dir.join("settings.ini");
+    let (_src, paths) = folder("mv-remember-src", &["a.png", "b.png", "c.png"], 8, 8);
+    let out = TempDir::new("mv-remember-to");
+    let mut h = Harness::new(Config {
+        open: Some(paths[0].clone()),
+        settings_path: Some(settings_path.clone()),
+        ..Config::default()
+    });
+    h.start();
+    assert!(h.wait_shown(&paths[0]));
+    assert!(h.wait_until(|a| a.count() == 3));
+    move_to(&mut h, out.path());
+    assert_eq!(
+        h.app().settings().last_move_dir.as_deref(),
+        Some(out.path())
+    );
+    // The next picker starts there.
+    h.answer_dialog(Vec::new());
+    h.key(Key::M, NONE);
+    h.pump();
+    let shown = lock(&h.dialogs).shown.clone();
+    match shown.last() {
+        Some(pandite_app::platform::DialogKind::PickFolder { start_dir, .. }) => {
+            assert_eq!(start_dir.as_deref(), Some(out.path()));
+        }
+        other => panic!("expected a folder picker, got {other:?}"),
+    }
+    // It is saved with the other settings and read back.
+    let saved = |p: &Path| std::fs::read_to_string(p).is_ok_and(|t| t.contains("last_move_dir"));
+    for _ in 0..500 {
+        if saved(&settings_path) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(saved(&settings_path), "the settings were written");
+    let text = std::fs::read_to_string(&settings_path).unwrap();
+    let back = pandite_app::settings::Settings::parse(&text).unwrap();
+    assert_eq!(back.last_move_dir.as_deref(), Some(out.path()));
+}
+
+#[test]
+fn move_runs_off_event_loop() {
+    let (_dir, paths, out, mut h) = move_setup("mv-thread", &["a.png", "b.png", "c.png"], 0);
+    // The move of b blocks in the file system until released.
+    h.disk.stall_read("b.png");
+    h.act(Action::ToggleSelect(1));
+    h.answer_dialog(vec![out.path().to_path_buf()]);
+    let before = std::time::Instant::now();
+    h.key(Key::M, NONE);
+    h.pump();
+    assert!(before.elapsed() < std::time::Duration::from_secs(5));
+    assert!(h.disk.wait_call("rename_new", "b.png"));
+    assert!(h.app().moving());
+    // The window still answers: keys, frames, the progress label.
+    assert!(has_text(&h.frame(), "Moving 1 of 1 image"));
+    h.key(Key::I, NONE);
+    assert!(h.app().info_visible());
+    h.key(Key::G, NONE);
+    assert!(!h.app().settings().gallery_visible);
+    assert_eq!(h.app().shown_path(), Some(paths[0].as_path()));
+    // The file system call ran on a worker thread.
+    let main = std::thread::current().id();
+    let call = h
+        .disk
+        .calls()
+        .into_iter()
+        .find(|c| c.op == "rename_new")
+        .unwrap();
+    assert_ne!(call.thread, main);
+    h.disk.release_all();
+    assert!(h.wait_until(|a| !a.moving()));
+    assert_eq!(listing(out.path()), ["b.png"]);
+    assert!(!paths[1].exists());
 }

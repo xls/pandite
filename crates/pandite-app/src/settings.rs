@@ -150,6 +150,9 @@ pub struct Settings {
     /// The last start drew with a discrete GPU. The next start then waits
     /// a moment for it when the system leaves it out of the adapter list.
     pub gpu_discrete_seen: bool,
+    /// The folder chosen for the last Move to, where its folder picker
+    /// starts the next time.
+    pub last_move_dir: Option<PathBuf>,
 }
 
 impl Default for Settings {
@@ -169,6 +172,7 @@ impl Default for Settings {
             ocr: TextRecognition::Auto,
             stay_ready: true,
             gpu_discrete_seen: false,
+            last_move_dir: None,
         }
     }
 }
@@ -244,6 +248,12 @@ impl Settings {
 # a start waits up to half a second for that GPU to be listed."
         );
         let _ = writeln!(s, "gpu_discrete_seen = {}", self.gpu_discrete_seen);
+        // A path that cannot be one line of text is not kept.
+        let dir = self.last_move_dir.as_ref().and_then(|d| d.to_str());
+        if let Some(dir) = dir.filter(|d| !d.contains(['\n', '\r']) && d.trim() == *d) {
+            let _ = writeln!(s, "\n# Written by pandite: the folder of the last Move to.");
+            let _ = writeln!(s, "last_move_dir = {dir}");
+        }
         s
     }
 
@@ -314,6 +324,9 @@ impl Settings {
                 }
                 "ocr" => s.ocr = TextRecognition::parse(value).ok_or_else(bad)?,
                 "gpu_discrete_seen" => s.gpu_discrete_seen = parse_bool(value).ok_or_else(bad)?,
+                "last_move_dir" => {
+                    s.last_move_dir = (!value.is_empty()).then(|| PathBuf::from(value));
+                }
                 _ => {}
             }
         }
@@ -546,8 +559,15 @@ mod tests {
             ocr: TextRecognition::Off,
             stay_ready: false,
             gpu_discrete_seen: true,
+            last_move_dir: Some(PathBuf::from("D:/Photos/kept = best")),
         };
         assert_eq!(Settings::parse(&s.to_text()).unwrap(), s);
+        // A folder that cannot be one line of text is not kept.
+        let odd = Settings {
+            last_move_dir: Some(PathBuf::from("/tmp/two\nlines")),
+            ..Settings::default()
+        };
+        assert_eq!(Settings::parse(&odd.to_text()).unwrap().last_move_dir, None);
         assert_eq!(
             Settings::parse(&Settings::default().to_text()).unwrap(),
             Settings::default()

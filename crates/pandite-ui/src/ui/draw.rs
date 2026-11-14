@@ -29,7 +29,7 @@ impl Ui {
         if self.crop.is_some() {
             self.draw_crop(ctx, measure, &m, theme, out);
         } else {
-            self.draw_badge(ctx, &m, theme, content, out);
+            self.draw_marked(ctx, measure, &m, theme, content, out);
         }
         if let Some(l) = splash {
             self.draw_splash(ctx, &l, measure, &m, theme, content, out);
@@ -87,12 +87,14 @@ impl Ui {
         out.clip(None);
     }
 
-    /// A check badge in the top right corner of the visible image while
+    /// The "Marked" pill in the top right corner of the visible image while
     /// the image on screen is selected. It keeps below the toolbar band
-    /// when the image leaves room for that.
-    fn draw_badge(
+    /// when the image leaves room for that, and fits its label at every
+    /// scale.
+    fn draw_marked(
         &self,
         ctx: &UiContext<'_>,
+        measure: &dyn TextMeasure,
         m: &Metrics,
         t: &Theme,
         content: Rect,
@@ -105,52 +107,40 @@ impl Ui {
         let Some(visible) = info.screen_rect.intersect(content) else {
             return;
         };
-        let side = m.badge();
+        let font = m.text_small();
+        let h = m.marked_h();
+        let w = (measure.measure(MARKED, font).w + 2.0 * m.marked_pad()).ceil();
         let margin = m.px(10.0);
         let top = visible.y + margin;
         let mut y = top.max(content.y + m.toolbar_h() + margin);
-        if y + side + margin > visible.bottom() {
-            y = top.max(visible.bottom() - margin - side);
+        if y + h + margin > visible.bottom() {
+            y = top.max(visible.bottom() - margin - h);
         }
-        let x = (visible.right() - margin - side).max(visible.x);
-        let r = Rect::new(x.round(), y.round(), side, side);
+        let x = (visible.right() - margin - w).max(visible.x);
+        let r = Rect::new(x.round(), y.round(), w, h);
         out.rect(
-            paint::outset(r, m.px(2.0)),
+            paint::outset(r, m.hairline()),
             t.shadow,
-            side * 0.5 + m.px(2.0),
+            h * 0.5 + m.hairline(),
         );
-        out.rect(r, t.accent, side * 0.5);
-        paint::icon(out, r, Icon::Check, m.icon(), t.accent_text);
+        out.rect(r, t.check_fill, h * 0.5);
+        out.border(r, t.check_line, m.px(1.5), h * 0.5);
+        paint::text_center(out, measure, r, MARKED, font, t.check_line);
     }
 
-    /// The check box of a thumbnail: filled with a check mark when the
-    /// image is selected, empty otherwise. `hot` marks the pointer over
-    /// the box itself.
-    fn draw_check_box(
-        &self,
-        b: Rect,
-        checked: bool,
-        hot: bool,
-        m: &Metrics,
-        t: &Theme,
-        out: &mut DrawList,
-    ) {
-        let radius = m.radius_small();
-        if checked {
-            out.rect(
-                paint::outset(b, m.hairline()),
-                t.shadow,
-                radius + m.hairline(),
-            );
-            out.rect(b, t.accent, radius);
-            paint::icon(out, b, Icon::Check, m.icon(), t.accent_text);
-        } else {
-            out.rect(b, fade(t.panel_solid, 0.8), radius);
-            out.border(b, t.text, m.px(2.0), radius);
-        }
-        if hot {
-            out.rect(b, t.hover, radius);
-        }
+    /// The marker of a selected thumbnail: a small round badge with a
+    /// check mark, in the colors of the "Marked" pill.
+    fn draw_thumb_badge(&self, b: Rect, m: &Metrics, t: &Theme, out: &mut DrawList) {
+        let radius = b.w * 0.5;
+        out.rect(
+            paint::outset(b, m.hairline()),
+            t.shadow,
+            radius + m.hairline(),
+        );
+        out.rect(b, t.check_fill, radius);
+        out.border(b, t.check_line, m.px(1.5), radius);
+        // The mark is a little smaller than the badge.
+        paint::icon(out, b, Icon::Check, b.w - m.px(2.0), t.check_line);
     }
 
     fn draw_toolbar(
@@ -341,20 +331,16 @@ impl Ui {
                     paint::icon(out, cell, Icon::Picture, m.icon(), fade(t.text_dim, 0.6));
                 }
             }
-            let hovered = self.gallery.hover == Some(i);
-            if hovered && !current {
+            if self.gallery.hover == Some(i) && !current {
                 out.rect(cell, t.hover, radius);
             }
             if current {
                 let ring = paint::outset(cell, m.px(2.0));
                 out.border(ring, t.accent, m.px(2.0), radius + m.px(2.0));
             }
-            // A selected image always shows its checked box; an unselected
-            // one offers an empty box under the pointer, outside crop mode.
-            let checked = ctx.is_selected(i);
-            if checked || (hovered && self.crop.is_none()) {
-                let hot = hovered && self.gallery.hover_check && self.crop.is_none();
-                self.draw_check_box(layout.check_rect(cell), checked, hot, m, t, out);
+            // A marker only: the pointer never changes the selection.
+            if ctx.is_selected(i) {
+                self.draw_thumb_badge(layout.badge_rect(cell), m, t, out);
             }
         }
         out.clip(None);
@@ -1172,6 +1158,9 @@ impl Ui {
         paint::text_center(out, measure, r, &text, font, t.tooltip_text);
     }
 }
+
+/// The label of the image on screen while it is selected.
+const MARKED: &str = "Marked";
 
 /// Geometry of the information panel for one frame.
 struct InfoLayout {

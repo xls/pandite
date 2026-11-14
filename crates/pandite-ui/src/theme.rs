@@ -69,6 +69,12 @@ pub struct Theme {
     pub placeholder: Color,
     /// Drop shadow under floating panels.
     pub shadow: Color,
+    /// Fill of the selection badge of a thumbnail and of the "Marked" pill:
+    /// a light gray blue that reads on any photo.
+    pub check_fill: Color,
+    /// Outline, check mark and text of the selection badge and the
+    /// "Marked" pill.
+    pub check_line: Color,
 }
 
 impl Theme {
@@ -99,6 +105,8 @@ impl Theme {
         crop_shadow: Color::rgba(0, 0, 0, 150),
         placeholder: Color::rgb(44, 44, 48),
         shadow: Color::rgba(0, 0, 0, 90),
+        check_fill: Color::rgb(198, 210, 226),
+        check_line: Color::rgb(20, 26, 36),
     };
 
     /// The light table.
@@ -128,6 +136,8 @@ impl Theme {
         crop_shadow: Color::rgba(0, 0, 0, 140),
         placeholder: Color::rgb(222, 222, 226),
         shadow: Color::rgba(0, 0, 0, 40),
+        check_fill: Color::rgb(198, 210, 226),
+        check_line: Color::rgb(20, 26, 36),
     };
 
     /// The table for `kind`.

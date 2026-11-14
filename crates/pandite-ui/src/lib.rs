@@ -75,16 +75,20 @@
 //! The application keeps the set of selected files and reports their
 //! folder indices in [`UiContext::selected`]. Space emits
 //! [`Action::ToggleSelect`] for the image on screen and Backspace emits
-//! [`Action::ClearSelection`]; neither navigates. A selected thumbnail
-//! draws a checked box in its top left corner, and the thumbnail under the
-//! pointer an empty one. A click on that box emits
-//! [`Action::ToggleSelect`] for its index and does not show the image. The
-//! image on screen draws a check badge while it is selected, and the
-//! toolbar shows the count. The context menu offers both commands. Space
-//! and Backspace never change the selection in crop mode, in a dialog or
-//! in the shortcut overlay; in a text field they edit the text. The bulk
-//! dialog opens with the selected images as its source
-//! ([`BulkSource::Selection`]).
+//! [`Action::ClearSelection`]; neither navigates. Shift+Right emits
+//! [`Action::Select`] for the image on screen and then [`Action::Next`],
+//! Shift+Left the same with [`Action::Previous`]; at an end of the folder
+//! only the selection is emitted. A selected thumbnail draws a small round
+//! badge in its top left corner. The badge is a marker: a click anywhere
+//! on a thumbnail shows that image, and the pointer never changes the
+//! selection. The image on screen draws a "Marked" label while it is
+//! selected, and the toolbar shows the count. The context menu offers
+//! Select image and Clear selection. These keys never change the
+//! selection in crop mode, in a dialog or in the shortcut overlay; in a
+//! text field they edit the text. The bulk dialog opens with the selected
+//! images as its source ([`BulkSource::Selection`]). M emits
+//! [`Action::MoveTo`], which moves the selected files, or the file on
+//! screen, to a folder the application asks for.
 //!
 //! # Escape
 //!

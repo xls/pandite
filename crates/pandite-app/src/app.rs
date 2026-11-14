@@ -22,7 +22,7 @@ use crate::info::{self, FileReport};
 use crate::platform::{Clipboard, DialogKind, Dialogs, Filter, Waker, WindowControl};
 use crate::settings::{self, Settings, TextRecognition, ThemeChoice, WindowPlacement};
 use crate::trash::{TRASH_NAME, TRASH_TITLE};
-use jobs::{Copied, CopyJob, DeleteJob, Outbox, Removal, RemoveMode};
+use jobs::{Copied, CopyJob, DeleteJob, MoveJob, Outbox, Removal, RemoveMode};
 use pandite_core::{
     CancelToken, Color, Content, DrawList, EncodeOptions, Error, ImageBuf, PixelFormat, Point,
     Rect, Registry, Size, TextLayout, TextMeasure, TextureSink, ViewState,
@@ -97,6 +97,12 @@ pub(crate) enum Msg {
         path: PathBuf,
         permanent: bool,
         result: Removal,
+    },
+    /// File move `id` of `path` ended.
+    Moved {
+        id: u64,
+        path: PathBuf,
+        result: Result<(), (std::io::ErrorKind, String)>,
     },
     /// Trash check `id` ended: each file, and whether it has a trash.
     TrashChecked {
@@ -334,13 +340,15 @@ struct InfoState {
 }
 
 /// Why a dialog was opened.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum DialogPurpose {
     Open,
     SaveAs,
     BulkFiles,
     BulkFolder,
     BulkDestination,
+    /// The folder for these files to move into.
+    MoveTo(Vec<PathBuf>),
 }
 
 /// A save waiting for its confirmation or for running edits.
@@ -371,18 +379,41 @@ struct DeleteRun {
     stopped_load: bool,
 }
 
-/// A delete of selected files: one file at a time on a worker, in folder
-/// order, the image the user wanted last.
+/// What happens to one file of a batch.
+#[derive(Clone, Debug, PartialEq)]
+enum FileJob {
+    /// It is removed, as the mode says.
+    Remove(RemoveMode),
+    /// It moves into this folder.
+    MoveInto(PathBuf),
+}
+
+/// How one file of a batch ended.
+#[derive(Clone, Debug, PartialEq)]
+enum FileOutcome {
+    Trashed,
+    Deleted,
+    Moved,
+    /// The file stayed; the text says why.
+    Stayed(String),
+}
+
+/// A delete of selected files or a move: one file at a time on a worker,
+/// in folder order, the image the user wanted last.
 #[derive(Clone, Debug)]
-struct DeleteBatch {
-    /// Files still to remove, and how.
-    queue: VecDeque<(PathBuf, RemoveMode)>,
+struct FileBatch {
+    /// The folder of a move; `None` for a delete.
+    into: Option<PathBuf>,
+    /// Files still to go, and how.
+    queue: VecDeque<(PathBuf, FileJob)>,
     /// Files in the batch.
     total: usize,
     /// Files moved to the trash (or gone already).
     trashed: usize,
     /// Files removed for good (or gone already).
     deleted: usize,
+    /// Files moved into the folder.
+    moved: usize,
     /// Why files stayed, one line each.
     failed: Vec<String>,
 }
@@ -504,10 +535,10 @@ struct State {
     confirms: HashMap<u64, Question>,
     pending_save: Option<PendingSave>,
     saving: Option<Saving>,
-    /// The file removal on a worker.
+    /// The file removal or move on a worker.
     deleting: Option<DeleteRun>,
-    /// The delete of selected files that runs.
-    delete_batch: Option<DeleteBatch>,
+    /// The delete of selected files or the move that runs.
+    batch: Option<FileBatch>,
     /// The trash check that the question before a delete of selected files
     /// waits for: its id.
     trash_check: Option<u64>,
@@ -687,7 +718,7 @@ impl App {
             pending_save: None,
             saving: None,
             deleting: None,
-            delete_batch: None,
+            batch: None,
             trash_check: None,
             selection: Vec::new(),
             selected: Vec::new(),
@@ -838,7 +869,15 @@ impl App {
     /// True while a file moves to the trash or is removed for good, also
     /// between the files of a delete of selected files.
     pub fn deleting(&self) -> bool {
-        self.st.deleting.is_some() || self.st.delete_batch.is_some()
+        match &self.st.batch {
+            Some(batch) => batch.into.is_none(),
+            None => self.st.deleting.is_some(),
+        }
+    }
+
+    /// True while files move into another folder (Move to).
+    pub fn moving(&self) -> bool {
+        self.st.batch.as_ref().is_some_and(|b| b.into.is_some())
     }
 
     /// The selected files, in the order they were selected.
@@ -1020,7 +1059,9 @@ impl App {
             Action::MoveToTrash => st.request_delete(false, &mut self.ui, now),
             Action::DeleteFile => st.request_delete(true, &mut self.ui, now),
             Action::ToggleSelect(index) => st.toggle_selection(index),
+            Action::Select(index) => st.select_index(index),
             Action::ClearSelection => st.clear_selection(),
+            Action::MoveTo => st.request_move(&mut self.ui, now),
             Action::CopyText(text) => {
                 st.drop_image_copy();
                 match st.clipboard.set_text(&text) {
@@ -1412,6 +1453,9 @@ impl App {
                     DialogPurpose::BulkDestination => {
                         self.ui.set_bulk_destination(paths[0].clone());
                     }
+                    DialogPurpose::MoveTo(files) => {
+                        st.move_target_chosen(files, paths[0].clone(), &mut self.ui, now);
+                    }
                 }
             }
             Msg::EditDone {
@@ -1513,6 +1557,7 @@ impl App {
                 result,
             } => st.deleted(id, &path, permanent, result, &mut self.ui, now),
             Msg::TrashChecked { id, files } => st.trash_checked(id, files, &mut self.ui),
+            Msg::Moved { id, path, result } => st.moved(id, &path, result, &mut self.ui, now),
         }
     }
 }
@@ -1665,9 +1710,14 @@ impl State {
             self.busy_text = "Preparing to save".into();
         }
         if self.busy_text.is_empty() {
-            if let Some(batch) = &self.delete_batch {
+            if let Some(batch) = &self.batch {
                 let at = batch.total - batch.queue.len();
-                self.busy_text = format!("Deleting {at} of {}", images(batch.total));
+                let verb = if batch.into.is_some() {
+                    "Moving"
+                } else {
+                    "Deleting"
+                };
+                self.busy_text = format!("{verb} {at} of {}", images(batch.total));
             } else if self.trash_check.is_some() {
                 self.busy_text = "Preparing to delete".into();
             }
@@ -2968,6 +3018,19 @@ impl State {
         Handled::Done
     }
 
+    /// Select the file at folder index `index`; a selected file stays
+    /// selected.
+    fn select_index(&mut self, index: usize) -> Handled {
+        let Some(path) = self.library.path(index) else {
+            return Handled::Ignored;
+        };
+        if !self.selection.contains(&path) {
+            self.selection.push(path);
+            self.refresh_selected();
+        }
+        Handled::Done
+    }
+
     fn clear_selection(&mut self) -> Handled {
         if self.selection.is_empty() {
             return Handled::Ignored;
@@ -3036,8 +3099,8 @@ impl State {
         let Some(path) = self.delete_target() else {
             return Handled::Ignored;
         };
-        if self.deleting.is_some() || self.delete_batch.is_some() {
-            ui.toast("Still deleting", now);
+        if let Some(why) = self.busy_with_files() {
+            ui.toast(why, now);
             return Handled::Ignored;
         }
         if self.saving.is_some() || self.pending_save.is_some() {
@@ -3071,8 +3134,8 @@ impl State {
         ui: &mut Ui,
         now: Duration,
     ) -> Handled {
-        if self.deleting.is_some() || self.delete_batch.is_some() {
-            ui.toast("Still deleting", now);
+        if let Some(why) = self.busy_with_files() {
+            ui.toast(why, now);
             return Handled::Ignored;
         }
         if self.saving.is_some() || self.pending_save.is_some() {
@@ -3138,51 +3201,70 @@ impl State {
         ui.show_confirm(request);
     }
 
-    /// Remove `files` one after another. The image the user wants to see
-    /// goes last, so the image that takes its place is one that stays.
+    /// Remove `files` one after another, each as its mode says.
     fn start_delete_selection(
         &mut self,
         files: Vec<(PathBuf, RemoveMode)>,
         ui: &mut Ui,
         now: Duration,
     ) -> Handled {
-        if self.deleting.is_some() || self.delete_batch.is_some() {
-            ui.toast("Still deleting", now);
+        if let Some(why) = self.busy_with_files() {
+            ui.toast(why, now);
             return Handled::Ignored;
         }
+        let files = files
+            .into_iter()
+            .map(|(path, mode)| (path, FileJob::Remove(mode)))
+            .collect();
+        self.start_batch(files, None, ui, now);
+        Handled::Done
+    }
+
+    /// Work through `files` one after another on workers. The image the
+    /// user wants to see goes last, so the image that takes its place is
+    /// one that stays. `into` is the folder of a move.
+    fn start_batch(
+        &mut self,
+        files: Vec<(PathBuf, FileJob)>,
+        into: Option<PathBuf>,
+        ui: &mut Ui,
+        now: Duration,
+    ) {
         let viewed = self.target.as_ref().map(|t| t.path.clone());
         let mut queue = VecDeque::with_capacity(files.len());
         let mut last = None;
-        for (path, mode) in files {
+        for (path, job) in files {
             if viewed.as_ref() == Some(&path) {
-                last = Some((path, mode));
+                last = Some((path, job));
             } else {
-                queue.push_back((path, mode));
+                queue.push_back((path, job));
             }
         }
         queue.extend(last);
-        self.delete_batch = Some(DeleteBatch {
+        self.batch = Some(FileBatch {
+            into,
             total: queue.len(),
             queue,
             trashed: 0,
             deleted: 0,
+            moved: 0,
             failed: Vec::new(),
         });
         self.next_in_batch(ui, now);
-        Handled::Done
     }
 
     /// Start the next file of the batch, or end the batch.
     fn next_in_batch(&mut self, ui: &mut Ui, now: Duration) {
-        while let Some((path, mode)) = self.delete_batch.as_mut().and_then(|b| b.queue.pop_front())
-        {
-            if self.spawn_removal(path.clone(), mode) {
+        while let Some((path, job)) = self.batch.as_mut().and_then(|b| b.queue.pop_front()) {
+            let moving = matches!(job, FileJob::MoveInto(_));
+            if self.spawn_file_job(path.clone(), job) {
                 return;
             }
-            if let Some(batch) = self.delete_batch.as_mut() {
+            if let Some(batch) = self.batch.as_mut() {
+                let what = if moving { "moving" } else { "deleting" };
                 batch
                     .failed
-                    .push(format!("Could not start deleting {}", file_name(&path)));
+                    .push(format!("Could not start {what} {}", file_name(&path)));
             }
         }
         self.finish_batch(ui, now);
@@ -3191,37 +3273,30 @@ impl State {
     /// One file of the batch ended. A file that went (or was gone already)
     /// leaves the folder and the selection; a file that stays keeps its
     /// place and stays selected.
-    fn batch_removed(
+    fn batch_file_done(
         &mut self,
         stopped_load: bool,
         path: &Path,
-        permanent: bool,
-        result: Removal,
+        outcome: FileOutcome,
         ui: &mut Ui,
         now: Duration,
     ) {
-        match result {
-            Ok(()) | Err((std::io::ErrorKind::NotFound, _)) => {
-                if let Some(batch) = self.delete_batch.as_mut() {
-                    if permanent {
-                        batch.deleted += 1;
-                    } else {
-                        batch.trashed += 1;
+        match outcome {
+            FileOutcome::Stayed(why) => {
+                if let Some(batch) = self.batch.as_mut() {
+                    batch.failed.push(why);
+                }
+                self.resume_load(path, stopped_load);
+            }
+            gone => {
+                if let Some(batch) = self.batch.as_mut() {
+                    match gone {
+                        FileOutcome::Trashed => batch.trashed += 1,
+                        FileOutcome::Deleted => batch.deleted += 1,
+                        _ => batch.moved += 1,
                     }
                 }
                 self.drop_from_folder(path, now);
-            }
-            Err((_, why)) => {
-                let name = file_name(path);
-                let what = if permanent {
-                    format!("Could not delete {name}")
-                } else {
-                    format!("Could not move {name} to {TRASH_NAME}")
-                };
-                if let Some(batch) = self.delete_batch.as_mut() {
-                    batch.failed.push(format!("{what}: {why}"));
-                }
-                self.resume_load(path, stopped_load);
             }
         }
         self.next_in_batch(ui, now);
@@ -3229,14 +3304,20 @@ impl State {
 
     /// The batch ended: say what went, and why files stayed.
     fn finish_batch(&mut self, ui: &mut Ui, now: Duration) {
-        let Some(batch) = self.delete_batch.take() else {
+        let Some(batch) = self.batch.take() else {
             return;
         };
-        let done = match (batch.trashed, batch.deleted) {
-            (0, 0) => None,
-            (t, 0) => Some(format!("Moved {} to {TRASH_NAME}", images(t))),
-            (0, d) => Some(format!("Deleted {}", images(d))),
-            (t, d) => Some(format!(
+        let done = match (&batch.into, batch.trashed, batch.deleted) {
+            (Some(_), _, _) if batch.moved == 0 => None,
+            (Some(into), _, _) => Some(format!(
+                "Moved {} to {}",
+                images(batch.moved),
+                file_name(into)
+            )),
+            (None, 0, 0) => None,
+            (None, t, 0) => Some(format!("Moved {} to {TRASH_NAME}", images(t))),
+            (None, 0, d) => Some(format!("Deleted {}", images(d))),
+            (None, t, d) => Some(format!(
                 "Moved {} to {TRASH_NAME} and deleted {}",
                 images(t),
                 images(d)
@@ -3246,10 +3327,13 @@ impl State {
             ui.toast(done, now);
         }
         if let Some(first) = batch.failed.first() {
-            let text = match batch.failed.len() - 1 {
-                0 => first.clone(),
-                1 => format!("{first}. 1 more file failed."),
-                more => format!("{first}. {more} more files failed."),
+            let more = batch.failed.len() - 1;
+            let text = match (batch.into.is_some(), more) {
+                (_, 0) => first.clone(),
+                (true, 1) => format!("{first}. 1 more file was not moved."),
+                (true, more) => format!("{first}. {more} more files were not moved."),
+                (false, 1) => format!("{first}. 1 more file failed."),
+                (false, more) => format!("{first}. {more} more files failed."),
             };
             // A new image on screen clears the notice; the toast keeps the
             // reason readable.
@@ -3257,6 +3341,116 @@ impl State {
             self.notice = Some(text);
         }
         self.refresh_selected();
+    }
+
+    /// Why a new delete or move cannot start now, if it cannot.
+    fn busy_with_files(&self) -> Option<&'static str> {
+        match &self.batch {
+            Some(batch) if batch.into.is_some() => Some("Still moving"),
+            Some(_) => Some("Still deleting"),
+            None if self.deleting.is_some() => Some("Still deleting"),
+            None => None,
+        }
+    }
+
+    // ----- moving files -------------------------------------------------------
+
+    /// Move to: ask for a folder for the selected files, or for the file
+    /// on screen when nothing is selected. The folder picker starts where
+    /// the last move went, else in the folder on screen.
+    fn request_move(&mut self, ui: &mut Ui, now: Duration) -> Handled {
+        let mut files = self.selected_files();
+        if files.is_empty() {
+            match self.delete_target() {
+                Some(path) => files.push(path),
+                None => return Handled::Ignored,
+            }
+        }
+        if let Some(why) = self.busy_with_files() {
+            ui.toast(why, now);
+            return Handled::Ignored;
+        }
+        if self.saving.is_some() || self.pending_save.is_some() {
+            ui.toast("Still saving", now);
+            return Handled::Ignored;
+        }
+        let start_dir = self
+            .settings
+            .last_move_dir
+            .clone()
+            .or_else(|| self.folder.clone());
+        let title = match files.len() {
+            1 => "Move 1 image to".to_string(),
+            n => format!("Move {n} images to"),
+        };
+        let kind = DialogKind::PickFolder { start_dir, title };
+        self.open_dialog(DialogPurpose::MoveTo(files), kind);
+        Handled::Done
+    }
+
+    /// The folder for a move was chosen: remember it and move the files
+    /// into it, one after another. A move into their own folder does
+    /// nothing.
+    fn move_target_chosen(
+        &mut self,
+        files: Vec<PathBuf>,
+        into: PathBuf,
+        ui: &mut Ui,
+        now: Duration,
+    ) {
+        self.settings.last_move_dir = Some(into.clone());
+        self.save_settings_soon();
+        let home = |f: &PathBuf| f.parent().is_some_and(|p| same_path(p, &into));
+        if files.iter().all(home) {
+            let who = if files.len() == 1 {
+                "The image is"
+            } else {
+                "The images are"
+            };
+            ui.toast(format!("{who} in {} already", file_name(&into)), now);
+            return;
+        }
+        if let Some(why) = self.busy_with_files() {
+            ui.toast(why, now);
+            return;
+        }
+        let files = files
+            .into_iter()
+            .filter(|f| !home(f))
+            .map(|f| (f, FileJob::MoveInto(into.clone())))
+            .collect();
+        self.start_batch(files, Some(into), ui, now);
+    }
+
+    /// A move of one file of the batch ended.
+    fn moved(
+        &mut self,
+        id: u64,
+        path: &Path,
+        result: Result<(), (std::io::ErrorKind, String)>,
+        ui: &mut Ui,
+        now: Duration,
+    ) {
+        let Some(run) = self.deleting.take_if(|d| d.id == id) else {
+            return;
+        };
+        let name = file_name(path);
+        let folder = self
+            .batch
+            .as_ref()
+            .and_then(|b| b.into.as_deref())
+            .map(file_name)
+            .unwrap_or_default();
+        let outcome = match result {
+            Ok(()) => FileOutcome::Moved,
+            Err((std::io::ErrorKind::AlreadyExists, _)) => FileOutcome::Stayed(format!(
+                "Did not move {name}: {folder} has a file of that name"
+            )),
+            Err((_, why)) => {
+                FileOutcome::Stayed(format!("Could not move {name} to {folder}: {why}"))
+            }
+        };
+        self.batch_file_done(run.stopped_load, path, outcome, ui, now);
     }
 
     /// Stop the work on `path` and remove it on a worker, as `mode` says.
@@ -3267,11 +3461,11 @@ impl State {
         ui: &mut Ui,
         now: Duration,
     ) -> Handled {
-        if self.deleting.is_some() || self.delete_batch.is_some() {
-            ui.toast("Still deleting", now);
+        if let Some(why) = self.busy_with_files() {
+            ui.toast(why, now);
             return Handled::Ignored;
         }
-        if self.spawn_removal(path, mode) {
+        if self.spawn_file_job(path, FileJob::Remove(mode)) {
             Handled::Done
         } else {
             ui.toast("Could not start deleting", now);
@@ -3279,9 +3473,9 @@ impl State {
         }
     }
 
-    /// Stop the work on `path` and start its removal on a worker. False
-    /// when the worker did not start; the file is then as it was.
-    fn spawn_removal(&mut self, path: PathBuf, mode: RemoveMode) -> bool {
+    /// Stop the work on `path` and start its removal or move on a worker.
+    /// False when the worker did not start; the file is then as it was.
+    fn spawn_file_job(&mut self, path: PathBuf, job: FileJob) -> bool {
         // Nothing of this process holds the file while it goes: its load
         // (with its read-ahead and thumbnail), its text recognition and its
         // facts stop first.
@@ -3298,12 +3492,28 @@ impl State {
         }
         self.forget_info(&path);
         let id = self.next_id();
-        let job = DeleteJob {
-            id,
-            path: path.clone(),
-            mode,
+        let (out, disk) = (self.out.clone(), Arc::clone(&self.disk));
+        let spawned = match job {
+            FileJob::Remove(mode) => jobs::delete(
+                out,
+                disk,
+                DeleteJob {
+                    id,
+                    path: path.clone(),
+                    mode,
+                },
+            ),
+            FileJob::MoveInto(into) => jobs::move_file(
+                out,
+                disk,
+                MoveJob {
+                    id,
+                    path: path.clone(),
+                    into,
+                },
+            ),
         };
-        match jobs::delete(self.out.clone(), Arc::clone(&self.disk), job) {
+        match spawned {
             Ok(()) => {
                 self.deleting = Some(DeleteRun {
                     id,
@@ -3341,8 +3551,22 @@ impl State {
         let Some(run) = self.deleting.take_if(|d| d.id == id) else {
             return;
         };
-        if self.delete_batch.is_some() {
-            self.batch_removed(run.stopped_load, path, permanent, result, ui, now);
+        if self.batch.is_some() {
+            let outcome = match result {
+                Ok(()) | Err((std::io::ErrorKind::NotFound, _)) if permanent => {
+                    FileOutcome::Deleted
+                }
+                Ok(()) | Err((std::io::ErrorKind::NotFound, _)) => FileOutcome::Trashed,
+                Err((_, why)) => {
+                    let name = file_name(path);
+                    if permanent {
+                        FileOutcome::Stayed(format!("Could not delete {name}: {why}"))
+                    } else {
+                        FileOutcome::Stayed(format!("Could not move {name} to {TRASH_NAME}: {why}"))
+                    }
+                }
+            };
+            self.batch_file_done(run.stopped_load, path, outcome, ui, now);
             return;
         }
         let name = file_name(path);
