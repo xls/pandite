@@ -22,7 +22,7 @@ fn type_size(typ: u16) -> Option<u64> {
 
 /// One IFD entry with the location of its value bytes resolved.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct Entry {
+pub(crate) struct Entry {
     /// Tag number.
     pub tag: u16,
     /// Field type, 1 to 13.
@@ -37,7 +37,7 @@ pub(super) struct Entry {
 
 /// One IFD: its entries in file order and the next-IFD offset.
 #[derive(Clone, Debug)]
-pub(super) struct Dir<'a> {
+pub(crate) struct Dir<'a> {
     data: &'a [u8],
     /// The entries, in file order.
     pub entries: Vec<Entry>,
@@ -75,7 +75,7 @@ pub(super) fn le32(d: &[u8], at: u64) -> Option<u32> {
 }
 
 /// Read the IFD at `offset`, or `None` when it is invalid (R-ARW-14).
-pub(super) fn dir(data: &[u8], offset: u64) -> Option<Dir<'_>> {
+pub(crate) fn dir(data: &[u8], offset: u64) -> Option<Dir<'_>> {
     let size = data.len() as u64;
     // R-ARW-14 case 1: the offset lies outside the file.
     if offset >= size {
@@ -147,18 +147,18 @@ pub(super) fn chain(data: &[u8], first: u32) -> Vec<Dir<'_>> {
 impl<'a> Dir<'a> {
     /// The entry of `tag` with at least one value, in any entry order
     /// (R-ARW-7). A count of 0 counts as absent (R-ARW-16).
-    pub(super) fn entry(&self, tag: u16) -> Option<&Entry> {
+    pub(crate) fn entry(&self, tag: u16) -> Option<&Entry> {
         self.entries.iter().find(|e| e.tag == tag && e.count > 0)
     }
 
     /// True when `tag` is present with at least one value.
-    pub(super) fn has(&self, tag: u16) -> bool {
+    pub(crate) fn has(&self, tag: u16) -> bool {
         self.entry(tag).is_some()
     }
 
     /// The value bytes of an entry, after checking that the whole range
     /// lies inside the file (R-ARW-67, R-ARW-68). Fails otherwise.
-    pub(super) fn bytes(&self, e: &Entry) -> ArwResult<&'a [u8]> {
+    pub(crate) fn bytes(&self, e: &Entry) -> ArwResult<&'a [u8]> {
         let size = self.data.len() as u64;
         // R-ARW-67: count * type size beyond the file size fails before
         // any allocation; R-ARW-68: the range must lie inside the file.
@@ -171,7 +171,7 @@ impl<'a> Dir<'a> {
     /// All values of an unsigned integer tag. TIFF 6.0 readers accept
     /// BYTE, SHORT and LONG for unsigned integer fields; R-ARW-8 adds the
     /// IFD type. `Ok(None)` when absent or of another type.
-    pub(super) fn uints(&self, tag: u16) -> ArwResult<Option<Vec<u32>>> {
+    pub(crate) fn uints(&self, tag: u16) -> ArwResult<Option<Vec<u32>>> {
         let Some(e) = self.entry(tag) else {
             return Ok(None);
         };
@@ -192,7 +192,7 @@ impl<'a> Dir<'a> {
     }
 
     /// The first value of an unsigned integer tag.
-    pub(super) fn uint(&self, tag: u16) -> ArwResult<Option<u32>> {
+    pub(crate) fn uint(&self, tag: u16) -> ArwResult<Option<u32>> {
         Ok(self.uints(tag)?.and_then(|v| v.first().copied()))
     }
 
@@ -252,7 +252,7 @@ impl<'a> Dir<'a> {
 
     /// An ASCII value with all trailing zero bytes and spaces removed
     /// (R-ARW-10).
-    pub(super) fn ascii(&self, tag: u16) -> ArwResult<Option<&'a [u8]>> {
+    pub(crate) fn ascii(&self, tag: u16) -> ArwResult<Option<&'a [u8]>> {
         let Some(e) = self.entry(tag) else {
             return Ok(None);
         };
