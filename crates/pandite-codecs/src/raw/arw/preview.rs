@@ -11,7 +11,7 @@ const LENGTH_TAG: u16 = 0x0202;
 
 /// One preview candidate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct Candidate {
+pub(crate) struct Candidate {
     /// File offset of the JPEG stream.
     pub offset: usize,
     /// Stream length.
@@ -24,18 +24,18 @@ pub(super) struct Candidate {
 
 impl Candidate {
     /// Width times height.
-    pub(super) fn area(&self) -> u64 {
+    pub(crate) fn area(&self) -> u64 {
         u64::from(self.width) * u64::from(self.height)
     }
 
     /// True when the IFD0 orientation is applied to this preview: always,
     /// except values 5 to 8 on a preview taller than wide (R-ARW-62).
-    pub(super) fn rotates(&self, orientation: u8) -> bool {
+    pub(crate) fn rotates(&self, orientation: u8) -> bool {
         !(orientation >= 5 && self.height > self.width)
     }
 
     /// The size as delivered, after R-ARW-62.
-    pub(super) fn displayed(&self, orientation: u8) -> (u32, u32) {
+    pub(crate) fn displayed(&self, orientation: u8) -> (u32, u32) {
         if orientation >= 5 && self.rotates(orientation) {
             (self.height, self.width)
         } else {
@@ -45,7 +45,7 @@ impl Candidate {
 }
 
 /// R-ARW-60: the size from the first SOF0, SOF1 or SOF2 marker segment.
-fn frame_size(s: &[u8]) -> Option<(u32, u32)> {
+pub(crate) fn frame_size(s: &[u8]) -> Option<(u32, u32)> {
     let mut pos = 2usize;
     loop {
         if *s.get(pos)? != 0xFF {
@@ -114,7 +114,7 @@ pub(super) fn collect(c: &Container<'_>) -> Vec<Candidate> {
 }
 
 /// Decode one candidate and orient it (R-ARW-61, R-ARW-62).
-pub(super) fn decode(
+pub(crate) fn decode(
     data: &[u8],
     p: &Candidate,
     orientation: u8,

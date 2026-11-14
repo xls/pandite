@@ -96,7 +96,7 @@ pub(super) fn decode_cfa(data: &[u8], plan: &Plan, cancel: &CancelToken) -> ArwR
 type YccTile<'a> = (&'a mut [u16], (&'a mut [u16], &'a mut [u16]));
 
 /// The three planes of a V5 file.
-pub(super) struct YccPlanes {
+pub(crate) struct YccPlanes {
     /// Luma, W x H, tile-major.
     pub y: Plane,
     /// Cb, (W / 2) x (H / V), tile-major with 256 x (512 / V) tiles.
