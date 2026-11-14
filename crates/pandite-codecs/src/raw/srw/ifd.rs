@@ -28,7 +28,7 @@ pub(super) fn read16(d: &[u8], at: u64, le: bool) -> Option<u16> {
 }
 
 /// Read a u32 in the given byte order (R-SRW-5).
-pub(super) fn read32(d: &[u8], at: u64, le: bool) -> Option<u32> {
+pub(crate) fn read32(d: &[u8], at: u64, le: bool) -> Option<u32> {
     let at = usize::try_from(at).ok()?;
     let b = d.get(at..at.checked_add(4)?)?;
     Some(if le {
@@ -60,7 +60,7 @@ pub(super) fn header(data: &[u8]) -> SrwResult<(bool, u32)> {
 
 /// One IFD: its entries in file order and the next-IFD offset.
 #[derive(Clone, Debug)]
-pub(super) struct Dir<'a> {
+pub(crate) struct Dir<'a> {
     data: &'a [u8],
     /// Byte order of the file (R-SRW-5).
     le: bool,
@@ -76,7 +76,7 @@ pub(super) struct Dir<'a> {
 /// Read the IFD at file offset `offset`, or `None` when it is invalid
 /// (R-SRW-11). Out-of-line value offsets count from `base`: 0 for the
 /// TIFF structure, P for the maker note (R-SRW-14).
-pub(super) fn dir(data: &[u8], le: bool, offset: u64, base: u64) -> Option<Dir<'_>> {
+pub(crate) fn dir(data: &[u8], le: bool, offset: u64, base: u64) -> Option<Dir<'_>> {
     let size = data.len() as u64;
     // R-SRW-11 case 1: the offset lies outside the file.
     if offset >= size {
@@ -141,7 +141,7 @@ pub(super) fn maker_dir(data: &[u8], le: bool, p: u64) -> Option<Dir<'_>> {
 
 /// IFD0 and the IFDs that follow it through the next-IFD offsets
 /// (R-SRW-10). Empty when IFD0 itself is invalid.
-pub(super) fn chain(data: &[u8], le: bool, first: u32) -> Vec<Dir<'_>> {
+pub(crate) fn chain(data: &[u8], le: bool, first: u32) -> Vec<Dir<'_>> {
     let mut out: Vec<Dir<'_>> = Vec::new();
     let mut seen: Vec<u32> = Vec::new();
     let mut at = first;
@@ -161,7 +161,7 @@ pub(super) fn chain(data: &[u8], le: bool, first: u32) -> Vec<Dir<'_>> {
 impl<'a> Dir<'a> {
     /// The first entry of `tag` (R-SRW-7), any entry order. An entry with
     /// count 0 counts as absent (R-SRW-16).
-    pub(super) fn entry(&self, tag: u16) -> Option<&Entry> {
+    pub(crate) fn entry(&self, tag: u16) -> Option<&Entry> {
         self.entries
             .iter()
             .find(|e| e.tag == tag)
@@ -169,7 +169,7 @@ impl<'a> Dir<'a> {
     }
 
     /// True when `tag` is present with at least one value.
-    pub(super) fn has(&self, tag: u16) -> bool {
+    pub(crate) fn has(&self, tag: u16) -> bool {
         self.entry(tag).is_some()
     }
 
@@ -177,7 +177,7 @@ impl<'a> Dir<'a> {
     /// file size fails before any allocation. R-SRW-53: the range must lie
     /// inside the file, else the read fails; in the maker note the tag is
     /// absent instead (R-SRW-59).
-    pub(super) fn bytes(&self, e: &Entry) -> SrwResult<Option<&'a [u8]>> {
+    pub(crate) fn bytes(&self, e: &Entry) -> SrwResult<Option<&'a [u8]>> {
         let size = self.data.len() as u64;
         if e.len > size {
             return Err(fail("tag value larger than the file"));
@@ -201,7 +201,7 @@ impl<'a> Dir<'a> {
 
     /// All values of an unsigned integer tag: SHORT, LONG or type 13
     /// (R-SRW-8). `Ok(None)` when absent or of another type.
-    pub(super) fn uints(&self, tag: u16) -> SrwResult<Option<Vec<u32>>> {
+    pub(crate) fn uints(&self, tag: u16) -> SrwResult<Option<Vec<u32>>> {
         let Some((e, b)) = self.tag_bytes(tag)? else {
             return Ok(None);
         };
@@ -273,7 +273,7 @@ impl<'a> Dir<'a> {
 
     /// An ASCII value compared by its bytes before the first zero byte,
     /// after trailing spaces are removed (R-SRW-9).
-    pub(super) fn ascii(&self, tag: u16) -> SrwResult<Option<&'a [u8]>> {
+    pub(crate) fn ascii(&self, tag: u16) -> SrwResult<Option<&'a [u8]>> {
         let Some((e, b)) = self.tag_bytes(tag)? else {
             return Ok(None);
         };
