@@ -27,7 +27,7 @@
 
 mod color;
 pub(crate) mod ifd;
-mod lj92;
+pub(super) mod lj92;
 pub(crate) mod meta;
 pub(crate) mod plane;
 pub(crate) mod preview;

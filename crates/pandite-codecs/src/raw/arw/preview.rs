@@ -120,15 +120,26 @@ pub(crate) fn decode(
     orientation: u8,
     options: &DecodeOptions,
 ) -> ArwResult<ImageBuf> {
-    let stream = data
-        .get(p.offset..p.offset + p.len)
-        .ok_or_else(|| fail("preview outside the file"))?;
     let rotate = p.rotates(orientation);
     let o = if rotate {
         Orientation::from_exif(u16::from(orientation))
     } else {
         Orientation::Normal
     };
+    decode_as(data, p, o, options)
+}
+
+/// Decode one candidate (R-ARW-61) and turn it by `o`, the orientation the
+/// caller chose for it.
+pub(in crate::raw) fn decode_as(
+    data: &[u8],
+    p: &Candidate,
+    o: Orientation,
+    options: &DecodeOptions,
+) -> ArwResult<ImageBuf> {
+    let stream = data
+        .get(p.offset..p.offset + p.len)
+        .ok_or_else(|| fail("preview outside the file"))?;
     // The target is in display orientation; the JPEG decoder scales the
     // stored axes.
     let opts = DecodeOptions {

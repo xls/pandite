@@ -22,6 +22,7 @@
 //! covers the target is used, which makes thumbnails fast.
 
 mod arw;
+mod cr2;
 mod cr3;
 mod raf;
 mod rw2;
@@ -75,6 +76,7 @@ const DEVELOPERS: &[&Developer] = &[
     &cr3::DEVELOPER,
     &raf::DEVELOPER,
     &rw2::DEVELOPER,
+    &cr2::DEVELOPER,
 ];
 
 /// Decodes camera RAW files (DNG from sensor data, other formats through

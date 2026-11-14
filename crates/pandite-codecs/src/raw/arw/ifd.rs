@@ -127,7 +127,7 @@ pub(crate) fn dir(data: &[u8], offset: u64) -> Option<Dir<'_>> {
 
 /// IFD0 and the IFDs that follow it through the next-IFD offsets
 /// (R-ARW-12). Empty when IFD0 itself is invalid.
-pub(super) fn chain(data: &[u8], first: u32) -> Vec<Dir<'_>> {
+pub(in crate::raw) fn chain(data: &[u8], first: u32) -> Vec<Dir<'_>> {
     let mut out: Vec<Dir<'_>> = Vec::new();
     let mut seen: Vec<u32> = Vec::new();
     let mut at = first;

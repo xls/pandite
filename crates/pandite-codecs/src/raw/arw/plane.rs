@@ -17,7 +17,7 @@ pub(crate) struct Plane {
 }
 
 /// A zeroed vector that reports allocation failure instead of aborting.
-pub(super) fn zeroed(len: usize) -> ArwResult<Vec<u16>> {
+pub(in crate::raw) fn zeroed(len: usize) -> ArwResult<Vec<u16>> {
     let mut v = Vec::new();
     v.try_reserve_exact(len)
         .map_err(|_| fail("not enough memory for the sensor data"))?;

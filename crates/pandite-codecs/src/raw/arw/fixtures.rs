@@ -411,7 +411,7 @@ pub(super) fn f5() -> Vec<u8> {
 
 /// One encoded component for [`lj92`]: sampling factors, samples
 /// row-major with `width` columns (whole MCUs).
-pub(super) struct Comp<'a> {
+pub(in crate::raw) struct Comp<'a> {
     pub h: usize,
     pub v: usize,
     pub samples: &'a [u16],
@@ -454,7 +454,7 @@ impl Writer {
 /// Encode a lossless JPEG with predictor 1, one Huffman table of 17
 /// five-bit codes, optional restart interval (in MCUs) and the Sony
 /// line-start rule when `sony` is set. Written from T.81 Annex H.
-pub(super) fn lj92(
+pub(in crate::raw) fn lj92(
     precision: u8,
     x: usize,
     y: usize,
