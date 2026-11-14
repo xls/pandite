@@ -4,8 +4,9 @@
 #   Windows x64 and ARM64   portable .zip, unsigned per-user setup program
 #                           (Inno Setup), Store-ready unsigned .msix, and
 #                           one .msixbundle with both architectures
-#   macOS                   universal .app (arm64 + x86_64), ad hoc signed,
-#                           in a .dmg
+#   macOS                   universal .app (arm64 + x86_64) in a .dmg, signed
+#                           with a Developer ID and notarized when the Apple
+#                           secrets exist, else ad hoc signed
 #   Linux x64               .tar.gz with desktop entry, icons, install script,
 #                           and a .deb and an .rpm with the same files
 # then writes SHA256SUMS.txt and publishes a GitHub release with all files.
