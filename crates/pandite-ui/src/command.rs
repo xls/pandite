@@ -28,6 +28,13 @@ pub enum Command {
     ToggleSelect,
     /// Unselect every image.
     ClearSelection,
+    /// Select the current image, then show the previous one.
+    SelectPrevious,
+    /// Select the current image, then show the next one.
+    SelectNext,
+    /// Move the selected files, or the current file, to a folder the user
+    /// picks.
+    MoveTo,
     /// Undo the last view edit.
     Undo,
     /// Rotate 90 degrees counterclockwise.
@@ -101,7 +108,7 @@ pub enum Command {
 
 impl Command {
     /// Every command, in the order the shortcut overlay lists them.
-    pub const ALL: [Command; 42] = [
+    pub const ALL: [Command; 45] = [
         Command::Open,
         Command::SaveAs,
         Command::CopyImage,
@@ -110,6 +117,9 @@ impl Command {
         Command::SelectAllText,
         Command::ToggleSelect,
         Command::ClearSelection,
+        Command::SelectPrevious,
+        Command::SelectNext,
+        Command::MoveTo,
         Command::MoveToTrash,
         Command::DeleteFile,
         Command::Undo,
@@ -158,6 +168,9 @@ impl Command {
             Command::DeleteFile => "Delete permanently...",
             Command::ToggleSelect => "Select image",
             Command::ClearSelection => "Clear selection",
+            Command::SelectPrevious => "Select and previous image",
+            Command::SelectNext => "Select and next image",
+            Command::MoveTo => "Move to...",
             Command::Undo => "Undo",
             Command::RotateLeft => "Rotate left",
             Command::RotateRight => "Rotate right",
@@ -264,6 +277,8 @@ impl Command {
             self,
             Command::Next
                 | Command::Previous
+                | Command::SelectNext
+                | Command::SelectPrevious
                 | Command::PageNext
                 | Command::PagePrevious
                 | Command::ZoomIn
@@ -396,6 +411,9 @@ pub const SHORTCUTS: &[Shortcut] = &[
     Shortcut::new(Key::Delete, SHIFT, Command::DeleteFile),
     Shortcut::new(Key::Space, N, Command::ToggleSelect),
     Shortcut::new(Key::Backspace, N, Command::ClearSelection),
+    Shortcut::new(Key::Left, SHIFT, Command::SelectPrevious),
+    Shortcut::new(Key::Right, SHIFT, Command::SelectNext),
+    Shortcut::new(Key::M, N, Command::MoveTo),
     Shortcut::new(Key::Z, CTRL, Command::Undo),
     Shortcut::new(Key::R, SHIFT, Command::RotateLeft),
     Shortcut::new(Key::L, N, Command::RotateLeft),
@@ -592,6 +610,18 @@ mod tests {
                 !cmd.repeats() && !cmd.allowed_in_crop() && !cmd.needs_image(),
                 "{cmd:?}"
             );
+        }
+        // Shift and an arrow select, then move; a held key repeats that.
+        assert_eq!(
+            command_for_key(Key::Right, Modifiers::SHIFT, false),
+            Some(Command::SelectNext)
+        );
+        assert_eq!(
+            command_for_key(Key::Left, Modifiers::SHIFT, false),
+            Some(Command::SelectPrevious)
+        );
+        for cmd in [Command::SelectNext, Command::SelectPrevious] {
+            assert!(cmd.repeats() && !cmd.allowed_in_crop(), "{cmd:?}");
         }
         assert_eq!(Command::ToggleSelect.tooltip(), "Select image  (Space)");
     }

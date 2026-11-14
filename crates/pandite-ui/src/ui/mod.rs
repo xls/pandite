@@ -89,7 +89,6 @@ pub(crate) enum Target {
     CropBarPanel,
     InfoPanel,
     Gallery(Option<usize>),
-    GalleryCheck(usize),
     EmptyOpen,
     Content,
 }
@@ -109,8 +108,6 @@ pub(crate) enum Capture {
     },
     Gallery {
         index: Option<usize>,
-        /// The press was on the check box of `index`.
-        check: bool,
         start: Point,
         start_scroll: f32,
         dragging: bool,
@@ -359,9 +356,12 @@ impl Ui {
             | Command::Last => ctx.count > 1,
             // A file that failed to open can go too: the folder still
             // lists it. The same holds for its selection.
-            Command::MoveToTrash | Command::DeleteFile | Command::ToggleSelect => {
-                ctx.image.is_some() || ctx.count > 0
-            }
+            Command::MoveToTrash
+            | Command::DeleteFile
+            | Command::ToggleSelect
+            | Command::SelectPrevious
+            | Command::SelectNext
+            | Command::MoveTo => ctx.image.is_some() || ctx.count > 0,
             Command::ClearSelection => !ctx.selected.is_empty(),
             Command::CropApply => self.crop.as_ref().is_some_and(|c| c.pixel_rect().is_some()),
             Command::CropSelectAll | Command::CropCancel => self.crop.is_some(),
@@ -778,11 +778,7 @@ impl Ui {
         }
         if let Some(layout) = self.gallery_layout(ctx, m) {
             if layout.panel.contains(p) {
-                let scroll = self.gallery.scroll;
-                return match layout.hit(p, scroll) {
-                    Some(i) if layout.check_hit(i, p, scroll) => Target::GalleryCheck(i),
-                    index => Target::Gallery(index),
-                };
+                return Target::Gallery(layout.hit(p, self.gallery.scroll));
             }
         }
         if self
@@ -990,6 +986,21 @@ impl Ui {
             Command::DeleteFile => out.push(Action::DeleteFile),
             Command::ToggleSelect => out.push(Action::ToggleSelect(ctx.index)),
             Command::ClearSelection => out.push(Action::ClearSelection),
+            // Select the image on screen, then move on; at an end of the
+            // folder only the selection happens, so a held key never wraps.
+            Command::SelectPrevious => {
+                out.push(Action::Select(ctx.index));
+                if ctx.index > 0 && ctx.count > 1 {
+                    out.push(Action::Previous);
+                }
+            }
+            Command::SelectNext => {
+                out.push(Action::Select(ctx.index));
+                if ctx.index + 1 < ctx.count {
+                    out.push(Action::Next);
+                }
+            }
+            Command::MoveTo => out.push(Action::MoveTo),
             Command::Undo => out.push(Action::Undo),
             Command::RotateLeft => out.push(Action::RotateLeft),
             Command::RotateRight => out.push(Action::RotateRight),
@@ -1192,7 +1203,7 @@ impl Ui {
             _ => match self.hover {
                 Target::Toolbar(cmd) if self.command_enabled(cmd, ctx) => CursorShape::Hand,
                 Target::More | Target::CropBar(_) | Target::EmptyOpen => CursorShape::Hand,
-                Target::Gallery(Some(_)) | Target::GalleryCheck(_) => CursorShape::Hand,
+                Target::Gallery(Some(_)) => CursorShape::Hand,
                 Target::Form { confirm, id, .. } => {
                     if field_hover(confirm, id, self) {
                         CursorShape::Text
@@ -1214,7 +1225,7 @@ impl Ui {
 }
 
 /// The context menu in normal mode. `None` is a separator.
-const CONTEXT_MENU: [Option<Command>; 33] = [
+const CONTEXT_MENU: [Option<Command>; 34] = [
     Some(Command::Open),
     Some(Command::SaveAs),
     Some(Command::CopyImage),
@@ -1224,6 +1235,7 @@ const CONTEXT_MENU: [Option<Command>; 33] = [
     None,
     Some(Command::ToggleSelect),
     Some(Command::ClearSelection),
+    Some(Command::MoveTo),
     Some(Command::MoveToTrash),
     Some(Command::DeleteFile),
     None,

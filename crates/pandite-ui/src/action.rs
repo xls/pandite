@@ -195,11 +195,18 @@ pub enum Action {
     /// instead, and both ask first with the number of files.
     DeleteFile,
     /// Select the image with this folder index, or unselect it when it is
-    /// selected (Space on the current image, or a click on the check box
-    /// of a thumbnail). Report the result in [`crate::UiContext::selected`].
+    /// selected (Space on the current image). Report the result in
+    /// [`crate::UiContext::selected`].
     ToggleSelect(usize),
+    /// Select the image with this folder index; an image that is selected
+    /// stays selected (Shift+Left and Shift+Right, before their move).
+    Select(usize),
     /// Unselect every image (Backspace).
     ClearSelection,
+    /// Move the selected files, or the file of the current image when
+    /// nothing is selected, to a folder the user picks (M). The folder
+    /// picker is the confirmation; there is no question.
+    MoveTo,
     /// Put this text on the clipboard (Ctrl+C or Ctrl+X in a text field).
     CopyText(String),
     /// Read the clipboard and send its text back as
@@ -388,11 +395,15 @@ pub enum ActionKind {
     ToggleSelect,
     /// [`Action::ClearSelection`].
     ClearSelection,
+    /// [`Action::Select`].
+    Select,
+    /// [`Action::MoveTo`].
+    MoveTo,
 }
 
 impl ActionKind {
     /// Every kind, in declaration order.
-    pub const ALL: [ActionKind; 41] = [
+    pub const ALL: [ActionKind; 43] = [
         ActionKind::Open,
         ActionKind::SaveAs,
         ActionKind::CopyPath,
@@ -434,6 +445,8 @@ impl ActionKind {
         ActionKind::Quit,
         ActionKind::ToggleSelect,
         ActionKind::ClearSelection,
+        ActionKind::Select,
+        ActionKind::MoveTo,
     ];
 
     /// The position of this kind in [`ActionKind::ALL`]. The match is
@@ -481,6 +494,8 @@ impl ActionKind {
             ActionKind::Quit => 38,
             ActionKind::ToggleSelect => 39,
             ActionKind::ClearSelection => 40,
+            ActionKind::Select => 41,
+            ActionKind::MoveTo => 42,
         }
     }
 }
@@ -497,6 +512,8 @@ impl Action {
             Action::DeleteFile => ActionKind::DeleteFile,
             Action::ToggleSelect(_) => ActionKind::ToggleSelect,
             Action::ClearSelection => ActionKind::ClearSelection,
+            Action::Select(_) => ActionKind::Select,
+            Action::MoveTo => ActionKind::MoveTo,
             Action::CopyText(_) => ActionKind::CopyText,
             Action::RequestPaste => ActionKind::RequestPaste,
             Action::RotateLeft => ActionKind::RotateLeft,

@@ -1,7 +1,9 @@
-//! Gate G2: the selection. Space selects the image on screen and
-//! Backspace clears the selection; the gallery strip draws a check box per
-//! thumbnail, the image a badge, the toolbar the count, and the context
-//! menu offers both commands. Space and Backspace never navigate.
+//! Gate G2: the selection. Space selects the image on screen, Backspace
+//! clears the selection, and Shift+Left and Shift+Right select the image
+//! on screen and move on. A selected thumbnail shows a small badge, the
+//! image on screen a "Marked" label and the toolbar the count; the context
+//! menu offers Select image and Clear selection. The pointer never changes
+//! the selection, and Space and Backspace never navigate.
 
 mod support;
 
@@ -46,18 +48,6 @@ fn inside(r: Rect, outer: Rect) -> bool {
     r.x >= outer.x && r.y >= outer.y && r.right() <= outer.right() && r.bottom() <= outer.bottom()
 }
 
-/// Outlines drawn inside `cell`: the empty check box. The ring of the
-/// current image lies around its cell, not inside it.
-fn boxes_in(list: &DrawList, cell: Rect) -> Vec<Rect> {
-    list.cmds
-        .iter()
-        .filter_map(|c| match c {
-            DrawCmd::Border { rect, .. } if inside(*rect, cell) => Some(*rect),
-            _ => None,
-        })
-        .collect()
-}
-
 /// Check marks drawn with their center inside `area`.
 fn checks_in(list: &DrawList, area: Rect) -> Vec<Rect> {
     icon_draws(list, Icon::Check)
@@ -67,20 +57,43 @@ fn checks_in(list: &DrawList, area: Rect) -> Vec<Rect> {
         .collect()
 }
 
-/// The top left quarter of a cell, where its check box sits.
+/// The top left quarter of a cell, where its badge sits.
 fn corner(cell: Rect) -> Rect {
     Rect::new(cell.x, cell.y, cell.w * 0.5, cell.h * 0.5)
 }
 
-/// Filled rectangles of `color` that hold `p`.
-fn fills_at(list: &DrawList, p: Point, color: pandite_core::Color) -> Vec<Rect> {
+/// A logical length in physical pixels at `scale`, rounded as the
+/// interface rounds it.
+fn px(logical: f32, scale: f32) -> f32 {
+    (logical * scale).round().max(1.0)
+}
+
+/// Fills of `color` that hold `p`, with their corner radius.
+fn round_fills_at(list: &DrawList, p: Point, color: pandite_core::Color) -> Vec<(Rect, f32)> {
     list.cmds
         .iter()
         .filter_map(|c| match c {
-            DrawCmd::Rect { rect, color: c, .. } if *c == color && rect.contains(p) => Some(*rect),
+            DrawCmd::Rect {
+                rect,
+                color: c,
+                radius,
+            } if *c == color && rect.contains(p) => Some((*rect, *radius)),
             _ => None,
         })
         .collect()
+}
+
+/// A selection marker inside `cell`: a fill in the badge color or an
+/// outline. The ring of the current image lies around its cell, not
+/// inside it.
+fn marker_in(list: &DrawList, cell: Rect, theme: &Theme) -> Option<Rect> {
+    list.cmds.iter().find_map(|c| match c {
+        DrawCmd::Rect { rect, color, .. } if *color == theme.check_fill && inside(*rect, cell) => {
+            Some(*rect)
+        }
+        DrawCmd::Border { rect, .. } if inside(*rect, cell) => Some(*rect),
+        _ => None,
+    })
 }
 
 fn has_toggle(actions: &[Action]) -> bool {
@@ -217,9 +230,9 @@ fn space_no_longer_moves_to_next() {
 }
 
 #[test]
-fn gallery_draws_checkbox_for_selected() {
+fn gallery_draws_badge_for_selected() {
     let theme = Theme::for_kind(image_ctx().theme);
-    for scale in [1.0, 2.0] {
+    for scale in [1.0, 1.5, 2.0] {
         let mut ctx = gallery_ctx(20, 0, ready(20));
         ctx.scale_factor = scale;
         ctx.selected = &[2, 5];
@@ -227,32 +240,34 @@ fn gallery_draws_checkbox_for_selected() {
         // The pointer rests on the image, away from the strip.
         move_to(&mut ui, &ctx, Point::new(600.0, 200.0));
         let list = frame(&mut ui, &ctx);
+        let (side, inset) = (px(14.0, scale), px(4.0, scale));
         let drawn: Vec<usize> = thumbnail_draws(&list).iter().map(|d| d.0).collect();
         assert!(drawn.contains(&2) && drawn.contains(&5) && drawn.contains(&7));
         for i in drawn {
             let cell = cell_of(&list, i);
-            let checks = checks_in(&list, corner(cell));
+            let marks = checks_in(&list, corner(cell));
             if i == 2 || i == 5 {
-                // A checked box: the check mark on a gray blue square in the
-                // top left corner, at the size of the scale.
-                assert_eq!(checks.len(), 1, "thumbnail {i} at scale {scale}");
-                let mark = checks[0];
-                assert_eq!(mark.w, 12.0 * scale);
-                let fill = fills_at(&list, mark.center(), theme.check_fill);
+                // A small round badge in the top left corner: a gray blue
+                // disc with a dark check mark, at the size of the scale.
+                assert_eq!(marks.len(), 1, "thumbnail {i} at scale {scale}");
+                let mark = marks[0];
+                assert_eq!(mark.w, side - px(2.0, scale));
+                let disc = round_fills_at(&list, mark.center(), theme.check_fill);
                 assert!(
-                    fill.iter().any(|r| r.w == 14.0 * scale
-                        && inside(*r, cell)
-                        && r.x - cell.x == 4.0 * scale),
-                    "check box of thumbnail {i}: {fill:?}"
+                    disc.iter().any(|(r, radius)| r.w == side
+                        && r.h == side
+                        && *radius == side * 0.5
+                        && (r.x - cell.x, r.y - cell.y) == (inset, inset)),
+                    "badge of thumbnail {i} at scale {scale}: {disc:?}"
                 );
             } else {
-                assert!(checks.is_empty(), "thumbnail {i} is not selected");
-                assert!(boxes_in(&list, cell).is_empty(), "no empty box on {i}");
+                assert!(marks.is_empty(), "thumbnail {i} is not selected");
+                assert!(marker_in(&list, cell, theme).is_none(), "{i}");
             }
         }
-        // Nothing else in the frame carries a check mark.
+        // Nothing else in the frame carries a check mark: the image on
+        // screen (index 0) is not selected.
         assert_eq!(icon_draws(&list, Icon::Check).len(), 2);
-        // The tint of the mark is the dark line color.
         assert!(icon_draws(&list, Icon::Check)
             .iter()
             .all(|(_, tint)| *tint == theme.check_line));
@@ -260,156 +275,244 @@ fn gallery_draws_checkbox_for_selected() {
 }
 
 #[test]
-fn gallery_checkbox_appears_on_hover() {
+fn gallery_no_checkbox_on_unselected() {
+    let theme = Theme::for_kind(image_ctx().theme);
     for scale in [1.0, 1.5, 2.0] {
         let mut ctx = gallery_ctx(20, 0, ready(20));
         ctx.scale_factor = scale;
+        ctx.selected = &[5];
         let mut ui = Ui::new();
         let list = frame(&mut ui, &ctx);
-        let (c4, c6) = (cell_of(&list, 4), cell_of(&list, 6));
-        assert!(
-            boxes_in(&list, c4).is_empty(),
-            "no box before the pointer comes"
-        );
-
-        // Over thumbnail 4: an empty box in its top left corner.
-        move_to(&mut ui, &ctx, c4.center());
-        let list = frame(&mut ui, &ctx);
-        let boxes = boxes_in(&list, c4);
-        assert_eq!(boxes.len(), 1, "scale {scale}");
-        let b = boxes[0];
-        let (side, inset) = ((14.0 * scale).round(), (4.0 * scale).round());
-        assert_eq!((b.w, b.h), (side, side));
-        assert_eq!((b.x - c4.x, b.y - c4.y), (inset, inset));
-        assert!(checks_in(&list, c4).is_empty(), "the box is empty");
-        assert!(boxes_in(&list, c6).is_empty());
-
-        // The box follows the pointer to thumbnail 6.
-        move_to(&mut ui, &ctx, c6.center());
-        let list = frame(&mut ui, &ctx);
-        assert!(boxes_in(&list, c4).is_empty());
-        assert_eq!(boxes_in(&list, c6).len(), 1);
-
-        // Away from the strip, or out of the window, it goes.
-        move_to(&mut ui, &ctx, Point::new(600.0, 200.0));
-        assert!(boxes_in(&frame(&mut ui, &ctx), c6).is_empty());
-        move_to(&mut ui, &ctx, c6.center());
-        assert_eq!(boxes_in(&frame(&mut ui, &ctx), c6).len(), 1);
-        ui.handle_event(InputEvent::PointerLeft, &ctx);
-        assert!(boxes_in(&frame(&mut ui, &ctx), c6).is_empty());
-
-        // A selected thumbnail under the pointer keeps its checked box.
-        let mut selected = ctx;
-        selected.selected = &[4];
-        move_to(&mut ui, &selected, c4.center());
-        let list = frame(&mut ui, &selected);
-        assert_eq!(checks_in(&list, corner(c4)).len(), 1);
-
-        // Crop mode offers no box: a click there would do nothing.
-        let mut ui = Ui::new();
+        let cells: Vec<(usize, Rect)> = [0, 3, 4, 6]
+            .into_iter()
+            .map(|i| (i, cell_of(&list, i)))
+            .collect();
+        let bare = |ui: &mut Ui, ctx: &UiContext<'_>, why: &str| {
+            let list = frame(ui, ctx);
+            for (i, cell) in &cells {
+                assert!(
+                    marker_in(&list, *cell, theme).is_none(),
+                    "thumbnail {i} at scale {scale}, {why}"
+                );
+                assert!(checks_in(&list, *cell).is_empty(), "{i} {why}");
+            }
+            // The selected thumbnail keeps its badge all the time.
+            assert!(
+                marker_in(&list, cell_of(&list, 5), theme).is_some(),
+                "{why}"
+            );
+        };
+        bare(&mut ui, &ctx, "pointer away");
+        for (i, cell) in cells.clone() {
+            move_to(&mut ui, &ctx, cell.center());
+            bare(&mut ui, &ctx, &format!("pointer on the middle of {i}"));
+            let corner_point = Point::new(cell.x + px(6.0, scale), cell.y + px(6.0, scale));
+            move_to(&mut ui, &ctx, corner_point);
+            bare(&mut ui, &ctx, &format!("pointer on the corner of {i}"));
+        }
+        // Neither in crop mode.
         press_key(&mut ui, &ctx, Key::C);
         assert_eq!(ui.mode(), UiMode::Crop);
-        move_to(&mut ui, &ctx, c4.center());
-        assert!(boxes_in(&frame(&mut ui, &ctx), c4).is_empty());
+        move_to(&mut ui, &ctx, cells[1].1.center());
+        bare(&mut ui, &ctx, "crop mode");
     }
 }
 
 #[test]
-fn gallery_checkbox_click_toggles_without_navigation() {
+fn gallery_click_never_changes_selection() {
+    let theme = Theme::for_kind(image_ctx().theme);
     for scale in [1.0, 1.25, 1.5, 2.0] {
         let mut ctx = gallery_ctx(20, 0, ready(20));
         ctx.scale_factor = scale;
+        ctx.selected = &[0, 5];
         let mut ui = Ui::new();
         let list = frame(&mut ui, &ctx);
-        let cell = cell_of(&list, 5);
-        move_to(&mut ui, &ctx, cell.center());
-        let b = boxes_in(&frame(&mut ui, &ctx), cell)[0];
+        let (c5, c6) = (cell_of(&list, 5), cell_of(&list, 6));
+        let badge = marker_in(&list, c5, theme).expect("thumbnail 5 has its badge");
 
-        // A click on the box selects thumbnail 5 and stays on image 0.
-        assert_eq!(
-            click(&mut ui, &ctx, b.center()),
-            vec![Action::ToggleSelect(5)],
-            "scale {scale}"
+        // A click on the badge of a selected thumbnail shows that image and
+        // leaves the selection alone.
+        let out = click(&mut ui, &ctx, badge.center());
+        assert_eq!(out, vec![Action::GoTo(5)], "scale {scale}");
+        // The same corner of an unselected thumbnail: the same.
+        let same = Point::new(
+            c6.x + (badge.center().x - c5.x),
+            c6.y + (badge.center().y - c5.y),
         );
-        // So does a click in the gap between the box and the cell corner.
+        assert_eq!(click(&mut ui, &ctx, same), vec![Action::GoTo(6)]);
         assert_eq!(
-            click(&mut ui, &ctx, Point::new(cell.x + 1.0, cell.y + 1.0)),
-            vec![Action::ToggleSelect(5)]
+            click(&mut ui, &ctx, Point::new(c6.x + 1.0, c6.y + 1.0)),
+            vec![Action::GoTo(6)]
         );
-        assert_eq!(
-            click(&mut ui, &ctx, Point::new(b.right() + 1.0, b.bottom() + 1.0)),
-            vec![Action::ToggleSelect(5)]
-        );
-        // A click elsewhere on the thumbnail shows the image, as before.
-        assert_eq!(click(&mut ui, &ctx, cell.center()), vec![Action::GoTo(5)]);
-        assert_eq!(
-            click(
-                &mut ui,
-                &ctx,
-                Point::new(cell.right() - 2.0, cell.bottom() - 2.0)
-            ),
-            vec![Action::GoTo(5)]
-        );
-        assert_eq!(
-            click(&mut ui, &ctx, Point::new(cell.right() - 2.0, b.center().y)),
-            vec![Action::GoTo(5)],
-            "the top right corner shows the image"
-        );
+        assert_eq!(click(&mut ui, &ctx, c5.center()), vec![Action::GoTo(5)]);
+        // The badge of the image on screen: no selection either.
+        let c0 = cell_of(&list, 0);
+        let b0 = marker_in(&list, c0, theme).expect("thumbnail 0 has its badge");
+        let out = click(&mut ui, &ctx, b0.center());
+        assert_eq!(kinds(&out), [ActionKind::GoTo]);
 
-        // On a selected thumbnail the checked box unselects it.
-        let mut selected = ctx;
-        selected.selected = &[5];
-        let list = frame(&mut ui, &selected);
-        let mark = checks_in(&list, corner(cell))[0];
-        assert_eq!(
-            click(&mut ui, &selected, mark.center()),
-            vec![Action::ToggleSelect(5)]
-        );
-
-        // A press on the box and a release on the picture does neither.
-        move_to(&mut ui, &ctx, b.center());
-        press(&mut ui, &ctx, b.center(), PointerButton::Left);
-        assert!(release(&mut ui, &ctx, cell.center(), PointerButton::Left).is_empty());
-        // Neither does a press on the picture and a release on the box.
-        press(&mut ui, &ctx, cell.center(), PointerButton::Left);
-        assert!(release(&mut ui, &ctx, b.center(), PointerButton::Left).is_empty());
-        // A right click on the box opens the context menu.
-        right_click(&mut ui, &ctx, b.center());
-        press_key(&mut ui, &ctx, Key::Escape);
-        assert_eq!(ui.mode(), UiMode::Normal);
+        // The badge takes no hover highlight and the pointer is the hand of
+        // any thumbnail.
+        move_to(&mut ui, &ctx, badge.center());
+        assert_eq!(ui.cursor(), pandite_ui::CursorShape::Hand);
+        let list = frame(&mut ui, &ctx);
+        assert!(!list.cmds.iter().any(|c| matches!(
+            c,
+            DrawCmd::Rect { rect, color, .. } if *color == theme.hover && *rect == badge
+        )));
     }
 
-    // A drag that starts on a box scrolls the strip and selects nothing.
-    let ctx = gallery_ctx(200, 0, ready(200));
+    // A drag that starts on a badge scrolls the strip and selects nothing.
+    let mut ctx = gallery_ctx(200, 0, ready(200));
+    ctx.selected = &[12];
     let mut ui = Ui::new();
     let list = frame(&mut ui, &ctx);
-    let cell = cell_of(&list, 12);
-    move_to(&mut ui, &ctx, cell.center());
-    let b = boxes_in(&frame(&mut ui, &ctx), cell)[0];
+    let badge = marker_in(&list, cell_of(&list, 12), theme).unwrap();
     let out = drag(
         &mut ui,
         &ctx,
-        b.center(),
-        Point::new(b.center().x - 400.0, b.center().y),
+        badge.center(),
+        Point::new(badge.center().x - 400.0, badge.center().y),
         PointerButton::Left,
     );
     assert!(out.is_empty(), "{out:?}");
     assert!(ui.gallery_visible_range(&ctx).start > 0);
+}
 
-    // In crop mode the box selects nothing, as the strip shows nothing.
-    let ctx = gallery_ctx(20, 0, ready(20));
+#[test]
+fn shift_arrows_select_then_move() {
+    const SHIFT: Modifiers = Modifiers::SHIFT;
+    let ctx = image_ctx();
     let mut ui = Ui::new();
+    // Select the image on screen (index 3), then move; never a toggle.
+    assert_eq!(
+        key(&mut ui, &ctx, Key::Right, SHIFT),
+        vec![Action::Select(3), Action::Next]
+    );
+    assert_eq!(
+        key(&mut ui, &ctx, Key::Left, SHIFT),
+        vec![Action::Select(3), Action::Previous]
+    );
+    let mut selected = ctx;
+    selected.selected = &[3];
+    assert_eq!(
+        key(&mut ui, &selected, Key::Right, SHIFT),
+        vec![Action::Select(3), Action::Next],
+        "a selected image stays selected"
+    );
+    // A held key repeats, so a run of images gets selected.
+    let held = ui.handle_event(
+        InputEvent::KeyDown {
+            key: Key::Right,
+            mods: SHIFT,
+            repeat: true,
+        },
+        &ctx,
+    );
+    assert_eq!(held, vec![Action::Select(3), Action::Next]);
+    // At an end of the folder: the selection only, no move and no wrap.
+    let mut last = ctx;
+    last.index = 9;
+    assert_eq!(
+        key(&mut ui, &last, Key::Right, SHIFT),
+        vec![Action::Select(9)]
+    );
+    let mut first = ctx;
+    first.index = 0;
+    assert_eq!(
+        key(&mut ui, &first, Key::Left, SHIFT),
+        vec![Action::Select(0)]
+    );
+    let mut one = ctx;
+    one.count = 1;
+    one.index = 0;
+    assert_eq!(
+        key(&mut ui, &one, Key::Right, SHIFT),
+        vec![Action::Select(0)]
+    );
+    // A file that failed to open is selected as well; nothing without one.
+    assert_eq!(
+        key(&mut ui, &base_ctx(), Key::Right, SHIFT),
+        vec![Action::Select(3), Action::Next]
+    );
+    let mut none = base_ctx();
+    none.count = 0;
+    assert!(key(&mut ui, &none, Key::Right, SHIFT).is_empty());
+    // The keys are in the table and the shortcut overlay, not in the menu.
+    assert_eq!(
+        Command::SelectNext.shortcut_label().as_deref(),
+        Some("Shift+Right")
+    );
+    assert_eq!(
+        Command::SelectPrevious.shortcut_label().as_deref(),
+        Some("Shift+Left")
+    );
+    press_key(&mut ui, &ctx, Key::F1);
     let list = frame(&mut ui, &ctx);
-    let cell = cell_of(&list, 5);
+    assert!(text_rect_exact(&list, "Select and next image").is_some());
+    assert!(text_rect_exact(&list, "Select and previous image").is_some());
+    press_key(&mut ui, &ctx, Key::Escape);
+    let tall = tall_image_ctx();
+    right_click(&mut ui, &tall, Point::new(500.0, 50.0));
+    let list = frame(&mut ui, &tall);
+    assert!(!has_text(&list, "Select and"));
+    press_key(&mut ui, &tall, Key::Escape);
+
+    // In a text field Shift+arrows select text; in a dialog they do
+    // nothing to the images.
+    key(&mut ui, &ctx, Key::R, Modifiers::CTRL);
+    assert!(ui.wants_text_input());
+    for k in [Key::Right, Key::Left] {
+        let out = key(&mut ui, &ctx, k, SHIFT);
+        assert!(!kinds(&out).contains(&ActionKind::Select), "{out:?}");
+        assert!(!kinds(&out).contains(&ActionKind::Next));
+    }
+    press_key(&mut ui, &ctx, Key::Escape);
+    key(&mut ui, &ctx, Key::B, Modifiers::CTRL);
+    assert!(key(&mut ui, &ctx, Key::Right, SHIFT).is_empty());
+    assert!(key(&mut ui, &ctx, Key::Left, SHIFT).is_empty());
+    assert_eq!(ui.mode(), UiMode::Modal);
+    press_key(&mut ui, &ctx, Key::Escape);
+
+    // Crop mode keeps their meaning: they move the crop 10 pixels.
+    let crop = |shift_right: bool| {
+        let mut ui = Ui::new();
+        press_key(&mut ui, &ctx, Key::C);
+        drag(
+            &mut ui,
+            &ctx,
+            Point::new(400.0, 200.0),
+            Point::new(600.0, 400.0),
+            PointerButton::Left,
+        );
+        if shift_right {
+            assert!(key(&mut ui, &ctx, Key::Right, SHIFT).is_empty());
+            assert_eq!(ui.mode(), UiMode::Crop);
+        }
+        match press_key(&mut ui, &ctx, Key::Enter).as_slice() {
+            [Action::ApplyCrop(r)] => *r,
+            other => panic!("{other:?}"),
+        }
+    };
+    let (before, after) = (crop(false), crop(true));
+    assert_eq!(after.y, before.y);
+    assert_eq!((after.width, after.height), (before.width, before.height));
+    assert_eq!(
+        after.x,
+        before.x + 10,
+        "Shift+Right moved the crop 10 pixels"
+    );
+    // Without a crop rectangle, Shift+Right selects nothing in crop mode.
+    let mut ui = Ui::new();
     press_key(&mut ui, &ctx, Key::C);
-    assert!(click(&mut ui, &ctx, Point::new(cell.x + 6.0, cell.y + 6.0)).is_empty());
-    assert!(click(&mut ui, &ctx, cell.center()).is_empty());
+    assert!(key(&mut ui, &ctx, Key::Right, SHIFT).is_empty());
+    assert_eq!(ui.mode(), UiMode::Crop);
 }
 
 #[test]
 fn selected_image_shows_badge() {
     let theme = Theme::for_kind(image_ctx().theme);
-    for scale in [1.0, 2.0] {
+    for scale in [1.0, 1.5, 2.0] {
         let mut ctx = image_ctx();
         ctx.scale_factor = scale;
         ctx.window_size = Size::new(1280.0 * scale, 800.0 * scale);
@@ -417,60 +520,54 @@ fn selected_image_shows_badge() {
         let mut ui = Ui::new();
         let content = ui.content_rect(&ctx);
         let image = ctx.image.unwrap().screen_rect;
-        assert!(checks_in(&frame(&mut ui, &ctx), content).is_empty());
+        let list = frame(&mut ui, &ctx);
+        assert!(text_rect_exact(&list, "Marked").is_none(), "not selected");
 
-        // Image 3 is on screen and selected: one badge on it.
+        // Image 3 is on screen and selected: a "Marked" pill on it.
         let mut selected = ctx;
         selected.selected = &[3];
         let list = frame(&mut ui, &selected);
-        let badges = checks_in(&list, content);
-        assert_eq!(badges.len(), 1, "scale {scale}");
-        let mark = badges[0];
+        let label = text_rect_exact(&list, "Marked").expect("the pill shows");
+        let pill = round_fills_at(&list, label.center(), theme.check_fill);
+        let (pill, radius) = *pill
+            .iter()
+            .find(|(r, _)| r.h == px(20.0, scale))
+            .unwrap_or_else(|| panic!("a pill 20 px high at scale {scale}: {pill:?}"));
+        // Rounded at its full height, and wide enough for its label with
+        // the padding on both sides, at every scale.
+        assert_eq!(radius, pill.h * 0.5);
+        assert!(inside(label, pill), "{label:?} in {pill:?}");
+        assert!(pill.w >= label.w + 2.0 * px(8.0, scale) - 1.0, "{pill:?}");
+        assert_eq!(text_color(&list, "Marked"), Some(theme.check_line));
         // In the top right corner of the image, below the toolbar band.
         let visible = image.intersect(content).unwrap();
-        assert!(visible.contains(mark.center()));
-        assert!(mark.center().x > visible.center().x && mark.center().y < visible.center().y);
-        assert!(mark.y >= 40.0 * scale, "{mark:?} under the toolbar");
-        assert!(visible.right() - mark.right() < 40.0 * scale);
-        // A round gray blue badge the size of the scale.
-        let fill = fills_at(&list, mark.center(), theme.check_fill);
-        assert!(
-            fill.iter()
-                .any(|r| r.w == 26.0 * scale && r.h == 26.0 * scale),
-            "{fill:?}"
-        );
+        assert!(inside(pill, visible));
+        assert!(pill.center().x > visible.center().x && pill.center().y < visible.center().y);
+        assert!(pill.y >= 40.0 * scale, "{pill:?} under the toolbar");
+        assert!(visible.right() - pill.right() < 40.0 * scale);
+        // A label, not a check mark.
+        assert!(checks_in(&list, content).is_empty());
 
-        // Another selected image puts no badge on this one.
+        // Another selected image puts no label on this one.
         let mut other = ctx;
         other.selected = &[2];
-        assert!(checks_in(&frame(&mut ui, &other), content).is_empty());
+        let list = frame(&mut ui, &other);
+        assert!(text_rect_exact(&list, "Marked").is_none());
+        assert!(checks_in(&list, content).is_empty());
 
-        // A small image keeps the badge on its own corner.
-        let mut small = with_image(ctx, 200, 100);
+        // A small image keeps the pill on its own corner.
+        let mut small = with_image(ctx, 400, 200);
         small.selected = &[3];
         let list = frame(&mut ui, &small);
         let rect = small.image.unwrap().screen_rect;
-        let badges = checks_in(&list, content);
-        assert_eq!(badges.len(), 1);
-        assert!(
-            rect.contains(badges[0].center()),
-            "{rect:?} {:?}",
-            badges[0]
-        );
+        let label = text_rect_exact(&list, "Marked").expect("the pill shows");
+        assert!(inside(label, rect), "{rect:?} {label:?}");
 
-        // Crop mode hides the badge, so the corner stays free to crop. The
-        // crop bar at the top has a check mark of its own.
+        // Crop mode hides the pill, so the corner stays free to crop.
         let mut ui = Ui::new();
         press_key(&mut ui, &selected, Key::C);
         assert_eq!(ui.mode(), UiMode::Crop);
-        let below_bar = Rect::new(
-            content.x,
-            content.y + 50.0 * scale,
-            content.w,
-            content.h - 50.0 * scale,
-        );
-        assert!(below_bar.contains(mark.center()));
-        assert!(checks_in(&frame(&mut ui, &selected), below_bar).is_empty());
+        assert!(text_rect_exact(&frame(&mut ui, &selected), "Marked").is_none());
     }
 }
 
@@ -704,4 +801,110 @@ fn backspace_clears_selection() {
         press_key(&mut ui, &ctx, Key::Backspace),
         vec![Action::ClearSelection]
     );
+}
+
+#[test]
+fn move_command_in_menu_and_shortcuts() {
+    let ctx = tall_image_ctx();
+    let theme = Theme::for_kind(ctx.theme);
+    let mut ui = Ui::new();
+    // M asks to move, with or without a selection; a held key does not
+    // repeat it.
+    assert_eq!(press_key(&mut ui, &ctx, Key::M), vec![Action::MoveTo]);
+    let mut selected = ctx;
+    selected.selected = &[1, 2];
+    assert_eq!(press_key(&mut ui, &selected, Key::M), vec![Action::MoveTo]);
+    let held = ui.handle_event(
+        InputEvent::KeyDown {
+            key: Key::M,
+            mods: Modifiers::NONE,
+            repeat: true,
+        },
+        &ctx,
+    );
+    assert!(held.is_empty());
+    assert_eq!(Command::MoveTo.label(), "Move to...");
+    assert_eq!(Command::MoveTo.shortcut_label().as_deref(), Some("M"));
+    assert_eq!(Command::MoveTo.tooltip(), "Move to  (M)");
+
+    // The context menu offers it next to the delete entries, with its key.
+    let p = Point::new(500.0, 50.0);
+    right_click(&mut ui, &ctx, p);
+    let list = frame(&mut ui, &ctx);
+    let entry = text_rect_exact(&list, "Move to...").expect("Move to... offered");
+    let trash = text_rect_exact(&list, Command::MoveToTrash.label()).unwrap();
+    let clear = text_rect_exact(&list, "Clear selection").unwrap();
+    assert!(
+        clear.y < entry.y && entry.y < trash.y,
+        "between the selection and delete entries"
+    );
+    let key_m = text_rect_exact(&list, "M").expect("the key shows");
+    assert!((key_m.center().y - entry.center().y).abs() < 14.0);
+    assert_eq!(text_color(&list, "Move to..."), Some(theme.text));
+    assert_eq!(
+        click_label(&mut ui, &ctx, "Move to..."),
+        vec![Action::MoveTo]
+    );
+    assert_eq!(ui.mode(), UiMode::Normal);
+
+    // The shortcut overlay lists it.
+    press_key(&mut ui, &ctx, Key::F1);
+    let list = frame(&mut ui, &ctx);
+    let label = text_rect_exact(&list, "Move to...").expect("listed in the overlay");
+    let key_m = text_rect_exact(&list, "M").unwrap();
+    assert!((key_m.center().y - label.center().y).abs() < 11.0 && key_m.x < label.x);
+    press_key(&mut ui, &ctx, Key::Escape);
+
+    // Without an image it is grayed and does nothing.
+    let mut empty = base_ctx();
+    empty.count = 0;
+    let mut ui = Ui::new();
+    assert!(press_key(&mut ui, &empty, Key::M).is_empty());
+    right_click(&mut ui, &empty, Point::new(500.0, 300.0));
+    let list = frame(&mut ui, &empty);
+    assert_eq!(text_color(&list, "Move to..."), Some(theme.text_disabled));
+    assert!(click_label(&mut ui, &empty, "Move to...").is_empty());
+    assert_eq!(ui.mode(), UiMode::Modal, "a disabled entry keeps the menu");
+}
+
+#[test]
+fn move_key_ignored_in_text_field_dialog_and_crop() {
+    let mut ctx = image_ctx();
+    ctx.selected = &[3];
+    let mut ui = Ui::new();
+    let moves = |out: &[Action]| kinds(out).contains(&ActionKind::MoveTo);
+
+    // A text field: M is a letter there.
+    key(&mut ui, &ctx, Key::R, Modifiers::CTRL);
+    assert!(ui.wants_text_input());
+    let mut out = press_key(&mut ui, &ctx, Key::M);
+    out.extend(type_text(&mut ui, &ctx, "m"));
+    assert!(!moves(&out), "{out:?}");
+    assert_eq!(ui.mode(), UiMode::Modal);
+    press_key(&mut ui, &ctx, Key::Escape);
+
+    // A dialog without a focused field, a question, the overlay and an
+    // open menu: nothing moves.
+    key(&mut ui, &ctx, Key::B, Modifiers::CTRL);
+    assert!(press_key(&mut ui, &ctx, Key::M).is_empty());
+    assert_eq!(ui.mode(), UiMode::Modal);
+    press_key(&mut ui, &ctx, Key::Escape);
+    ui.show_confirm(ConfirmRequest::new(9, "Sure?", "Are you sure?"));
+    assert!(!moves(&press_key(&mut ui, &ctx, Key::M)));
+    press_key(&mut ui, &ctx, Key::Escape);
+    press_key(&mut ui, &ctx, Key::F1);
+    assert!(press_key(&mut ui, &ctx, Key::M).is_empty());
+    press_key(&mut ui, &ctx, Key::Escape);
+    press_key(&mut ui, &ctx, Key::ContextMenu);
+    assert!(press_key(&mut ui, &ctx, Key::M).is_empty());
+    assert_eq!(ui.mode(), UiMode::Normal, "the key closed the menu only");
+
+    // Crop mode: nothing, and crop mode stays.
+    press_key(&mut ui, &ctx, Key::C);
+    assert!(press_key(&mut ui, &ctx, Key::M).is_empty());
+    assert_eq!(ui.mode(), UiMode::Crop);
+    press_key(&mut ui, &ctx, Key::C);
+
+    // Viewing again: M moves.
+    assert_eq!(press_key(&mut ui, &ctx, Key::M), vec![Action::MoveTo]);
 }

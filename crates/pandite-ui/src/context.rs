@@ -185,9 +185,10 @@ pub struct UiContext<'a> {
     /// nothing is open.
     pub info: &'a [InfoRow],
     /// Folder indices of the selected images, in ascending order without
-    /// repeats. The gallery strip draws a checked box on these thumbnails,
-    /// the image on screen shows a badge when its index is here, and the
-    /// toolbar shows the count. The bulk dialog offers them as a source.
+    /// repeats. The gallery strip draws a small badge on these thumbnails,
+    /// the image on screen shows a "Marked" label when its index is here,
+    /// and the toolbar shows the count. The bulk dialog offers them as a
+    /// source.
     pub selected: &'a [usize],
 }
 

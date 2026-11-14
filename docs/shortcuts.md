@@ -20,6 +20,9 @@ On macOS, Ctrl is the Command key and Alt is the Option key.
 | Select all text | Ctrl+A |
 | Select image | Space |
 | Clear selection | Backspace |
+| Select and previous image | Shift+Left |
+| Select and next image | Shift+Right |
+| Move to... | M |
 | Move to Recycle Bin (Windows), Move to Trash (macOS, Linux) | Del |
 | Delete permanently... | Shift+Del |
 | Undo | Ctrl+Z |
@@ -67,8 +70,9 @@ On macOS, Ctrl is the Command key and Alt is the Option key.
 - The keys +, -, = and the digits ignore Shift, so keyboard layouts that
   need Shift for these keys work.
 - When you hold the key, these commands repeat: previous image, next image,
-  back and forward one gallery page, zoom in, zoom out and the four pan
-  commands. Other commands run one time.
+  select and previous image, select and next image, back and forward one
+  gallery page, zoom in, zoom out and the four pan commands. Other commands
+  run one time.
 - PgDn and PgUp move by one page of the gallery strip: the number of
   thumbnails that fit whole in the strip at the current window width. When
   the strip is hidden, the page is the number that the strip would show.
@@ -143,19 +147,25 @@ See [Delete the selected images](#delete-the-selected-images).
 
 ## Select images
 
-Select images to delete or convert them together.
+Select images to delete, move or convert them together. The selection
+changes with the keyboard and the context menu only. The mouse does not
+change it.
 
 - Space selects the current image. When the current image is selected,
   Space clears its selection.
+- Shift+Right selects the current image and then shows the next image.
+  Shift+Left selects the current image and then shows the previous image.
+  An image that is selected stays selected. The image that shows next is
+  not selected by that key.
+- Hold Shift+Right or Shift+Left to select a run of images. At the first
+  or the last image, the key selects the image and the view stays.
 - Backspace clears the selection of all images. When no image is selected,
   Backspace does nothing.
-- In the gallery strip, each thumbnail has a check box in its top left
-  corner. A selected image always shows a checked box. Another thumbnail
-  shows an empty box while the pointer is on it.
-- Click the check box to select the image or to clear its selection. The
-  current image does not change. Click the thumbnail outside the box to
-  show the image.
-- A check mark in the top right corner of the image shows that the
+- In the gallery strip, a selected image shows a small round badge with a
+  check mark in the top left corner of its thumbnail. Other thumbnails
+  show no badge.
+- A click on a thumbnail shows that image, also a click on its badge.
+- The label "Marked" in the top right corner of the image shows that the
   current image is selected.
 - The toolbar shows the number of selected images, for example
   "3 selected", next to the position.
@@ -163,9 +173,11 @@ Select images to delete or convert them together.
 - The selection holds files of the current folder. It stays when you move
   to other images. A selected file that leaves the folder also leaves the
   selection. When you open a file of another folder, no image is selected.
-- Space and Backspace do nothing in crop mode, while a dialog is open and
-  in the keyboard shortcut overlay. In a text field, they edit the text.
-  Esc does not clear the selection.
+- Space, Backspace, Shift+Left and Shift+Right do not change the selection
+  in crop mode, while a dialog is open and in the keyboard shortcut
+  overlay. In a text field, they edit the text. In crop mode, Shift and an
+  arrow key move the crop selection 10 pixels. Esc does not clear the
+  selection.
 
 ### Delete the selected images
 
@@ -196,6 +208,32 @@ Select images to delete or convert them together.
   To use the selected images again, click Selected images.
 - When no image is selected, the dialog does not show the Selected images
   button.
+
+## Move images
+
+M moves the selected images to a folder that you choose. When no image is
+selected, M moves the current image.
+
+- M opens the folder picker. The picker starts in the folder of the last
+  move, or in the current folder. To move nothing, cancel the picker.
+- There is no question. To undo the move, move the images back.
+- A file in the chosen folder is never replaced. When the chosen folder
+  has a file with the same name, that image does not move and stays
+  selected.
+- When you choose the folder that has the images, nothing moves and a
+  message says so.
+- On another drive, each file is copied first. The original goes only
+  after the copy is complete. When a copy fails, the original stays and
+  the incomplete copy is removed.
+- After the move, the current image stays when it did not move.
+  Otherwise the next remaining image shows, or the previous remaining
+  image when it was the last.
+- A message gives the number of moved images. When an image does not
+  move, the message gives the reason and the number of other images that
+  did not move.
+- M does nothing in crop mode, while a dialog is open and in the keyboard
+  shortcut overlay. In a text field, it types the letter. Without an
+  image, Move to is not available.
 
 ## Copy the image
 
@@ -234,8 +272,7 @@ editor, a document or a chat.
 | Double-click the image away from the text | In fit to window: 1:1 at the pointer. In other modes: fit to window. |
 | Right-click | Context menu |
 | Back and Forward side buttons | Previous image and next image |
-| Click a thumbnail | Show that image |
-| Click the check box of a thumbnail | Select that image, or clear its selection |
+| Click a thumbnail | Show that image (the selection does not change) |
 | Drag the gallery strip | Scroll the strip |
 
 The text actions work only where pandite read text in the image (on

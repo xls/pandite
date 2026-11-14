@@ -1,6 +1,6 @@
 //! Background jobs of the application core: edits, Save As, image
 //! copies, size probes, folder resolution, bulk conversion, text
-//! recognition, file removal and settings writes.
+//! recognition, file removal, file moves and settings writes.
 //!
 //! Each job runs on its own thread, touches the disk only through
 //! [`Disk`], and reports with one [`Msg`] followed by a wake of the event
@@ -250,6 +250,29 @@ pub(crate) fn delete(out: Outbox, disk: Arc<dyn Disk>, job: DeleteJob) -> std::i
             permanent,
             result,
         });
+    })
+}
+
+/// What a file move needs.
+pub(crate) struct MoveJob {
+    pub id: u64,
+    pub path: PathBuf,
+    /// The folder the file goes into, under its own name.
+    pub into: PathBuf,
+}
+
+/// Move a file into another folder without replacing a file there (see
+/// [`crate::disk::move_into`]). The event loop never waits for this
+/// thread.
+pub(crate) fn move_file(out: Outbox, disk: Arc<dyn Disk>, job: MoveJob) -> std::io::Result<()> {
+    spawn("pandite-move", move || {
+        let MoveJob { id, path, into } = job;
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            crate::disk::move_into(&*disk, &path, &into).map(drop)
+        }))
+        .unwrap_or_else(|_| Err(std::io::Error::other("the move stopped unexpectedly")))
+        .map_err(|err| (err.kind(), err.to_string()));
+        out.send(Msg::Moved { id, path, result });
     })
 }
 

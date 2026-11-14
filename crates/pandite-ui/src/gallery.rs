@@ -6,9 +6,9 @@
 //! count or the strip width changes; manual scrolling is left alone
 //! otherwise.
 //!
-//! Each cell has a check box in its top left corner. It shows when the
-//! item is selected or the pointer is over the cell, and a click on it
-//! selects or unselects the item instead of showing it.
+//! A selected item carries a small round badge in the top left corner of
+//! its cell. The badge is a marker only: a click anywhere on a cell shows
+//! the item, and the pointer never changes the selection.
 
 use crate::metrics::Metrics;
 use pandite_core::{Point, Rect};
@@ -29,10 +29,10 @@ pub(crate) struct GalleryLayout {
     pub count: usize,
     /// X of item 0 at scroll 0 (centered when everything fits).
     pub origin: f32,
-    /// Side of the check box in a cell corner.
-    pub check: f32,
-    /// Gap between the cell corner and the check box.
-    pub check_inset: f32,
+    /// Side of the selection badge in a cell corner.
+    pub badge: f32,
+    /// Gap between the cell corner and the badge.
+    pub badge_inset: f32,
 }
 
 impl GalleryLayout {
@@ -60,8 +60,8 @@ impl GalleryLayout {
             pitch,
             count,
             origin,
-            check: m.gallery_check().min(cell),
-            check_inset: m.gallery_check_inset(),
+            badge: m.thumb_badge().min(cell),
+            badge_inset: m.thumb_badge_inset(),
         }
     }
 
@@ -109,25 +109,11 @@ impl GalleryLayout {
         first.min(end)..end
     }
 
-    /// The check box drawn in the top left corner of the cell `cell`.
-    pub fn check_rect(&self, cell: Rect) -> Rect {
-        let side = self.check.min(cell.w).min(cell.h);
-        let inset = self.check_inset.min(((cell.w - side) * 0.5).max(0.0));
+    /// The selection badge drawn in the top left corner of the cell `cell`.
+    pub fn badge_rect(&self, cell: Rect) -> Rect {
+        let side = self.badge.min(cell.w).min(cell.h);
+        let inset = self.badge_inset.min(((cell.w - side) * 0.5).max(0.0));
         Rect::new(cell.x + inset, cell.y + inset, side, side)
-    }
-
-    /// Where a press counts as a press on the check box of `cell`: the box
-    /// and the gap around it, from the cell corner.
-    pub fn check_hit_rect(&self, cell: Rect) -> Rect {
-        let b = self.check_rect(cell);
-        let w = (b.right() - cell.x + (b.x - cell.x)).min(cell.w);
-        let h = (b.bottom() - cell.y + (b.y - cell.y)).min(cell.h);
-        Rect::new(cell.x, cell.y, w, h)
-    }
-
-    /// True when `p` lies on the check box of item `i` at `scroll`.
-    pub fn check_hit(&self, i: usize, p: Point, scroll: f32) -> bool {
-        self.check_hit_rect(self.item_rect(i, scroll)).contains(p)
     }
 
     /// The item under `p` at `scroll`, if any.
@@ -180,8 +166,6 @@ pub(crate) struct GalleryState {
     pub tracked: Option<(usize, usize, u32)>,
     /// Hovered item.
     pub hover: Option<usize>,
-    /// The pointer is over the check box of the hovered item.
-    pub hover_check: bool,
 }
 
 impl GalleryState {
@@ -277,20 +261,15 @@ mod tests {
     }
 
     #[test]
-    fn check_box_sits_in_the_cell_corner_at_every_scale() {
+    fn badge_sits_in_the_cell_corner_at_every_scale() {
         for scale in [1.0, 1.25, 1.5, 2.0, 3.0] {
             let m = Metrics::new(scale);
             let l = GalleryLayout::new(Rect::new(0.0, 700.0, 2000.0, m.gallery_h()), 40, &m);
             let cell = l.item_rect(3, 0.0);
-            let b = l.check_rect(cell);
-            let hit = l.check_hit_rect(cell);
-            assert_eq!((b.w, b.h), (m.gallery_check(), m.gallery_check()));
+            let b = l.badge_rect(cell);
+            assert_eq!((b.w, b.h), (m.thumb_badge(), m.thumb_badge()));
             assert_eq!((b.x - cell.x, b.y - cell.y), (m.px(4.0), m.px(4.0)));
-            // The press area holds the box and stays inside the cell.
-            assert!(hit.contains(b.center()) && hit.x == cell.x && hit.y == cell.y);
-            assert!(hit.right() <= cell.right() && hit.bottom() <= cell.bottom());
-            assert!(l.check_hit(3, b.center(), 0.0));
-            assert!(!l.check_hit(3, cell.center(), 0.0), "{scale}");
+            assert!(b.right() <= cell.right() && b.bottom() <= cell.bottom());
         }
     }
 

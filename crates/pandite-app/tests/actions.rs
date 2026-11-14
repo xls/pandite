@@ -73,6 +73,8 @@ fn sample(kind: ActionKind, dir: &std::path::Path) -> Action {
         ActionKind::Quit => Action::Quit,
         ActionKind::ToggleSelect => Action::ToggleSelect(0),
         ActionKind::ClearSelection => Action::ClearSelection,
+        ActionKind::Select => Action::Select(1),
+        ActionKind::MoveTo => Action::MoveTo,
     }
 }
 
@@ -121,6 +123,8 @@ fn kind_of(action: &Action) -> ActionKind {
         Action::Quit => ActionKind::Quit,
         Action::ToggleSelect(_) => ActionKind::ToggleSelect,
         Action::ClearSelection => ActionKind::ClearSelection,
+        Action::Select(_) => ActionKind::Select,
+        Action::MoveTo => ActionKind::MoveTo,
     }
 }
 
@@ -185,6 +189,9 @@ fn every_action_has_a_handler() {
                 assert_eq!(h.app().selection().len(), 1);
             }
             ActionKind::ClearSelection => assert!(h.app().selection().is_empty()),
+            ActionKind::Select => assert_eq!(h.app().selected_indices(), [1]),
+            // The folder picker opens; the fake answers with a cancel.
+            ActionKind::MoveTo => assert!(!h.app().moving()),
             _ => {}
         }
         assert!(
@@ -194,10 +201,10 @@ fn every_action_has_a_handler() {
         handled.push(kind);
         h.pump();
     }
-    assert_eq!(handled.len(), 41);
-    // The dialogs asked for: open, save, bulk files, bulk folder and bulk
-    // destination.
-    assert_eq!(lock(&h.dialogs).shown.len(), 5);
+    assert_eq!(handled.len(), 43);
+    // The dialogs asked for: open, save, bulk files, bulk folder, bulk
+    // destination and the folder of a move.
+    assert_eq!(lock(&h.dialogs).shown.len(), 6);
     assert!(h.wait_until(|a| !a.bulk_running() && !a.is_busy()));
 }
 

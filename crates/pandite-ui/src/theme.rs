@@ -69,10 +69,11 @@ pub struct Theme {
     pub placeholder: Color,
     /// Drop shadow under floating panels.
     pub shadow: Color,
-    /// Fill of a selection check box and badge: a light gray blue that
-    /// reads on any photo.
+    /// Fill of the selection badge of a thumbnail and of the "Marked" pill:
+    /// a light gray blue that reads on any photo.
     pub check_fill: Color,
-    /// Outline and check mark of a selection check box and badge.
+    /// Outline, check mark and text of the selection badge and the
+    /// "Marked" pill.
     pub check_line: Color,
 }
 
