@@ -13,7 +13,9 @@ export const MIN_GLIBC = '2.35';
 /** The AppId of the Windows setup program (packaging/windows/pandite.iss). */
 export const WINDOWS_APP_ID = '{E5E712AA-D4BF-4DC9-BB19-9841DC38CD1E}';
 export const WINDOWS_TARGETS = { x64: 'x86_64-pc-windows-msvc', arm64: 'aarch64-pc-windows-msvc' };
-export const MAC_TARGET = 'universal-apple-darwin';
+export const MAC_TARGET = 'universal-macos';
+/** The name in the release files up to 0.2.2. */
+export const MAC_TARGET_OLD = 'universal-apple-darwin';
 /** The app bundle at the top of the macOS zip and disk image. */
 export const MAC_APP = 'Pandite.app';
 export const LINUX_TARGET = 'x86_64-unknown-linux-gnu';
@@ -75,10 +77,13 @@ export function candidateAssets({ platform, arch, glibc, version }) {
   }
   if (platform === 'darwin') {
     if (arch !== 'x64' && arch !== 'arm64') throw unsupported(system);
-    const base = `pandite-${version}-${MAC_TARGET}`;
+    // The disk image of this name first; releases up to 0.2.2 carry a zip
+    // and a disk image with the older name.
+    const old = `pandite-${version}-${MAC_TARGET_OLD}`;
     return [
-      { name: `${base}.zip`, kind: 'app-zip' },
-      { name: `${base}.dmg`, kind: 'dmg' },
+      { name: `pandite-${version}-${MAC_TARGET}.dmg`, kind: 'dmg' },
+      { name: `${old}.zip`, kind: 'app-zip' },
+      { name: `${old}.dmg`, kind: 'dmg' },
     ];
   }
   if (platform === 'linux' && arch === 'x64') {

@@ -151,7 +151,7 @@ accepts. For the Store identity values and for signing, see
    bash packaging/macos/build-app.sh 0.1.0 dist target
    ```
 
-3. Find `pandite-0.1.0-universal-apple-darwin.dmg` in `dist`.
+3. Find `pandite-0.1.0-universal-macos.dmg` in `dist`.
 
 Without more settings, the script signs the app ad hoc and does not notarize
 it. macOS then warns the user before the first start.

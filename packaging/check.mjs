@@ -498,9 +498,10 @@ const built = {
     ) && buildSetup.includes("$fileTarget = $Target -replace '-pc-windows-msvc$', '-windows'"),
   // Releases up to 0.2.2 also carry the app as a zip. The installer takes
   // it there and takes the disk image in every later release.
-  'app-zip': (name) => name === `${macBase}.zip`,
+  'app-zip': (name) => name === `pandite-${VERSION}-${installer.MAC_TARGET_OLD}.zip`,
   dmg: (name) =>
-    name === `${macBase}.dmg` &&
+    (name === `${macBase}.dmg` || name === `pandite-${VERSION}-${installer.MAC_TARGET_OLD}.dmg`) &&
+    macBase === `pandite-${VERSION}-${installer.MAC_TARGET}` &&
     appScript.includes(`APP="$WORK/${installer.MAC_APP}"`) &&
     appScript.includes('cp -R "$APP" "$DMG_SRC/"') &&
     appScript.includes('"$OUT/$NAME.dmg"'),

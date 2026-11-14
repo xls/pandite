@@ -6,7 +6,7 @@
 # Needs both release binaries:
 #   <cargo_target_dir>/aarch64-apple-darwin/release/pandite
 #   <cargo_target_dir>/x86_64-apple-darwin/release/pandite
-# Writes <out_dir>/pandite-<version>-universal-apple-darwin.dmg.
+# Writes <out_dir>/pandite-<version>-universal-macos.dmg.
 # PANDITE_BUNDLE_ID overrides the placeholder bundle identifier.
 #
 # Signature:
@@ -32,7 +32,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 ARM="$TARGET_DIR/aarch64-apple-darwin/release/pandite"
 X64="$TARGET_DIR/x86_64-apple-darwin/release/pandite"
-NAME="pandite-$VERSION-universal-apple-darwin"
+NAME="pandite-$VERSION-universal-macos"
 # CFBundleVersion takes numbers and dots only: drop a pre-release suffix.
 BUNDLE_VERSION=${VERSION%%[-+]*}
 
