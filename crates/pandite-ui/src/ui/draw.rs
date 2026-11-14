@@ -119,12 +119,14 @@ impl Ui {
             t.shadow,
             side * 0.5 + m.px(2.0),
         );
-        out.rect(r, t.accent, side * 0.5);
-        paint::icon(out, r, Icon::Check, m.icon(), t.accent_text);
+        out.rect(r, t.check_fill, side * 0.5);
+        out.border(r, t.check_line, m.px(1.5), side * 0.5);
+        paint::icon(out, r, Icon::Check, m.icon(), t.check_line);
     }
 
-    /// The check box of a thumbnail: filled with a check mark when the
-    /// image is selected, empty otherwise. `hot` marks the pointer over
+    /// The check box of a thumbnail: a light gray blue square with a dark
+    /// outline, with a dark check mark when the image is selected and a
+    /// fainter fill otherwise. `hot` marks the pointer over
     /// the box itself.
     fn draw_check_box(
         &self,
@@ -137,16 +139,13 @@ impl Ui {
     ) {
         let radius = m.radius_small();
         if checked {
-            out.rect(
-                paint::outset(b, m.hairline()),
-                t.shadow,
-                radius + m.hairline(),
-            );
-            out.rect(b, t.accent, radius);
-            paint::icon(out, b, Icon::Check, m.icon(), t.accent_text);
+            out.rect(b, t.check_fill, radius);
+            out.border(b, t.check_line, m.px(1.5), radius);
+            // The mark is a little smaller than the box.
+            paint::icon(out, b, Icon::Check, b.w - m.px(2.0), t.check_line);
         } else {
-            out.rect(b, fade(t.panel_solid, 0.8), radius);
-            out.border(b, t.text, m.px(2.0), radius);
+            out.rect(b, fade(t.check_fill, 0.55), radius);
+            out.border(b, t.check_line, m.px(1.5), radius);
         }
         if hot {
             out.rect(b, t.hover, radius);

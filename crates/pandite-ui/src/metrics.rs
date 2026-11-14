@@ -106,7 +106,7 @@ impl Metrics {
     }
     /// Side of the check box in a thumbnail corner.
     pub fn gallery_check(&self) -> f32 {
-        self.px(18.0)
+        self.px(14.0)
     }
     /// Gap between a thumbnail corner and its check box.
     pub fn gallery_check_inset(&self) -> f32 {

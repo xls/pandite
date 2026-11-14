@@ -233,17 +233,17 @@ fn gallery_draws_checkbox_for_selected() {
             let cell = cell_of(&list, i);
             let checks = checks_in(&list, corner(cell));
             if i == 2 || i == 5 {
-                // A checked box: the check mark on an accent square in the
+                // A checked box: the check mark on a gray blue square in the
                 // top left corner, at the size of the scale.
                 assert_eq!(checks.len(), 1, "thumbnail {i} at scale {scale}");
                 let mark = checks[0];
-                assert_eq!(mark.w, 20.0 * scale);
-                let fill = fills_at(&list, mark.center(), theme.accent);
+                assert_eq!(mark.w, 12.0 * scale);
+                let fill = fills_at(&list, mark.center(), theme.check_fill);
                 assert!(
-                    fill.iter().any(|r| r.w == 18.0 * scale
+                    fill.iter().any(|r| r.w == 14.0 * scale
                         && inside(*r, cell)
                         && r.x - cell.x == 4.0 * scale),
-                    "accent box of thumbnail {i}: {fill:?}"
+                    "check box of thumbnail {i}: {fill:?}"
                 );
             } else {
                 assert!(checks.is_empty(), "thumbnail {i} is not selected");
@@ -252,10 +252,10 @@ fn gallery_draws_checkbox_for_selected() {
         }
         // Nothing else in the frame carries a check mark.
         assert_eq!(icon_draws(&list, Icon::Check).len(), 2);
-        // The tint of the mark is the accent text color.
+        // The tint of the mark is the dark line color.
         assert!(icon_draws(&list, Icon::Check)
             .iter()
-            .all(|(_, tint)| *tint == theme.accent_text));
+            .all(|(_, tint)| *tint == theme.check_line));
     }
 }
 
@@ -278,7 +278,7 @@ fn gallery_checkbox_appears_on_hover() {
         let boxes = boxes_in(&list, c4);
         assert_eq!(boxes.len(), 1, "scale {scale}");
         let b = boxes[0];
-        let (side, inset) = ((18.0 * scale).round(), (4.0 * scale).round());
+        let (side, inset) = ((14.0 * scale).round(), (4.0 * scale).round());
         assert_eq!((b.w, b.h), (side, side));
         assert_eq!((b.x - c4.x, b.y - c4.y), (inset, inset));
         assert!(checks_in(&list, c4).is_empty(), "the box is empty");
@@ -432,8 +432,8 @@ fn selected_image_shows_badge() {
         assert!(mark.center().x > visible.center().x && mark.center().y < visible.center().y);
         assert!(mark.y >= 40.0 * scale, "{mark:?} under the toolbar");
         assert!(visible.right() - mark.right() < 40.0 * scale);
-        // A round accent badge the size of the scale.
-        let fill = fills_at(&list, mark.center(), theme.accent);
+        // A round gray blue badge the size of the scale.
+        let fill = fills_at(&list, mark.center(), theme.check_fill);
         assert!(
             fill.iter()
                 .any(|r| r.w == 26.0 * scale && r.h == 26.0 * scale),
