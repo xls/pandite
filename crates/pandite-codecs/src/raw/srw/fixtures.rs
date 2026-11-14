@@ -6,7 +6,7 @@ pub(super) use crate::raw::arw::fixtures::{hex, jpeg};
 
 /// One IFD value for the builder.
 #[derive(Clone, Debug)]
-pub(super) enum Val {
+pub(crate) enum Val {
     Byte(Vec<u8>),
     Undef(Vec<u8>),
     Ascii(&'static str),
@@ -81,7 +81,7 @@ fn payload(v: &Val, le: bool, blob_at: &[usize], blobs: &[Vec<u8>]) -> (u16, u32
 }
 
 /// Size of an IFD with its out-of-line values (each at an even offset).
-fn ifd_size(entries: &[(u16, Val)], blobs: &[Vec<u8>]) -> usize {
+pub(crate) fn ifd_size(entries: &[(u16, Val)], blobs: &[Vec<u8>]) -> usize {
     let mut n = 2 + 12 * entries.len() + 4;
     for (_, v) in entries {
         let (_, _, p) = payload(v, false, &[], blobs);
@@ -96,7 +96,7 @@ fn ifd_size(entries: &[(u16, Val)], blobs: &[Vec<u8>]) -> usize {
 /// offsets count from `base`. Entries are sorted by tag unless `reverse`
 /// asks for descending order.
 #[allow(clippy::too_many_arguments)]
-fn write_ifd(
+pub(crate) fn write_ifd(
     out: &mut Vec<u8>,
     entries: &[(u16, Val)],
     next: usize,
