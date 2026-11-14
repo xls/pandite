@@ -103,6 +103,8 @@ Writes PNG, JPEG, lossless WebP and BMP.
 - **Copy.** Ctrl+C copies the image, Ctrl+Shift+C copies the file path.
 - **Delete.** Del sends the file to the Recycle Bin or the Trash and
   shows the next image. Shift+Del asks first, then deletes the file for good.
+- **Select.** Space or the check box on a thumbnail selects images. Del
+  and bulk convert then act on the selected images.
 - **Color.** Embedded ICC profiles convert to sRGB. HDR images are tone
   mapped. Photos turn upright from their EXIF orientation.
 - **Stall safe.** A file stuck on a cloud drive cannot freeze the window.

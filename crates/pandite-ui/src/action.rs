@@ -117,14 +117,20 @@ pub enum BulkSource {
         /// Also read subfolders.
         recursive: bool,
     },
+    /// The selected images of the folder on screen
+    /// ([`crate::UiContext::selected`]). The application turns this into
+    /// the list of those files when the job starts.
+    Selection,
 }
 
 impl BulkSource {
-    /// True when the source names nothing.
+    /// True when the source names nothing. A selection source is never
+    /// empty here: the application knows its files.
     pub fn is_empty(&self) -> bool {
         match self {
             BulkSource::Files(files) => files.is_empty(),
             BulkSource::Folder { path, .. } => path.as_os_str().is_empty(),
+            BulkSource::Selection => false,
         }
     }
 }
@@ -176,12 +182,24 @@ pub enum Action {
     /// loop and confirm with [`crate::Ui::toast`].
     CopyImage,
     /// Move the file of the current image to the trash of the system
-    /// without a question (Delete), then show its neighbor.
+    /// without a question (Delete), then show its neighbor. A file whose
+    /// drive has no trash is removed for good instead, also without a
+    /// question.
     MoveToTrash,
     /// Remove the file of the current image for good (Shift+Delete). Ask
     /// first with [`crate::Ui::show_confirm`] and a request whose
     /// [`crate::ConfirmRequest::cancel_is_default`] is set.
+    ///
+    /// While images are selected ([`crate::UiContext::selected`]), this
+    /// action and [`Action::MoveToTrash`] act on the selected files
+    /// instead, and both ask first with the number of files.
     DeleteFile,
+    /// Select the image with this folder index, or unselect it when it is
+    /// selected (Space on the current image, or a click on the check box
+    /// of a thumbnail). Report the result in [`crate::UiContext::selected`].
+    ToggleSelect(usize),
+    /// Unselect every image (Backspace).
+    ClearSelection,
     /// Put this text on the clipboard (Ctrl+C or Ctrl+X in a text field).
     CopyText(String),
     /// Read the clipboard and send its text back as
@@ -366,11 +384,15 @@ pub enum ActionKind {
     ConfirmResult,
     /// [`Action::Quit`].
     Quit,
+    /// [`Action::ToggleSelect`].
+    ToggleSelect,
+    /// [`Action::ClearSelection`].
+    ClearSelection,
 }
 
 impl ActionKind {
     /// Every kind, in declaration order.
-    pub const ALL: [ActionKind; 39] = [
+    pub const ALL: [ActionKind; 41] = [
         ActionKind::Open,
         ActionKind::SaveAs,
         ActionKind::CopyPath,
@@ -410,6 +432,8 @@ impl ActionKind {
         ActionKind::ToggleInfo,
         ActionKind::ConfirmResult,
         ActionKind::Quit,
+        ActionKind::ToggleSelect,
+        ActionKind::ClearSelection,
     ];
 
     /// The position of this kind in [`ActionKind::ALL`]. The match is
@@ -455,6 +479,8 @@ impl ActionKind {
             ActionKind::ToggleInfo => 36,
             ActionKind::ConfirmResult => 37,
             ActionKind::Quit => 38,
+            ActionKind::ToggleSelect => 39,
+            ActionKind::ClearSelection => 40,
         }
     }
 }
@@ -469,6 +495,8 @@ impl Action {
             Action::CopyImage => ActionKind::CopyImage,
             Action::MoveToTrash => ActionKind::MoveToTrash,
             Action::DeleteFile => ActionKind::DeleteFile,
+            Action::ToggleSelect(_) => ActionKind::ToggleSelect,
+            Action::ClearSelection => ActionKind::ClearSelection,
             Action::CopyText(_) => ActionKind::CopyText,
             Action::RequestPaste => ActionKind::RequestPaste,
             Action::RotateLeft => ActionKind::RotateLeft,

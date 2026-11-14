@@ -89,6 +89,7 @@ pub(crate) enum Target {
     CropBarPanel,
     InfoPanel,
     Gallery(Option<usize>),
+    GalleryCheck(usize),
     EmptyOpen,
     Content,
 }
@@ -108,6 +109,8 @@ pub(crate) enum Capture {
     },
     Gallery {
         index: Option<usize>,
+        /// The press was on the check box of `index`.
+        check: bool,
         start: Point,
         start_scroll: f32,
         dragging: bool,
@@ -355,8 +358,11 @@ impl Ui {
             | Command::First
             | Command::Last => ctx.count > 1,
             // A file that failed to open can go too: the folder still
-            // lists it.
-            Command::MoveToTrash | Command::DeleteFile => ctx.image.is_some() || ctx.count > 0,
+            // lists it. The same holds for its selection.
+            Command::MoveToTrash | Command::DeleteFile | Command::ToggleSelect => {
+                ctx.image.is_some() || ctx.count > 0
+            }
+            Command::ClearSelection => !ctx.selected.is_empty(),
             Command::CropApply => self.crop.as_ref().is_some_and(|c| c.pixel_rect().is_some()),
             Command::CropSelectAll | Command::CropCancel => self.crop.is_some(),
             Command::SelectAllText => TextGeom::new(ctx).is_some(),
@@ -772,7 +778,11 @@ impl Ui {
         }
         if let Some(layout) = self.gallery_layout(ctx, m) {
             if layout.panel.contains(p) {
-                return Target::Gallery(layout.hit(p, self.gallery.scroll));
+                let scroll = self.gallery.scroll;
+                return match layout.hit(p, scroll) {
+                    Some(i) if layout.check_hit(i, p, scroll) => Target::GalleryCheck(i),
+                    index => Target::Gallery(index),
+                };
             }
         }
         if self
@@ -836,6 +846,10 @@ impl Ui {
             // that could start a second one.
             dialog.running = true;
             dialog.seen_progress = true;
+        } else {
+            // Selected images are the source when there are any; a
+            // selection remembered from an earlier opening is gone.
+            dialog.follow_selection(ctx);
         }
         self.dialog = Some(Dialog::Bulk(dialog));
         self.dialog_form = FormState::default();
@@ -878,6 +892,7 @@ impl Ui {
 
     fn menu_entry(&self, cmd: Command, ctx: &UiContext<'_>) -> MenuItem {
         let checked = match cmd {
+            Command::ToggleSelect => ctx.current_selected(),
             Command::ToggleGallery => ctx.gallery_visible,
             Command::ToggleInfo => ctx.info_visible,
             Command::Fullscreen => ctx.fullscreen,
@@ -973,6 +988,8 @@ impl Ui {
             Command::CopyImage => out.push(Action::CopyImage),
             Command::MoveToTrash => out.push(Action::MoveToTrash),
             Command::DeleteFile => out.push(Action::DeleteFile),
+            Command::ToggleSelect => out.push(Action::ToggleSelect(ctx.index)),
+            Command::ClearSelection => out.push(Action::ClearSelection),
             Command::Undo => out.push(Action::Undo),
             Command::RotateLeft => out.push(Action::RotateLeft),
             Command::RotateRight => out.push(Action::RotateRight),
@@ -1175,7 +1192,7 @@ impl Ui {
             _ => match self.hover {
                 Target::Toolbar(cmd) if self.command_enabled(cmd, ctx) => CursorShape::Hand,
                 Target::More | Target::CropBar(_) | Target::EmptyOpen => CursorShape::Hand,
-                Target::Gallery(Some(_)) => CursorShape::Hand,
+                Target::Gallery(Some(_)) | Target::GalleryCheck(_) => CursorShape::Hand,
                 Target::Form { confirm, id, .. } => {
                     if field_hover(confirm, id, self) {
                         CursorShape::Text
@@ -1197,7 +1214,7 @@ impl Ui {
 }
 
 /// The context menu in normal mode. `None` is a separator.
-const CONTEXT_MENU: [Option<Command>; 31] = [
+const CONTEXT_MENU: [Option<Command>; 33] = [
     Some(Command::Open),
     Some(Command::SaveAs),
     Some(Command::CopyImage),
@@ -1205,6 +1222,8 @@ const CONTEXT_MENU: [Option<Command>; 31] = [
     None,
     Some(Command::Undo),
     None,
+    Some(Command::ToggleSelect),
+    Some(Command::ClearSelection),
     Some(Command::MoveToTrash),
     Some(Command::DeleteFile),
     None,

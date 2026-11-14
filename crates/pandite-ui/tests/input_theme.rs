@@ -44,11 +44,14 @@ fn shortcuts_cover_every_action() {
     };
     let ctx = rich_ctx();
 
-    // Every global binding, pressed in a fresh interface.
+    // Every global binding, pressed in a fresh interface. One image is
+    // selected, so the key that clears the selection has work to do.
+    let mut selected = ctx;
+    selected.selected = &[3];
     for s in SHORTCUTS.iter().filter(|s| !s.command.crop_only()) {
         let mut ui = Ui::new();
-        move_to(&mut ui, &ctx, Point::new(600.0, 300.0));
-        let out = key(&mut ui, &ctx, s.key, s.mods);
+        move_to(&mut ui, &selected, Point::new(600.0, 300.0));
+        let out = key(&mut ui, &selected, s.key, s.mods);
         note(&out, &s.label());
     }
 
@@ -192,12 +195,13 @@ fn f11_maps_to_fullscreen() {
     let mut narrow = ctx;
     narrow.window_size = Size::new(60.0, 800.0);
     assert_eq!(Ui::gallery_page(&narrow), 1, "never less than one image");
-    let table: [(Key, Modifiers, Action); 12] = [
+    // Space selects the image and Backspace clears the selection; they
+    // no longer move to the next and the previous image.
+    let table: [(Key, Modifiers, Action); 11] = [
         (Key::Right, Modifiers::NONE, Action::Next),
-        (Key::Space, Modifiers::NONE, Action::Next),
+        (Key::Space, Modifiers::NONE, Action::ToggleSelect(3)),
         (Key::PageDown, Modifiers::NONE, Action::StepBy(18)),
         (Key::Left, Modifiers::NONE, Action::Previous),
-        (Key::Backspace, Modifiers::NONE, Action::Previous),
         (Key::PageUp, Modifiers::NONE, Action::StepBy(-18)),
         (Key::Plus, Modifiers::SHIFT, Action::ZoomIn),
         (Key::Equals, Modifiers::NONE, Action::ZoomIn),
@@ -209,6 +213,10 @@ fn f11_maps_to_fullscreen() {
     for (k, mods, expected) in table {
         assert_eq!(key(&mut ui, &ctx, k, mods), vec![expected.clone()], "{k:?}");
     }
+    assert!(
+        press_key(&mut ui, &ctx, Key::Backspace).is_empty(),
+        "nothing selected, nothing to clear"
+    );
     // Holding an arrow repeats navigation.
     let repeat = ui.handle_event(
         InputEvent::KeyDown {
@@ -330,9 +338,16 @@ fn layout_scales_with_dpi() {
 
 #[test]
 fn context_menu_lists_commands() {
-    let ctx = image_ctx();
+    // A window tall enough for the whole menu below the pointer.
+    let ctx = with_image(
+        UiContext {
+            window_size: Size::new(1280.0, 900.0),
+            ..base_ctx()
+        },
+        4000,
+        3000,
+    );
     let mut ui = Ui::new();
-    // High enough that the whole menu fits below the pointer.
     let p = Point::new(500.0, 50.0);
     move_to(&mut ui, &ctx, p);
     press(&mut ui, &ctx, p, PointerButton::Right);
@@ -345,6 +360,8 @@ fn context_menu_lists_commands() {
         Command::CopyImage,
         Command::CopyPath,
         Command::Undo,
+        Command::ToggleSelect,
+        Command::ClearSelection,
         Command::MoveToTrash,
         Command::DeleteFile,
         Command::RotateLeft,

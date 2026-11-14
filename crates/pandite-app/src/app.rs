@@ -21,8 +21,8 @@ use crate::edit::{self, Edit, EditStack, Undo};
 use crate::info::{self, FileReport};
 use crate::platform::{Clipboard, DialogKind, Dialogs, Filter, Waker, WindowControl};
 use crate::settings::{self, Settings, TextRecognition, ThemeChoice, WindowPlacement};
-use crate::trash::TRASH_NAME;
-use jobs::{Copied, CopyJob, DeleteJob, Outbox, Removal};
+use crate::trash::{TRASH_NAME, TRASH_TITLE};
+use jobs::{Copied, CopyJob, DeleteJob, Outbox, Removal, RemoveMode};
 use pandite_core::{
     CancelToken, Color, Content, DrawList, EncodeOptions, Error, ImageBuf, PixelFormat, Point,
     Rect, Registry, Size, TextLayout, TextMeasure, TextureSink, ViewState,
@@ -31,10 +31,10 @@ use pandite_library::{
     natural_cmp, Event, Fetch, FileAccess, KeptThumbnails, Library, LibraryConfig, Reduced,
 };
 use pandite_ui::{
-    Action, ConfirmRequest, CursorShape, EncoderInfo, ImageInfo, InfoRow, InputEvent, Loading,
-    Progress, TextView, ThemeKind, ThumbState, Ui, UiContext, ZOOM_STEP,
+    Action, BulkJob, BulkSource, ConfirmRequest, CursorShape, EncoderInfo, ImageInfo, InfoRow,
+    InputEvent, Loading, Progress, TextView, ThemeKind, ThumbState, Ui, UiContext, ZOOM_STEP,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
@@ -89,12 +89,19 @@ pub(crate) enum Msg {
         path: PathBuf,
         report: Box<FileReport>,
     },
-    /// File removal `id` of `path` ended.
+    /// File removal `id` of `path` ended. `permanent` is true when the
+    /// file was removed for good (or that was tried), false for a move to
+    /// the trash.
     Deleted {
         id: u64,
         path: PathBuf,
         permanent: bool,
         result: Removal,
+    },
+    /// Trash check `id` ended: each file, and whether it has a trash.
+    TrashChecked {
+        id: u64,
+        files: Vec<(PathBuf, bool)>,
     },
 }
 
@@ -350,6 +357,8 @@ enum Question {
     Replace(PendingSave),
     /// Remove this file for good.
     Delete(PathBuf),
+    /// Remove these selected files, each in its own way.
+    DeleteSelection(Vec<(PathBuf, RemoveMode)>),
 }
 
 /// A file removal on a worker.
@@ -360,6 +369,22 @@ struct DeleteRun {
     /// The load of the file stopped for the removal: it starts again when
     /// the file stays.
     stopped_load: bool,
+}
+
+/// A delete of selected files: one file at a time on a worker, in folder
+/// order, the image the user wanted last.
+#[derive(Clone, Debug)]
+struct DeleteBatch {
+    /// Files still to remove, and how.
+    queue: VecDeque<(PathBuf, RemoveMode)>,
+    /// Files in the batch.
+    total: usize,
+    /// Files moved to the trash (or gone already).
+    trashed: usize,
+    /// Files removed for good (or gone already).
+    deleted: usize,
+    /// Why files stayed, one line each.
+    failed: Vec<String>,
 }
 
 /// A save on a worker.
@@ -481,6 +506,17 @@ struct State {
     saving: Option<Saving>,
     /// The file removal on a worker.
     deleting: Option<DeleteRun>,
+    /// The delete of selected files that runs.
+    delete_batch: Option<DeleteBatch>,
+    /// The trash check that the question before a delete of selected files
+    /// waits for: its id.
+    trash_check: Option<u64>,
+    /// The selected files of the folder on screen, in the order they were
+    /// selected. Files leave it when they leave the folder list.
+    selection: Vec<PathBuf>,
+    /// Folder indices of the selected files, ascending: what the interface
+    /// shows.
+    selected: Vec<usize>,
     bulk: Option<BulkRun>,
     /// The image copy on a worker.
     copying: Option<CopyRun>,
@@ -651,6 +687,10 @@ impl App {
             pending_save: None,
             saving: None,
             deleting: None,
+            delete_batch: None,
+            trash_check: None,
+            selection: Vec::new(),
+            selected: Vec::new(),
             bulk: None,
             copying: None,
             copy_wanted: None,
@@ -795,9 +835,21 @@ impl App {
         self.st.bulk.is_some()
     }
 
-    /// True while a file moves to the trash or is removed for good.
+    /// True while a file moves to the trash or is removed for good, also
+    /// between the files of a delete of selected files.
     pub fn deleting(&self) -> bool {
-        self.st.deleting.is_some()
+        self.st.deleting.is_some() || self.st.delete_batch.is_some()
+    }
+
+    /// The selected files, in the order they were selected.
+    pub fn selection(&self) -> &[PathBuf] {
+        &self.st.selection
+    }
+
+    /// The folder indices of the selected files, ascending: what the
+    /// gallery strip shows.
+    pub fn selected_indices(&self) -> &[usize] {
+        &self.st.selected
     }
 
     /// The path the user wants to see (shown or loading).
@@ -967,6 +1019,8 @@ impl App {
             Action::CopyImage => st.copy_image(&mut self.ui, now),
             Action::MoveToTrash => st.request_delete(false, &mut self.ui, now),
             Action::DeleteFile => st.request_delete(true, &mut self.ui, now),
+            Action::ToggleSelect(index) => st.toggle_selection(index),
+            Action::ClearSelection => st.clear_selection(),
             Action::CopyText(text) => {
                 st.drop_image_copy();
                 match st.clipboard.set_text(&text) {
@@ -1090,10 +1144,17 @@ impl App {
                     Handled::Done
                 }
                 Some(Question::Delete(path)) if accepted => {
-                    st.start_delete(path, true, &mut self.ui, now)
+                    st.start_delete(path, RemoveMode::Delete, &mut self.ui, now)
                 }
                 Some(Question::Delete(path)) => {
                     self.ui.toast(format!("Kept {}", file_name(&path)), now);
+                    Handled::Done
+                }
+                Some(Question::DeleteSelection(files)) if accepted => {
+                    st.start_delete_selection(files, &mut self.ui, now)
+                }
+                Some(Question::DeleteSelection(files)) => {
+                    self.ui.toast(format!("Kept {}", images(files.len())), now);
                     Handled::Done
                 }
                 None => Handled::Ignored,
@@ -1451,6 +1512,7 @@ impl App {
                 permanent,
                 result,
             } => st.deleted(id, &path, permanent, result, &mut self.ui, now),
+            Msg::TrashChecked { id, files } => st.trash_checked(id, files, &mut self.ui),
         }
     }
 }
@@ -1511,6 +1573,7 @@ fn context<'a>(st: &'a State, ui: &Ui, now: Duration) -> UiContext<'a> {
         text: None,
         info_visible: st.settings.info_panel,
         info: &st.info.rows,
+        selected: &st.selected,
     };
     if let Some(shown) = &st.shown {
         let content = ui.content_rect(&ctx);
@@ -1600,6 +1663,14 @@ impl State {
             }
         } else if self.pending_save.is_some() {
             self.busy_text = "Preparing to save".into();
+        }
+        if self.busy_text.is_empty() {
+            if let Some(batch) = &self.delete_batch {
+                let at = batch.total - batch.queue.len();
+                self.busy_text = format!("Deleting {at} of {}", images(batch.total));
+            } else if self.trash_check.is_some() {
+                self.busy_text = "Preparing to delete".into();
+            }
         }
         self.bulk_text.clear();
         if let Some(run) = &self.bulk {
@@ -1740,8 +1811,21 @@ impl State {
             index: 0,
         });
         self.folder = path.parent().map(Path::to_path_buf);
+        // Another folder starts with nothing selected; a file of the same
+        // folder keeps the selection.
+        let same_folder = match (
+            self.selection.first().and_then(|p| p.parent()),
+            path.parent(),
+        ) {
+            (Some(a), Some(b)) => same_path(a, b),
+            _ => false,
+        };
+        if !same_folder {
+            self.selection.clear();
+        }
         self.load_started = Some((path.clone(), now));
         self.library.open(path.clone());
+        self.refresh_selected();
         self.awaiting_listing = true;
         self.show_after_listing = None;
         // A file decoded earlier is served from the cache without an event.
@@ -2000,6 +2084,10 @@ impl State {
                 self.awaiting_listing = false;
                 self.count = len;
                 self.thumbs.reset(len);
+                // Files that left the folder leave the selection; the rest
+                // keep it at their new places.
+                self.prune_selection();
+                self.refresh_selected();
                 let removed = self.show_after_listing.take();
                 if self.target.is_none() {
                     // The folder of a removed file, listed again: show the
@@ -2822,11 +2910,19 @@ impl State {
         Handled::Done
     }
 
-    fn run_bulk(&mut self, job: pandite_ui::BulkJob, ui: &mut Ui, now: Duration) -> Handled {
+    fn run_bulk(&mut self, job: BulkJob, ui: &mut Ui, now: Duration) -> Handled {
         if self.bulk.is_some() {
             ui.toast("A bulk job is already running", now);
             return Handled::Ignored;
         }
+        // The selected images, as the folder lists them now.
+        let job = match job.source {
+            BulkSource::Selection => BulkJob {
+                source: BulkSource::Files(self.selected_files()),
+                ..job
+            },
+            _ => job,
+        };
         if job.source.is_empty() {
             ui.toast("Choose images to convert", now);
             return Handled::Ignored;
@@ -2855,6 +2951,69 @@ impl State {
         Handled::Done
     }
 
+    // ----- selection -----------------------------------------------------------
+
+    /// Select the file at folder index `index`, or unselect it.
+    fn toggle_selection(&mut self, index: usize) -> Handled {
+        let Some(path) = self.library.path(index) else {
+            return Handled::Ignored;
+        };
+        match self.selection.iter().position(|p| *p == path) {
+            Some(at) => {
+                self.selection.remove(at);
+            }
+            None => self.selection.push(path),
+        }
+        self.refresh_selected();
+        Handled::Done
+    }
+
+    fn clear_selection(&mut self) -> Handled {
+        if self.selection.is_empty() {
+            return Handled::Ignored;
+        }
+        self.selection.clear();
+        self.selected.clear();
+        Handled::Done
+    }
+
+    /// Drop the selected files that the folder list no longer holds.
+    fn prune_selection(&mut self) {
+        if self.selection.is_empty() {
+            return;
+        }
+        let listed: HashSet<PathBuf> = self.library.paths().into_iter().collect();
+        self.selection.retain(|p| listed.contains(p));
+    }
+
+    /// Find the folder indices of the selected files again, after the
+    /// selection or the folder list changed.
+    fn refresh_selected(&mut self) {
+        self.selected.clear();
+        if self.selection.is_empty() {
+            return;
+        }
+        let chosen: HashSet<&Path> = self.selection.iter().map(PathBuf::as_path).collect();
+        for (i, p) in self.library.paths().iter().enumerate() {
+            if chosen.contains(p.as_path()) {
+                self.selected.push(i);
+            }
+        }
+    }
+
+    /// The selected files the folder list holds, in folder order.
+    fn selected_files(&self) -> Vec<PathBuf> {
+        if self.selection.is_empty() {
+            return Vec::new();
+        }
+        let chosen: HashSet<&Path> = self.selection.iter().map(PathBuf::as_path).collect();
+        self.library
+            .paths()
+            .into_iter()
+            .filter(|p| chosen.contains(p.as_path()))
+            .collect()
+    }
+
     // ----- removing files ----------------------------------------------------
 
     /// The file a delete key acts on: the image the user wants to see, when
@@ -2865,13 +3024,19 @@ impl State {
             .then(|| target.path.clone())
     }
 
-    /// Delete: move the current file to the trash at once. Shift+Delete:
-    /// ask first, with Keep as the default answer.
+    /// Delete: move the current file to the trash at once, or remove it
+    /// for good when its drive has no trash. Shift+Delete: ask first, with
+    /// Keep as the default answer. With selected files, both keys act on
+    /// those files and ask first.
     fn request_delete(&mut self, permanent: bool, ui: &mut Ui, now: Duration) -> Handled {
+        let files = self.selected_files();
+        if !files.is_empty() {
+            return self.request_delete_selection(files, permanent, ui, now);
+        }
         let Some(path) = self.delete_target() else {
             return Handled::Ignored;
         };
-        if self.deleting.is_some() {
+        if self.deleting.is_some() || self.delete_batch.is_some() {
             ui.toast("Still deleting", now);
             return Handled::Ignored;
         }
@@ -2880,7 +3045,7 @@ impl State {
             return Handled::Ignored;
         }
         if !permanent {
-            return self.start_delete(path, false, ui, now);
+            return self.start_delete(path, RemoveMode::TrashOrDelete, ui, now);
         }
         let name = file_name(&path);
         let id = self.next_id();
@@ -2896,19 +3061,227 @@ impl State {
         Handled::Done
     }
 
-    /// Stop the work on `path` and remove it on a worker: to the trash, or
-    /// for good when `permanent`.
-    fn start_delete(
+    /// Delete or Shift+Delete with `files` selected: ask first. Shift+Delete
+    /// asks at once; Delete first finds out on a worker which files have a
+    /// trash, so the question never promises a trash that is not there.
+    fn request_delete_selection(
         &mut self,
-        path: PathBuf,
+        files: Vec<PathBuf>,
         permanent: bool,
         ui: &mut Ui,
         now: Duration,
     ) -> Handled {
-        if self.deleting.is_some() {
+        if self.deleting.is_some() || self.delete_batch.is_some() {
             ui.toast("Still deleting", now);
             return Handled::Ignored;
         }
+        if self.saving.is_some() || self.pending_save.is_some() {
+            ui.toast("Still saving", now);
+            return Handled::Ignored;
+        }
+        if permanent {
+            let files = files.into_iter().map(|f| (f, RemoveMode::Delete)).collect();
+            self.ask_delete_selection(files, true, ui);
+            return Handled::Done;
+        }
+        // A newer check replaces one that has not answered (a drive that
+        // does not respond).
+        let id = self.next_id();
+        match jobs::check_trash(self.out.clone(), Arc::clone(&self.disk), id, files) {
+            Ok(()) => {
+                self.trash_check = Some(id);
+                Handled::Done
+            }
+            Err(_) => {
+                ui.toast("Could not start deleting", now);
+                Handled::Ignored
+            }
+        }
+    }
+
+    /// The trash check before a delete of selected files ended: ask about
+    /// the files that are still selected and listed (another folder may be
+    /// open by now).
+    fn trash_checked(&mut self, id: u64, files: Vec<(PathBuf, bool)>, ui: &mut Ui) {
+        if self.trash_check != Some(id) {
+            return;
+        }
+        self.trash_check = None;
+        let still: HashSet<PathBuf> = self.selected_files().into_iter().collect();
+        let files: Vec<(PathBuf, RemoveMode)> = files
+            .into_iter()
+            .filter(|(f, _)| still.contains(f))
+            .map(|(f, has)| {
+                let mode = if has {
+                    RemoveMode::Trash
+                } else {
+                    RemoveMode::Delete
+                };
+                (f, mode)
+            })
+            .collect();
+        if !files.is_empty() {
+            self.ask_delete_selection(files, false, ui);
+        }
+    }
+
+    /// Ask before `files` go. `chosen` is true for Shift+Delete.
+    fn ask_delete_selection(
+        &mut self,
+        files: Vec<(PathBuf, RemoveMode)>,
+        chosen: bool,
+        ui: &mut Ui,
+    ) {
+        let id = self.next_id();
+        let request = selection_question(id, &files, chosen);
+        self.confirms.insert(id, Question::DeleteSelection(files));
+        ui.show_confirm(request);
+    }
+
+    /// Remove `files` one after another. The image the user wants to see
+    /// goes last, so the image that takes its place is one that stays.
+    fn start_delete_selection(
+        &mut self,
+        files: Vec<(PathBuf, RemoveMode)>,
+        ui: &mut Ui,
+        now: Duration,
+    ) -> Handled {
+        if self.deleting.is_some() || self.delete_batch.is_some() {
+            ui.toast("Still deleting", now);
+            return Handled::Ignored;
+        }
+        let viewed = self.target.as_ref().map(|t| t.path.clone());
+        let mut queue = VecDeque::with_capacity(files.len());
+        let mut last = None;
+        for (path, mode) in files {
+            if viewed.as_ref() == Some(&path) {
+                last = Some((path, mode));
+            } else {
+                queue.push_back((path, mode));
+            }
+        }
+        queue.extend(last);
+        self.delete_batch = Some(DeleteBatch {
+            total: queue.len(),
+            queue,
+            trashed: 0,
+            deleted: 0,
+            failed: Vec::new(),
+        });
+        self.next_in_batch(ui, now);
+        Handled::Done
+    }
+
+    /// Start the next file of the batch, or end the batch.
+    fn next_in_batch(&mut self, ui: &mut Ui, now: Duration) {
+        while let Some((path, mode)) = self.delete_batch.as_mut().and_then(|b| b.queue.pop_front())
+        {
+            if self.spawn_removal(path.clone(), mode) {
+                return;
+            }
+            if let Some(batch) = self.delete_batch.as_mut() {
+                batch
+                    .failed
+                    .push(format!("Could not start deleting {}", file_name(&path)));
+            }
+        }
+        self.finish_batch(ui, now);
+    }
+
+    /// One file of the batch ended. A file that went (or was gone already)
+    /// leaves the folder and the selection; a file that stays keeps its
+    /// place and stays selected.
+    fn batch_removed(
+        &mut self,
+        stopped_load: bool,
+        path: &Path,
+        permanent: bool,
+        result: Removal,
+        ui: &mut Ui,
+        now: Duration,
+    ) {
+        match result {
+            Ok(()) | Err((std::io::ErrorKind::NotFound, _)) => {
+                if let Some(batch) = self.delete_batch.as_mut() {
+                    if permanent {
+                        batch.deleted += 1;
+                    } else {
+                        batch.trashed += 1;
+                    }
+                }
+                self.drop_from_folder(path, now);
+            }
+            Err((_, why)) => {
+                let name = file_name(path);
+                let what = if permanent {
+                    format!("Could not delete {name}")
+                } else {
+                    format!("Could not move {name} to {TRASH_NAME}")
+                };
+                if let Some(batch) = self.delete_batch.as_mut() {
+                    batch.failed.push(format!("{what}: {why}"));
+                }
+                self.resume_load(path, stopped_load);
+            }
+        }
+        self.next_in_batch(ui, now);
+    }
+
+    /// The batch ended: say what went, and why files stayed.
+    fn finish_batch(&mut self, ui: &mut Ui, now: Duration) {
+        let Some(batch) = self.delete_batch.take() else {
+            return;
+        };
+        let done = match (batch.trashed, batch.deleted) {
+            (0, 0) => None,
+            (t, 0) => Some(format!("Moved {} to {TRASH_NAME}", images(t))),
+            (0, d) => Some(format!("Deleted {}", images(d))),
+            (t, d) => Some(format!(
+                "Moved {} to {TRASH_NAME} and deleted {}",
+                images(t),
+                images(d)
+            )),
+        };
+        if let Some(done) = done {
+            ui.toast(done, now);
+        }
+        if let Some(first) = batch.failed.first() {
+            let text = match batch.failed.len() - 1 {
+                0 => first.clone(),
+                1 => format!("{first}. 1 more file failed."),
+                more => format!("{first}. {more} more files failed."),
+            };
+            // A new image on screen clears the notice; the toast keeps the
+            // reason readable.
+            ui.toast(text.clone(), now);
+            self.notice = Some(text);
+        }
+        self.refresh_selected();
+    }
+
+    /// Stop the work on `path` and remove it on a worker, as `mode` says.
+    fn start_delete(
+        &mut self,
+        path: PathBuf,
+        mode: RemoveMode,
+        ui: &mut Ui,
+        now: Duration,
+    ) -> Handled {
+        if self.deleting.is_some() || self.delete_batch.is_some() {
+            ui.toast("Still deleting", now);
+            return Handled::Ignored;
+        }
+        if self.spawn_removal(path, mode) {
+            Handled::Done
+        } else {
+            ui.toast("Could not start deleting", now);
+            Handled::Ignored
+        }
+    }
+
+    /// Stop the work on `path` and start its removal on a worker. False
+    /// when the worker did not start; the file is then as it was.
+    fn spawn_removal(&mut self, path: PathBuf, mode: RemoveMode) -> bool {
         // Nothing of this process holds the file while it goes: its load
         // (with its read-ahead and thumbnail), its text recognition and its
         // facts stop first.
@@ -2928,7 +3301,7 @@ impl State {
         let job = DeleteJob {
             id,
             path: path.clone(),
-            permanent,
+            mode,
         };
         match jobs::delete(self.out.clone(), Arc::clone(&self.disk), job) {
             Ok(()) => {
@@ -2937,12 +3310,11 @@ impl State {
                     path,
                     stopped_load,
                 });
-                Handled::Done
+                true
             }
             Err(_) => {
                 self.resume_load(&path, stopped_load);
-                ui.toast("Could not start deleting", now);
-                Handled::Ignored
+                false
             }
         }
     }
@@ -2969,6 +3341,10 @@ impl State {
         let Some(run) = self.deleting.take_if(|d| d.id == id) else {
             return;
         };
+        if self.delete_batch.is_some() {
+            self.batch_removed(run.stopped_load, path, permanent, result, ui, now);
+            return;
+        }
         let name = file_name(path);
         match result {
             Ok(()) => {
@@ -3002,12 +3378,21 @@ impl State {
         }
     }
 
+    /// The file at `path` is gone. It leaves the selection, and the other
+    /// selected files keep theirs at their new places. See
+    /// [`State::remove_from_list`].
+    fn drop_from_folder(&mut self, path: &Path, now: Duration) {
+        self.selection.retain(|p| p != path);
+        self.remove_from_list(path, now);
+        self.refresh_selected();
+    }
+
     /// The file at `path` is gone. It leaves the folder list, the counter
     /// and the gallery strip at once, and the pixels, thumbnail, text and
     /// facts kept for it are freed. When it was the image the user wanted,
     /// the next image shows, or the previous one when it was the last; with
     /// no image left the window is empty.
-    fn drop_from_folder(&mut self, path: &Path, now: Duration) {
+    fn remove_from_list(&mut self, path: &Path, now: Duration) {
         let old = self.target.clone();
         let wanted = old.as_ref().is_some_and(|t| t.path == path);
         self.text.forget(path);
@@ -3071,6 +3456,85 @@ impl State {
     }
 }
 
+/// "1 image" or "`n` images".
+fn images(n: usize) -> String {
+    if n == 1 {
+        "1 image".to_string()
+    } else {
+        format!("{n} images")
+    }
+}
+
+/// The names of `paths` for a question: all of them up to three, then the
+/// first three and how many more.
+fn name_list(paths: &[&Path]) -> String {
+    let names: Vec<String> = paths.iter().take(3).map(|p| file_name(p)).collect();
+    let more = paths.len().saturating_sub(names.len());
+    match names.as_slice() {
+        [] => String::new(),
+        [one] => one.clone(),
+        [first @ .., last] if more == 0 => format!("{} and {last}", first.join(", ")),
+        all => format!("{} and {more} more", all.join(", ")),
+    }
+}
+
+/// The question before a delete of the selected `files`. `chosen` is true
+/// for Shift+Delete. The wording follows what happens to the files: a move
+/// to the trash (Move is the default answer), a removal for good (Keep is
+/// the default answer), or both, when some files have no trash.
+fn selection_question(id: u64, files: &[(PathBuf, RemoveMode)], chosen: bool) -> ConfirmRequest {
+    let n = files.len();
+    let gone = files
+        .iter()
+        .filter(|(_, mode)| *mode == RemoveMode::Delete)
+        .count();
+    let paths: Vec<&Path> = files.iter().map(|(p, _)| p.as_path()).collect();
+    let names = name_list(&paths);
+    let keep = |title: String, message: String| ConfirmRequest {
+        id,
+        title,
+        message,
+        confirm_label: "Delete".into(),
+        cancel_label: "Keep".into(),
+        cancel_is_default: true,
+    };
+    if gone == 0 {
+        ConfirmRequest {
+            id,
+            title: format!("Move {} to {TRASH_NAME}?", images(n)),
+            message: format!("{names} will move to {TRASH_NAME}."),
+            confirm_label: "Move".into(),
+            cancel_label: "Cancel".into(),
+            cancel_is_default: false,
+        }
+    } else if gone == n {
+        let why = if chosen {
+            String::new()
+        } else if n == 1 {
+            format!(" Its drive has no {TRASH_TITLE}.")
+        } else {
+            format!(" Their drive has no {TRASH_TITLE}.")
+        };
+        keep(
+            format!("Delete {} permanently?", images(n)),
+            format!("{names} will be deleted for good.{why} This cannot be undone."),
+        )
+    } else {
+        let some = if gone == 1 {
+            format!("1 of them is on a drive without a {TRASH_TITLE} and will be deleted for good.")
+        } else {
+            format!(
+                "{gone} of them are on a drive without a {TRASH_TITLE} and will be deleted for good."
+            )
+        };
+        let rest = match n - gone {
+            1 => format!("The other one will move to {TRASH_NAME}."),
+            k => format!("The other {k} will move to {TRASH_NAME}."),
+        };
+        keep(format!("Delete {}?", images(n)), format!("{some} {rest}"))
+    }
+}
+
 /// The index in `paths` of the image that takes the place of the removed
 /// file `removed`: the first one that sorts after it, or the last.
 fn neighbor_index(paths: &[PathBuf], removed: &Path) -> usize {
@@ -3079,4 +3543,80 @@ fn neighbor_index(paths: &[PathBuf], removed: &Path) -> usize {
         .iter()
         .position(|p| natural_cmp(&file_name(p), &name) == std::cmp::Ordering::Greater)
         .unwrap_or(paths.len().saturating_sub(1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn files(spec: &[(&str, RemoveMode)]) -> Vec<(PathBuf, RemoveMode)> {
+        spec.iter()
+            .map(|(name, mode)| (PathBuf::from(name), *mode))
+            .collect()
+    }
+
+    #[test]
+    fn selection_questions_name_what_happens() {
+        use RemoveMode::{Delete, Trash};
+        let q = selection_question(1, &files(&[("a.png", Trash), ("b.png", Trash)]), false);
+        assert_eq!(q.title, format!("Move 2 images to {TRASH_NAME}?"));
+        assert_eq!(
+            q.message,
+            format!("a.png and b.png will move to {TRASH_NAME}.")
+        );
+        assert!(!q.cancel_is_default);
+        let q = selection_question(1, &files(&[("a.png", Trash)]), false);
+        assert_eq!(q.title, format!("Move 1 image to {TRASH_NAME}?"));
+
+        // No trash: the permanent wording, with the reason.
+        let q = selection_question(2, &files(&[("a.png", Delete), ("b.png", Delete)]), false);
+        assert_eq!(q.title, "Delete 2 images permanently?");
+        assert!(q
+            .message
+            .contains(&format!("Their drive has no {TRASH_TITLE}.")));
+        assert!(q.cancel_is_default && q.cancel_label == "Keep");
+        assert!(!q.title.contains(TRASH_TITLE) && !q.message.contains("will move"));
+        // Shift+Delete: the same question without the reason.
+        let q = selection_question(3, &files(&[("a.png", Delete)]), true);
+        assert_eq!(q.title, "Delete 1 image permanently?");
+        assert_eq!(
+            q.message,
+            "a.png will be deleted for good. This cannot be undone."
+        );
+
+        // Both kinds: say how many go for good.
+        let q = selection_question(
+            4,
+            &files(&[("a.png", Trash), ("b.png", Delete), ("c.png", Trash)]),
+            false,
+        );
+        assert_eq!(q.title, "Delete 3 images?");
+        assert_eq!(
+            q.message,
+            format!(
+                "1 of them is on a drive without a {TRASH_TITLE} and will be deleted for \
+                 good. The other 2 will move to {TRASH_NAME}."
+            )
+        );
+        assert!(q.cancel_is_default);
+    }
+
+    #[test]
+    fn name_lists_stay_short() {
+        let p = |names: &[&'static str]| -> Vec<&'static Path> {
+            names.iter().map(|n| Path::new(*n)).collect()
+        };
+        assert_eq!(name_list(&p(&["a.png"])), "a.png");
+        assert_eq!(name_list(&p(&["a.png", "b.png"])), "a.png and b.png");
+        assert_eq!(
+            name_list(&p(&["a.png", "b.png", "c.png"])),
+            "a.png, b.png and c.png"
+        );
+        assert_eq!(
+            name_list(&p(&["a.png", "b.png", "c.png", "d.png", "e.png"])),
+            "a.png, b.png, c.png and 2 more"
+        );
+        assert_eq!(images(1), "1 image");
+        assert_eq!(images(0), "0 images");
+    }
 }

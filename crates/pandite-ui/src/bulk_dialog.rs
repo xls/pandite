@@ -1,10 +1,12 @@
 //! The bulk convert and resize dialog.
 //!
 //! Inputs come from pick requests the application answers (files, folder,
-//! destination) or from the current folder. The dialog collects a size
-//! rule, an output format from the context's encoder list, a quality, a
-//! destination and an overwrite policy, then emits a [`BulkJob`]. While the
-//! job runs it shows progress from [`UiContext::bulk`].
+//! destination), from the current folder or from the selected images. With
+//! a selection the dialog opens with the selected images as its source.
+//! The dialog collects a size rule, an output format from the context's
+//! encoder list, a quality, a destination and an overwrite policy, then
+//! emits a [`BulkJob`]. While the job runs it shows progress from
+//! [`UiContext::bulk`].
 
 use crate::action::{Action, BulkJob, BulkSource, OverwritePolicy, ResizeSpec};
 use crate::context::UiContext;
@@ -34,6 +36,7 @@ pub(crate) const BTN_CANCEL: Id = 17;
 pub(crate) const BTN_RUN: Id = 18;
 pub(crate) const BTN_HIDE: Id = 19;
 pub(crate) const BTN_STOP: Id = 20;
+pub(crate) const BTN_SELECTION: Id = 21;
 
 /// Label of the "keep each file's format" entry.
 pub(crate) const SAME_FORMAT: &str = "Same as source";
@@ -153,6 +156,29 @@ impl BulkDialog {
         });
     }
 
+    /// Use the selected images of `ctx` as the source.
+    pub fn use_selection(&mut self, ctx: &UiContext<'_>) {
+        if ctx.selected.is_empty() {
+            return;
+        }
+        self.source = Some(BulkSource::Selection);
+        if let Some(folder) = ctx.folder {
+            self.suggest_destination(folder);
+        }
+    }
+
+    /// Match the source to the selection of `ctx` as the dialog opens: the
+    /// selected images when there are any. Without a selection, a
+    /// selection source remembered from an earlier opening is dropped and
+    /// every other source stays.
+    pub fn follow_selection(&mut self, ctx: &UiContext<'_>) {
+        if !ctx.selected.is_empty() {
+            self.use_selection(ctx);
+        } else if self.source == Some(BulkSource::Selection) {
+            self.source = None;
+        }
+    }
+
     /// Set the destination folder.
     pub fn set_destination(&mut self, folder: &Path) {
         self.destination.set_text(&folder.to_string_lossy());
@@ -204,6 +230,8 @@ impl BulkDialog {
                 path: path.clone(),
                 recursive: self.recursive,
             },
+            Some(BulkSource::Selection) if !ctx.selected.is_empty() => BulkSource::Selection,
+            Some(BulkSource::Selection) => return Err("Choose images or a folder.".into()),
             Some(s) if !s.is_empty() => s.clone(),
             _ => return Err("Choose images or a folder.".into()),
         };
@@ -304,6 +332,10 @@ impl BulkDialog {
                 }
                 Outcome::Stay
             }
+            FormEvent::Activate(BTN_SELECTION) => {
+                self.use_selection(ctx);
+                Outcome::Stay
+            }
             FormEvent::Activate(CHK_RECURSIVE) => {
                 self.recursive = !self.recursive;
                 Outcome::Stay
@@ -333,9 +365,14 @@ impl BulkDialog {
         }
     }
 
-    fn source_text(&self) -> (String, Tone) {
+    fn source_text(&self, ctx: &UiContext<'_>) -> (String, Tone) {
         match &self.source {
             None => ("No images chosen".into(), Tone::Dim),
+            Some(BulkSource::Selection) => match ctx.selected.len() {
+                0 => ("No images chosen".into(), Tone::Dim),
+                1 => ("1 selected image".into(), Tone::Normal),
+                n => (format!("{n} selected images"), Tone::Normal),
+            },
             Some(BulkSource::Files(list)) if list.len() == 1 => (
                 format!(
                     "1 file: {}",
@@ -392,8 +429,15 @@ impl FormHost for BulkDialog {
             return;
         }
         b.title("Bulk convert and resize");
-        let (text, tone) = self.source_text();
+        let (text, tone) = self.source_text(ctx);
         b.text(text, tone);
+        if !ctx.selected.is_empty() {
+            let label = format!("Selected images ({})", ctx.selected.len());
+            b.buttons_row(
+                &[(BTN_SELECTION, label.as_str(), ButtonStyle::Secondary, true)],
+                false,
+            );
+        }
         let mut buttons: Vec<(Id, &str, ButtonStyle, bool)> = vec![
             (BTN_ADD_FILES, "Add files...", ButtonStyle::Secondary, true),
             (
