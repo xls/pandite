@@ -1,6 +1,6 @@
 # Provenance of the RAW format specifications
 
-This file records how the specifications in `specs/raw/` were made and what their author did and did not consult. It covers `arw.md` (Sony ARW), the first specification of the series.
+This file records how the specifications in `specs/raw/` were made and what their author did and did not consult. It covers `arw.md` (Sony ARW), the first specification of the series, in detail, and the eight specifications that followed in one section.
 
 ## Why this file exists
 
@@ -60,6 +60,17 @@ The author of `arw.md` worked as follows:
 | Search results that pointed to decoder source code: rawkit `arw2.rs` on docs.rs, `dcraw.c` in the DragonFly BSD source browser, LibRaw `sonycc.cpp` on a source mirror, the README of the FLIF `raw-tools/sony_arw` folder (stuff.mit.edu), LibRaw forum threads (libraw.org/node/2448, libraw.org/node/2723) | Seen only as titles and short summaries in search results. | Not opened, not used. |
 | ExifTool forum thread "Extract decoded SR2 content from Sony ARW images" | Seen only as a search result title. | Not opened, not used. The SR2SubIFD decryption stays an open question (OQ-1). |
 | DXOMARK "Basic Measurements" PDF (corp.dxomark.com) | Opened to find the definition of the color matrix. It contains none. | Nothing used. |
+
+## The specifications that followed arw.md
+
+On 2026-11-14 eight more specifications were written by the same method and under the same five rules: `cr2.md`, `cr3.md`, `nef.md`, `raf.md`, `orf.md`, `rw2.md`, `pef.md` and `srw.md`. One author wrote each. A different implementer wrote each decoder from its specification alone.
+
+- Each specification lists its own sources in its "Sources" section and its own "encountered and not used" pages. The source kinds are the six kinds of the table above.
+- Sample files are public-domain (CC0) files from raw.pixls.us.
+- A storage variant entered a specification only when a permitted source states it or a recorded measurement of sample files establishes it. Every other variant is out of scope and shows the embedded preview. This is why Canon CR3 sensor data, compressed Fujifilm and Samsung files, Nikon High Efficiency files and Panasonic RawFormat 8 are not developed.
+- Coding tables that no permitted source gives (Nikon, Pentax, Olympus) were recovered from the bytes of sample files. The measurement records in each specification show the search and its result. Nikon codes that no sample uses are marked "not established", and the decoder stops at such a code.
+- Three authors saw details of an existing decoder in a web search summary or in the first part of a readme (ORF, CR3, RW2). Each one recorded the page, used nothing from it, and established the affected facts by measurement.
+- The authors and implementers were AI models (Claude). An AI model can carry prior exposure to public decoder code. For that reason rule 3 applied without exception: no detail entered a specification on recollection alone.
 
 ## Statement
 

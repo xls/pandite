@@ -9,14 +9,18 @@
 //! curve) and is delivered as 16-bit sRGB, or as 8-bit sRGB when the
 //! caller prefers 8 bits (display).
 //!
-//! Sony ARW files are developed from sensor data by the [`arw`] module,
-//! written from the clean-room specification `specs/raw/arw.md`, with the
-//! same rendering and output. Its out-of-scope variants show their preview.
+//! Sony ARW, Canon CR2, Nikon NEF, Fujifilm RAF, Olympus ORF, Panasonic
+//! RW2, Pentax PEF and Samsung SRW files are developed from sensor data by
+//! one module each ([`arw`], [`cr2`], [`nef`], [`raf`], [`orf`], [`rw2`],
+//! [`pef`], [`srw`]), written from the clean-room specifications in
+//! `specs/raw/`, with the same rendering and output. A storage variant
+//! that a specification leaves out of scope shows the camera's embedded
+//! JPEG preview, the largest one in the file.
 //!
-//! The other proprietary formats (CR2, CR3, NEF, RAF, ORF, RW2, PEF, SRW)
-//! show the camera's embedded JPEG preview, the largest one in the file
-//! (full resolution on most cameras). DNG files whose sensor data uses an
-//! unsupported compression fall back to their preview as well.
+//! Canon CR3 files always show their embedded preview: the [`cr3`] module
+//! reads the container and finds the largest JPEG, because no public
+//! document describes the sensor-data codec. DNG files whose sensor data
+//! uses an unsupported compression fall back to their preview as well.
 //!
 //! With `DecodeOptions::target_size`, the smallest preview that still
 //! covers the target is used, which makes thumbnails fast.
@@ -79,7 +83,10 @@ const DEVELOPERS: &[&Developer] = &[
     &cr3::DEVELOPER,
     &raf::DEVELOPER,
     &rw2::DEVELOPER,
-const DEVELOPERS: &[&Developer] = &[&cr2::DEVELOPER, &pef::DEVELOPER, &orf::DEVELOPER, &nef::DEVELOPER];
+    &cr2::DEVELOPER,
+    &pef::DEVELOPER,
+    &orf::DEVELOPER,
+    &nef::DEVELOPER,
 ];
 
 /// Decodes camera RAW files (DNG from sensor data, other formats through

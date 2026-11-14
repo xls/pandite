@@ -34,18 +34,36 @@ crate prints it with `cargo run -p pandite-codecs --example extensions`.
 
 ### Camera RAW
 
-- DNG files are developed from the sensor data: black and white levels,
-  as-shot white balance, the camera color matrix and the default crop.
-  The result is a 16-bit image.
-- Sony ARW files are developed from the sensor data. The embedded preview
-  shows first, then the developed image replaces it. An ARW variant that
-  pandite cannot read shows its embedded preview.
-- CR2, CR3, NEF, RAF, ORF, RW2, PEF and SRW files show the JPEG preview
-  that the camera embeds in the file. pandite uses the largest preview.
-  Most cameras store it at full resolution. pandite does not develop the
-  sensor data of these formats.
-- A DNG file with sensor data in a compression that pandite cannot read
-  also shows its embedded preview.
+pandite develops the sensor data of the formats in this table. The embedded
+JPEG preview of the camera shows first, then the developed image replaces it.
+A file in a storage variant that the table lists under "Preview only" shows
+its embedded preview, the largest one in the file.
+
+| Format | Developed from sensor data | Preview only |
+|---|---|---|
+| DNG | Uncompressed and lossless JPEG data, CFA or linear RGB | Other compressions |
+| Sony ARW | Uncompressed, compressed and lossless compressed files | Variants that the specification leaves out |
+| Canon CR2 | RAW files (lossless JPEG, 12 and 14 bits) | sRAW and mRAW |
+| Canon CR3 | None | All files. The file must contain a JPEG preview |
+| Nikon NEF | Uncompressed, lossless compressed and lossy compressed files, 12 and 14 bits | High Efficiency files (Z 8, Z 9, Z f), small RAW, D1 family, Coolpix NEF |
+| Fujifilm RAF | Uncompressed files, X-Trans and Bayer sensors | Compressed files, SuperCCD and EXR sensors |
+| Olympus ORF | All measured variants: uncompressed and lossless compressed, 12 and 14 bits | Files of an unknown layout |
+| Panasonic RW2 | RawFormat 4 to 7 (LX3 to GH5, GH5S, G9, GH5M2, S1, S5) and older .RAW layouts | RawFormat 8 (GH6, GH7, G9M2, S5M2 and later) |
+| Pentax PEF | Uncompressed, packed and Huffman compressed files, also monochrome | Other compressions. Pixel Shift files develop their first frame |
+| Samsung SRW | Uncompressed files (NX10 to NX1100, EX1, WB2000) | Compressed files (NX300 and later) |
+
+- Each decoder is written from a specification in `specs/raw/`. The
+  specifications use public documents and measurements of public sample
+  files only. See `specs/raw/PROVENANCE.md`.
+- Colors are closest to the camera JPEG for Sony, Olympus, Canon EOS and
+  Nikon files. Fujifilm files and some Panasonic, Pentax and Canon bodies
+  have no color matrix for their model and use a generic matrix. Their
+  colors can differ from the camera JPEG.
+- Samsung and Canon PowerShot files can show brighter than the camera JPEG.
+- pandite applies no lens correction. A compact camera corrects distortion
+  in its JPEG, so the developed image can show more distortion.
+- A Canon CR3 file that contains only an HEVC preview (some EOS R5 Mark II
+  and EOS R8 files) does not open.
 
 ### HEIC and HEIF
 

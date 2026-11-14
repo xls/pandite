@@ -5,6 +5,14 @@ This folder holds clean-room specifications of camera raw formats for the pandit
 | File | Content |
 | --- | --- |
 | `arw.md` | Sony ARW: container, tags, the five storage variants, levels, color, pipeline, preview fallback, error handling, test vectors, open questions |
+| `cr2.md` | Canon CR2: lossless JPEG with slices in three frame layouts; sRAW and mRAW out of scope |
+| `cr3.md` | Canon CR3: container, metadata and the route to the largest JPEG preview; the CRX sensor codec is out of scope |
+| `nef.md` | Nikon NEF: eight storage variants incl. lossless and lossy Huffman coding; High Efficiency out of scope |
+| `raf.md` | Fujifilm RAF: three uncompressed layouts, X-Trans and Bayer; compressed files out of scope |
+| `orf.md` | Olympus ORF: six storage variants incl. lossless compression at 12 and 14 bits |
+| `rw2.md` | Panasonic RW2: eight storage variants (RawFormat 4 to 7, older .RAW); RawFormat 8 out of scope |
+| `pef.md` | Pentax PEF: four storage variants incl. Pentax Huffman coding and monochrome |
+| `srw.md` | Samsung SRW: two uncompressed layouts; compressed files out of scope |
 | `PROVENANCE.md` | How the specifications were made, the source rules, and what was not consulted |
 
 ## How to implement a decoder from a specification
@@ -23,7 +31,7 @@ This folder holds clean-room specifications of camera raw formats for the pandit
 Run this command from the repository root:
 
 ```
-node scripts/gates/rawspec.mjs arw
+node scripts/gates/rawspec.mjs arw cr2 cr3 nef raf orf rw2 pef srw
 ```
 
 The command must print `RAW SPEC STRUCTURE VERIFIED`. The check covers structure only. The decoder's pixel tests prove the content.
