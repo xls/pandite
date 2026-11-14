@@ -5,7 +5,7 @@ use super::{fail, ArwResult};
 
 /// A plane of `u16` samples. Row-major storage is one tile as wide and as
 /// tall as the plane.
-pub(super) struct Plane {
+pub(in crate::raw) struct Plane {
     /// The samples, tile after tile, each tile row-major.
     pub data: Vec<u16>,
     /// Tile width.
@@ -17,7 +17,7 @@ pub(super) struct Plane {
 }
 
 /// A zeroed vector that reports allocation failure instead of aborting.
-pub(super) fn zeroed(len: usize) -> ArwResult<Vec<u16>> {
+pub(in crate::raw) fn zeroed(len: usize) -> ArwResult<Vec<u16>> {
     let mut v = Vec::new();
     v.try_reserve_exact(len)
         .map_err(|_| fail("not enough memory for the sensor data"))?;

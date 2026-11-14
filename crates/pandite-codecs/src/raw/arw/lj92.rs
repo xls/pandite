@@ -11,13 +11,14 @@
 //! CFA positions and V5 components in their own planes.
 
 use super::{fail, ArwResult};
+use pandite_core::CancelToken;
 
 /// Bits looked up at once in the Huffman fast table.
 const FAST_BITS: u32 = 9;
 
 /// How the first sample of a line is predicted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum LineStart {
+pub(in crate::raw) enum LineStart {
     /// T.81 H.1.2.1: from the sample above (Rb). Used by the tests that
     /// show what the Sony rule changes.
     #[cfg_attr(not(test), allow(dead_code))]
@@ -234,7 +235,7 @@ impl<'a> Bits<'a> {
 
 /// One frame component (T.81 B.2.2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct Component {
+pub(in crate::raw) struct Component {
     /// Component identifier Ci.
     pub id: u8,
     /// Horizontal sampling factor Hi.
@@ -244,7 +245,7 @@ pub(super) struct Component {
 }
 
 /// A parsed lossless JPEG stream, up to the start of its entropy data.
-pub(super) struct Stream<'a> {
+pub(in crate::raw) struct Stream<'a> {
     /// Sample precision P.
     pub precision: u32,
     /// Number of lines Y.
@@ -257,6 +258,12 @@ pub(super) struct Stream<'a> {
     pub scan: Vec<(usize, usize)>,
     /// Predictor selection value Ss.
     pub predictor: u8,
+    /// End of spectral selection Se (T.81 B.2.3), read for callers that
+    /// check it; not used by the decoding.
+    pub se: u8,
+    /// Successive approximation bit position high Ah (T.81 B.2.3), read
+    /// for callers that check it; not used by the decoding.
+    pub ah: u8,
     /// Point transform Pt.
     pub pt: u32,
     /// Restart interval Ri in MCUs, 0 when none.
@@ -269,7 +276,7 @@ pub(super) struct Stream<'a> {
 /// Where the samples of one component go: sample (x, y) is written at
 /// `buffers[buffer][base + x * xs + y * ys]`.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct Target {
+pub(in crate::raw) struct Target {
     /// Index of the output buffer.
     pub buffer: usize,
     /// Index of sample (0, 0).
@@ -289,7 +296,7 @@ fn be16(d: &[u8], at: usize) -> ArwResult<usize> {
 /// Parse markers from SOI to the end of the SOS header (R-ARW-72,
 /// R-ARW-73). The stream must start with FF D8, and SOF3, DHT and SOS must
 /// come before the entropy data.
-pub(super) fn parse(stream: &[u8]) -> ArwResult<Stream<'_>> {
+pub(in crate::raw) fn parse(stream: &[u8]) -> ArwResult<Stream<'_>> {
     // R-ARW-72 case 1: the stream starts with FF D8.
     if stream.get(..2) != Some(&[0xFF, 0xD8]) {
         return Err(fail("tile does not start with SOI"));
@@ -403,6 +410,8 @@ pub(super) fn parse(stream: &[u8]) -> ArwResult<Stream<'_>> {
                     scan.push((fi, td));
                 }
                 let predictor = body[1 + 2 * ns];
+                let se = body[2 + 2 * ns];
+                let ah = body[3 + 2 * ns] >> 4;
                 let pt = u32::from(body[3 + 2 * ns] & 15);
                 // R-ARW-72 case 5: predictor 1 to 7 and Pt < P.
                 if !(1..=7).contains(&predictor) || pt >= precision {
@@ -419,6 +428,8 @@ pub(super) fn parse(stream: &[u8]) -> ArwResult<Stream<'_>> {
                     components,
                     scan,
                     predictor,
+                    se,
+                    ah,
                     pt,
                     restart,
                     tables,
@@ -463,11 +474,24 @@ impl Stream<'_> {
     /// `targets` (indexed like the frame components). Fails when a target
     /// does not fit its buffer, on any entropy-coding fault, and when the
     /// data end before the last sample.
-    pub(super) fn decode(
+    pub(in crate::raw) fn decode(
         &self,
         buffers: &mut [&mut [u16]],
         targets: &[Target],
         line_start: LineStart,
+    ) -> ArwResult<()> {
+        self.decode_cancellable(buffers, targets, line_start, None)
+    }
+
+    /// [`Stream::decode`] that also stops with `Error::Cancelled` when
+    /// `cancel` is cancelled, checked every few MCU rows. With `None` it is
+    /// [`Stream::decode`].
+    pub(in crate::raw) fn decode_cancellable(
+        &self,
+        buffers: &mut [&mut [u16]],
+        targets: &[Target],
+        line_start: LineStart,
+        cancel: Option<&CancelToken>,
     ) -> ArwResult<()> {
         let nc = self.components.len();
         if targets.len() != nc {
@@ -502,6 +526,11 @@ impl Stream<'_> {
         // The first line of the current restart interval, per component.
         let mut first_line = vec![0usize; nc];
         for my in 0..mcuy {
+            if let Some(c) = cancel {
+                if my % 8 == 0 {
+                    c.check()?;
+                }
+            }
             if rows_per_interval > 0 && my > 0 && my % rows_per_interval == 0 {
                 bits.restart(intervals)?;
                 intervals = intervals.wrapping_add(1);

@@ -67,7 +67,7 @@ fn linear_with(data: &[u8], plan: &Plan) -> (usize, usize, Vec<[f32; 3]>) {
 }
 
 /// Delivers the linear sRGB values themselves, 12 bytes per pixel.
-struct LinearF32;
+pub(in crate::raw) struct LinearF32;
 
 impl render::RowEncoder for LinearF32 {
     fn pixel_bytes(&self) -> usize {
@@ -2148,7 +2148,7 @@ fn arw_target_size_uses_preview() {
 
 /// Mean linear RGB of each cell of a `n` x `n` grid, sampling every
 /// `step`-th pixel.
-fn grid_means(img: &ImageBuf, n: usize, step: usize) -> Vec<[f64; 3]> {
+pub(in crate::raw) fn grid_means(img: &ImageBuf, n: usize, step: usize) -> Vec<[f64; 3]> {
     let (w, h) = (img.width() as usize, img.height() as usize);
     let lin8: Vec<f64> = (0..256)
         .map(|v| f64::from(crate::util::srgb_to_linear(v as f32 / 255.0)))
@@ -2188,7 +2188,11 @@ fn grid_means(img: &ImageBuf, n: usize, step: usize) -> Vec<[f64; 3]> {
 /// usable cells and the Spearman rank correlation of cell luminance, after
 /// matching overall exposure. With `balance`, one gain per channel over
 /// the usable cells first removes a global color cast.
-fn agreement(ours: &[[f64; 3]], theirs: &[[f64; 3]], balance: bool) -> (f64, f64, f64, usize) {
+pub(in crate::raw) fn agreement(
+    ours: &[[f64; 3]],
+    theirs: &[[f64; 3]],
+    balance: bool,
+) -> (f64, f64, f64, usize) {
     let lum = |c: &[f64; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
     let (lo, lt): (Vec<f64>, Vec<f64>) = ours
         .iter()
@@ -2252,9 +2256,9 @@ fn agreement(ours: &[[f64; 3]], theirs: &[[f64; 3]], balance: bool) -> (f64, f64
 
 /// Tolerances of the comparison with the camera's own JPEG, explained in
 /// the test documentation.
-const CHROMA_MEAN: f64 = 0.05;
-const CHROMA_MAX: f64 = 0.15;
-const RANK_MIN: f64 = 0.90;
+pub(in crate::raw) const CHROMA_MEAN: f64 = 0.05;
+pub(in crate::raw) const CHROMA_MAX: f64 = 0.15;
+pub(in crate::raw) const RANK_MIN: f64 = 0.90;
 
 /// Gate G4: every `.ARW` file in the folder named by `PANDITE_ARW_SAMPLES`
 /// (relative to the workspace root) decodes through the sensor-data path

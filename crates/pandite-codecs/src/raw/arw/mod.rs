@@ -26,19 +26,19 @@
 #![forbid(unsafe_code)]
 
 mod color;
-mod ifd;
-mod lj92;
-mod meta;
-mod plane;
-mod preview;
-mod render;
+pub(super) mod ifd;
+pub(super) mod lj92;
+pub(super) mod meta;
+pub(super) mod plane;
+pub(super) mod preview;
+pub(super) mod render;
 mod strips;
 mod tiles;
 
 #[cfg(test)]
-mod fixtures;
+pub(super) mod fixtures;
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
 
 pub(crate) use meta::{Class, Rect, Variant, WbSource};
 
@@ -391,7 +391,7 @@ pub(crate) enum Output {
 }
 
 /// Linear sRGB to 16-bit sRGB codes, colorimetric.
-struct Colorimetric16;
+pub(super) struct Colorimetric16;
 
 impl render::RowEncoder for Colorimetric16 {
     fn pixel_bytes(&self) -> usize {
@@ -413,7 +413,7 @@ impl render::RowEncoder for Colorimetric16 {
 }
 
 /// The default display rendering to 16-bit sRGB codes.
-struct Display16(&'static Tone);
+pub(super) struct Display16(pub(super) &'static Tone);
 
 impl render::RowEncoder for Display16 {
     fn pixel_bytes(&self) -> usize {
@@ -436,7 +436,7 @@ impl render::RowEncoder for Display16 {
 }
 
 /// The default display rendering to 8-bit sRGB in one pass.
-struct Display8(&'static Tone);
+pub(super) struct Display8(pub(super) &'static Tone);
 
 impl render::RowEncoder for Display8 {
     fn pixel_bytes(&self) -> usize {

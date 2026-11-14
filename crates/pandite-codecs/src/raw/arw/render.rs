@@ -17,7 +17,7 @@ use pandite_core::CancelToken;
 use std::sync::OnceLock;
 
 /// Decoded sensor values.
-pub(super) enum Sensor {
+pub(in crate::raw) enum Sensor {
     /// One CFA value per pixel on the 14-bit scale (V1 to V4).
     Cfa(Plane),
     /// Y, Cb and Cr planes (V5).
@@ -26,7 +26,7 @@ pub(super) enum Sensor {
 
 /// The output size for a crop and an orientation: W' x H' for 1 to 4,
 /// H' x W' for 5 to 8 (R-ARW-58).
-pub(super) fn output_size(crop: Rect, orientation: u8) -> (usize, usize) {
+pub(in crate::raw) fn output_size(crop: Rect, orientation: u8) -> (usize, usize) {
     if orientation >= 5 {
         (crop.h, crop.w)
     } else {
@@ -362,7 +362,7 @@ impl Window {
 
 /// Turns rows of camera RGB into output bytes: the color matrix (R-ARW-52,
 /// see [`to_srgb`]) to linear sRGB (R-ARW-53), then the encoding.
-pub(super) trait RowEncoder: Sync {
+pub(in crate::raw) trait RowEncoder: Sync {
     /// Bytes of one output pixel.
     fn pixel_bytes(&self) -> usize;
     /// Encode `cam` (camera RGB planes, white balanced, 0..1) through
@@ -372,7 +372,7 @@ pub(super) trait RowEncoder: Sync {
 
 /// Render the image through `encoder`. Returns the bytes of the oriented,
 /// cropped image.
-pub(super) fn render(
+pub(in crate::raw) fn render(
     plan: &Plan,
     sensor: &Sensor,
     cancel: &CancelToken,

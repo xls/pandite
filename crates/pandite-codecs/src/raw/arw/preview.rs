@@ -11,7 +11,7 @@ const LENGTH_TAG: u16 = 0x0202;
 
 /// One preview candidate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct Candidate {
+pub(in crate::raw) struct Candidate {
     /// File offset of the JPEG stream.
     pub offset: usize,
     /// Stream length.
@@ -24,7 +24,7 @@ pub(super) struct Candidate {
 
 impl Candidate {
     /// Width times height.
-    pub(super) fn area(&self) -> u64 {
+    pub(in crate::raw) fn area(&self) -> u64 {
         u64::from(self.width) * u64::from(self.height)
     }
 
@@ -45,7 +45,7 @@ impl Candidate {
 }
 
 /// R-ARW-60: the size from the first SOF0, SOF1 or SOF2 marker segment.
-fn frame_size(s: &[u8]) -> Option<(u32, u32)> {
+pub(in crate::raw) fn frame_size(s: &[u8]) -> Option<(u32, u32)> {
     let mut pos = 2usize;
     loop {
         if *s.get(pos)? != 0xFF {
@@ -120,15 +120,26 @@ pub(super) fn decode(
     orientation: u8,
     options: &DecodeOptions,
 ) -> ArwResult<ImageBuf> {
-    let stream = data
-        .get(p.offset..p.offset + p.len)
-        .ok_or_else(|| fail("preview outside the file"))?;
     let rotate = p.rotates(orientation);
     let o = if rotate {
         Orientation::from_exif(u16::from(orientation))
     } else {
         Orientation::Normal
     };
+    decode_as(data, p, o, options)
+}
+
+/// Decode one candidate (R-ARW-61) and turn it by `o`, the orientation the
+/// caller chose for it.
+pub(in crate::raw) fn decode_as(
+    data: &[u8],
+    p: &Candidate,
+    o: Orientation,
+    options: &DecodeOptions,
+) -> ArwResult<ImageBuf> {
+    let stream = data
+        .get(p.offset..p.offset + p.len)
+        .ok_or_else(|| fail("preview outside the file"))?;
     // The target is in display orientation; the JPEG decoder scales the
     // stored axes.
     let opts = DecodeOptions {

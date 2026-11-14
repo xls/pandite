@@ -220,7 +220,7 @@ pub(super) fn strip_raw(w: u32, h: u32, bits: u16, compression: u16, rows: u32) 
 }
 
 /// Parse a hex dump with optional "0000:" address prefixes.
-pub(super) fn hex(s: &str) -> Vec<u8> {
+pub(in crate::raw) fn hex(s: &str) -> Vec<u8> {
     s.lines()
         .flat_map(|l| {
             let l = l.split_once(':').map_or(l, |(_, rest)| rest);
@@ -411,7 +411,7 @@ pub(super) fn f5() -> Vec<u8> {
 
 /// One encoded component for [`lj92`]: sampling factors, samples
 /// row-major with `width` columns (whole MCUs).
-pub(super) struct Comp<'a> {
+pub(in crate::raw) struct Comp<'a> {
     pub h: usize,
     pub v: usize,
     pub samples: &'a [u16],
@@ -454,7 +454,7 @@ impl Writer {
 /// Encode a lossless JPEG with predictor 1, one Huffman table of 17
 /// five-bit codes, optional restart interval (in MCUs) and the Sony
 /// line-start rule when `sony` is set. Written from T.81 Annex H.
-pub(super) fn lj92(
+pub(in crate::raw) fn lj92(
     precision: u8,
     x: usize,
     y: usize,
@@ -568,7 +568,7 @@ pub(super) fn flat_block(c: u16) -> [u8; 16] {
 }
 
 /// A baseline JPEG of `w` x `h` pixels in one color.
-pub(super) fn jpeg(w: u16, h: u16, rgb: [u8; 3]) -> Vec<u8> {
+pub(in crate::raw) fn jpeg(w: u16, h: u16, rgb: [u8; 3]) -> Vec<u8> {
     let px: Vec<u8> = (0..usize::from(w) * usize::from(h))
         .flat_map(|_| [rgb[0], rgb[1], rgb[2], 255])
         .collect();

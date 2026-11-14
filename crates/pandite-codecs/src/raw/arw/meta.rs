@@ -242,7 +242,7 @@ pub(crate) struct Rect {
 
 /// Where the sensor data lie in the file.
 #[derive(Clone, Debug)]
-pub(super) enum Layout {
+pub(in crate::raw) enum Layout {
     /// V1, V2, V3: strips of `rows_per_strip` rows of `row_bytes` bytes.
     Strips {
         /// File offset of each strip.
@@ -276,7 +276,7 @@ pub(crate) enum WbSource {
 
 /// The V5 conversion parameters (R-ARW-42, R-ARW-48).
 #[derive(Clone, Copy, Debug)]
-pub(super) struct Ycc {
+pub(in crate::raw) struct Ycc {
     /// LumaRed, LumaGreen, LumaBlue.
     pub luma: [f64; 3],
     /// Chroma zero levels of Cb and Cr.
@@ -291,7 +291,7 @@ pub(super) struct Ycc {
 
 /// Everything needed to develop the sensor data.
 #[derive(Clone, Debug)]
-pub(super) struct Plan {
+pub(in crate::raw) struct Plan {
     /// The storage variant.
     pub variant: Variant,
     /// Stored raster width W.
