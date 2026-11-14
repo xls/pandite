@@ -32,7 +32,7 @@ mod meta;
 pub(crate) mod plane;
 pub(crate) mod preview;
 pub(crate) mod render;
-mod strips;
+pub(crate) mod strips;
 mod tiles;
 
 #[cfg(test)]

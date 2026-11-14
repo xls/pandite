@@ -135,7 +135,7 @@ fn v2_row(src: &[u8], out: &mut [u16]) {
 }
 
 /// Decode one V1 row: b0 + 256 * b1 per pixel (R-ARW-27, R-ARW-5).
-fn v1_row(src: &[u8], out: &mut [u16]) {
+pub(crate) fn v1_row(src: &[u8], out: &mut [u16]) {
     for (b, o) in src.chunks_exact(2).zip(out.iter_mut()) {
         *o = u16::from_le_bytes([b[0], b[1]]);
     }

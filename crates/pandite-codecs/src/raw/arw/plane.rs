@@ -60,7 +60,7 @@ impl Plane {
     /// Row `y` of tile column `tc`: `tw` samples starting at plane column
     /// `tc * tw`.
     #[inline]
-    pub(super) fn row(&self, y: usize, tc: usize) -> &[u16] {
+    pub(crate) fn row(&self, y: usize, tc: usize) -> &[u16] {
         let tile = (y / self.th) * self.across + tc;
         let start = tile * self.tw * self.th + (y % self.th) * self.tw;
         self.data.get(start..start + self.tw).unwrap_or(&[])

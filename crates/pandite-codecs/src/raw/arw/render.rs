@@ -36,7 +36,7 @@ pub(crate) fn output_size(crop: Rect, orientation: u8) -> (usize, usize) {
 
 /// R-ARW-58: the output pixel of stored pixel (x, y) of a W' x H' image.
 #[inline]
-fn map(o: u8, x: usize, y: usize, w: usize, h: usize) -> (usize, usize) {
+pub(crate) fn map(o: u8, x: usize, y: usize, w: usize, h: usize) -> (usize, usize) {
     match o {
         2 => (w - 1 - x, y),
         3 => (w - 1 - x, h - 1 - y),

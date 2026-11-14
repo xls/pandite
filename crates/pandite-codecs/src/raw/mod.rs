@@ -23,6 +23,7 @@
 
 mod arw;
 mod cr3;
+mod raf;
 mod srw;
 pub(crate) mod tone;
 
@@ -67,7 +68,12 @@ pub(crate) struct Developer {
 /// The formats developed from sensor data, tried in order. To add a
 /// format, declare its module (`mod <fmt>;`) and add `&<fmt>::DEVELOPER`
 /// to this table; nothing else in this file changes.
-const DEVELOPERS: &[&Developer] = &[&arw::DEVELOPER, &srw::DEVELOPER, &cr3::DEVELOPER];
+const DEVELOPERS: &[&Developer] = &[
+    &arw::DEVELOPER,
+    &srw::DEVELOPER,
+    &cr3::DEVELOPER,
+    &raf::DEVELOPER,
+];
 
 /// Decodes camera RAW files (DNG from sensor data, other formats through
 /// their embedded preview).
