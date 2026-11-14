@@ -26,7 +26,7 @@ pub(super) enum Sensor {
 
 /// The output size for a crop and an orientation: W' x H' for 1 to 4,
 /// H' x W' for 5 to 8 (R-ARW-58).
-pub(super) fn output_size(crop: Rect, orientation: u8) -> (usize, usize) {
+pub(crate) fn output_size(crop: Rect, orientation: u8) -> (usize, usize) {
     if orientation >= 5 {
         (crop.h, crop.w)
     } else {
@@ -36,7 +36,7 @@ pub(super) fn output_size(crop: Rect, orientation: u8) -> (usize, usize) {
 
 /// R-ARW-58: the output pixel of stored pixel (x, y) of a W' x H' image.
 #[inline]
-fn map(o: u8, x: usize, y: usize, w: usize, h: usize) -> (usize, usize) {
+pub(crate) fn map(o: u8, x: usize, y: usize, w: usize, h: usize) -> (usize, usize) {
     match o {
         2 => (w - 1 - x, y),
         3 => (w - 1 - x, h - 1 - y),
@@ -362,7 +362,7 @@ impl Window {
 
 /// Turns rows of camera RGB into output bytes: the color matrix (R-ARW-52,
 /// see [`to_srgb`]) to linear sRGB (R-ARW-53), then the encoding.
-pub(super) trait RowEncoder: Sync {
+pub(crate) trait RowEncoder: Sync {
     /// Bytes of one output pixel.
     fn pixel_bytes(&self) -> usize;
     /// Encode `cam` (camera RGB planes, white balanced, 0..1) through

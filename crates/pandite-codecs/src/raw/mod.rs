@@ -22,6 +22,7 @@
 //! covers the target is used, which makes thumbnails fast.
 
 mod arw;
+mod raf;
 pub(crate) mod tone;
 
 use crate::exif::{tag, Entry, Tiff};
@@ -65,7 +66,7 @@ pub(crate) struct Developer {
 /// The formats developed from sensor data, tried in order. To add a
 /// format, declare its module (`mod <fmt>;`) and add `&<fmt>::DEVELOPER`
 /// to this table; nothing else in this file changes.
-const DEVELOPERS: &[&Developer] = &[&arw::DEVELOPER];
+const DEVELOPERS: &[&Developer] = &[&arw::DEVELOPER, &raf::DEVELOPER];
 
 /// Decodes camera RAW files (DNG from sensor data, other formats through
 /// their embedded preview).

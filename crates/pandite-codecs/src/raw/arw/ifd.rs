@@ -22,7 +22,7 @@ fn type_size(typ: u16) -> Option<u64> {
 
 /// One IFD entry with the location of its value bytes resolved.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct Entry {
+pub(crate) struct Entry {
     /// Tag number.
     pub tag: u16,
     /// Field type, 1 to 13.
@@ -37,7 +37,7 @@ pub(super) struct Entry {
 
 /// One IFD: its entries in file order and the next-IFD offset.
 #[derive(Clone, Debug)]
-pub(super) struct Dir<'a> {
+pub(crate) struct Dir<'a> {
     data: &'a [u8],
     /// The entries, in file order.
     pub entries: Vec<Entry>,
@@ -68,14 +68,14 @@ pub(super) fn le16(d: &[u8], at: u64) -> Option<u16> {
 }
 
 /// Read a little-endian u32 (R-ARW-5).
-pub(super) fn le32(d: &[u8], at: u64) -> Option<u32> {
+pub(crate) fn le32(d: &[u8], at: u64) -> Option<u32> {
     let at = usize::try_from(at).ok()?;
     let b = d.get(at..at.checked_add(4)?)?;
     Some(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
 }
 
 /// Read the IFD at `offset`, or `None` when it is invalid (R-ARW-14).
-pub(super) fn dir(data: &[u8], offset: u64) -> Option<Dir<'_>> {
+pub(crate) fn dir(data: &[u8], offset: u64) -> Option<Dir<'_>> {
     let size = data.len() as u64;
     // R-ARW-14 case 1: the offset lies outside the file.
     if offset >= size {
@@ -158,7 +158,7 @@ impl<'a> Dir<'a> {
 
     /// The value bytes of an entry, after checking that the whole range
     /// lies inside the file (R-ARW-67, R-ARW-68). Fails otherwise.
-    pub(super) fn bytes(&self, e: &Entry) -> ArwResult<&'a [u8]> {
+    pub(crate) fn bytes(&self, e: &Entry) -> ArwResult<&'a [u8]> {
         let size = self.data.len() as u64;
         // R-ARW-67: count * type size beyond the file size fails before
         // any allocation; R-ARW-68: the range must lie inside the file.
