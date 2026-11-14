@@ -2256,8 +2256,8 @@ pub(crate) fn agreement(
 
 /// Tolerances of the comparison with the camera's own JPEG, explained in
 /// the test documentation.
-pub(crate) const CHROMA_MEAN: f64 = 0.05;
-pub(crate) const CHROMA_MAX: f64 = 0.15;
+const CHROMA_MEAN: f64 = 0.05;
+const CHROMA_MAX: f64 = 0.15;
 pub(crate) const RANK_MIN: f64 = 0.90;
 
 /// Gate G4: every `.ARW` file in the folder named by `PANDITE_ARW_SAMPLES`

@@ -8,7 +8,7 @@ use super::*;
 use crate::raw::arw::fixtures::{hex, jpeg};
 use crate::raw::arw::render::{map, RowEncoder};
 use crate::raw::arw::strips;
-use crate::raw::arw::tests::{agreement, grid_means, CHROMA_MAX, CHROMA_MEAN, RANK_MIN};
+use crate::raw::arw::tests::{agreement, grid_means, RANK_MIN};
 use pandite_core::{CancelToken, DecodeOptions, Error, PixelFormat};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
@@ -1577,18 +1577,55 @@ fn worked_example(name: &str) -> Option<(usize, usize, usize, &'static [u16], &'
     })
 }
 
+/// Color tolerances of the comparison with the camera's own JPEG for RAF:
+/// mean rg chromaticity distance 0.08 and largest cell 0.20 (the Sony
+/// values are 0.05 and 0.15; rank order and cell count are the Sony ones).
+/// RAF files carry no color matrix, so one generic matrix, derived from one
+/// X-Trans camera at D65, serves every model (open question OQ-8). The
+/// specification states 0.08 as the bound in TV-13 and measured up to
+/// 0.079 for its worst correct decode (X-Pro1, M12). The bound still
+/// separates a correct decode from a wrong one: the specification measured
+/// red and blue swapped in the X-Trans pattern at 0.156 to 0.256 (M8), the
+/// other three Bayer phases at 0.122 to 0.279 (M9), the R and B white
+/// balance levels swapped at 0.104 (M11, X-T1 and X-A5) and the transposed
+/// matrix at up to 0.134 (M12). Those figures use the M12 block method
+/// (M8 and M9 without the color matrix); the negative controls of the test
+/// below show the separation with this method on every in-scope sample
+/// (wrong readings measured at 0.22 to 0.40 mean). One parameter set
+/// serves every file; nothing is fitted per file.
+const RAF_CHROMA_MEAN: f64 = 0.08;
+const RAF_CHROMA_MAX: f64 = 0.20;
+
+/// Wrong readings of the color pattern of `plan` that must fail the
+/// tolerances: the pattern shifted by one column, and for X-Trans the 36
+/// bytes of record 0x0131 read in forward order (TV-4).
+fn wrong_patterns(plan: &Plan) -> Vec<(&'static str, [u8; 36])> {
+    let p = plan.pattern;
+    let mut out = vec![(
+        "phase +1 column",
+        std::array::from_fn(|i| p[6 * (i / 6) + (i % 6 + 1) % 6]),
+    )];
+    if plan.layout == Layout::XTrans {
+        // The record holds the pattern in reverse order (R-RAF-18).
+        out.push(("forward order", std::array::from_fn(|i| p[35 - i])));
+    }
+    out
+}
+
 /// Every `.RAF` file in the folder named by `PANDITE_RAF_SAMPLES` (an
 /// absolute path, or relative to the workspace root) decodes through the
 /// sensor-data path when its variant is in scope, at the size of its crop
 /// rectangle, and agrees with the file's own largest embedded JPEG by the
-/// method and tolerances of `arw_real_samples_match_embedded_preview`: an
-/// 8 x 8 grid of cell means of the default display rendering, compared in
-/// rg chromaticity after one exposure gain (mean 0.05, largest cell 0.15)
-/// and by the Spearman rank of cell luminance (at least 0.90). Files whose
-/// white balance is the generic one (R-RAF-33 source 3) are compared after
-/// one global gain per channel. Out-of-scope files deliver the preview.
-/// The class of each file of TV-13 is checked as well, and the worked
-/// examples of the Compression section at their file offsets.
+/// method of `arw_real_samples_match_embedded_preview`: an 8 x 8 grid of
+/// cell means of the default display rendering, compared in rg
+/// chromaticity after one exposure gain (the RAF tolerances above) and by
+/// the Spearman rank of cell luminance (at least 0.90). Files whose white
+/// balance is the generic one (R-RAF-33 source 3) are compared after one
+/// global gain per channel. Negative controls: the same sample developed
+/// with a wrong pattern reading must fail the tolerances, which shows that
+/// they discriminate. Out-of-scope files deliver the preview. The class of
+/// each file of TV-13 is checked as well, and the worked examples of the
+/// Compression section at their file offsets.
 #[test]
 fn raf_real_samples_match_embedded_preview() {
     let Ok(dir) = std::env::var("PANDITE_RAF_SAMPLES") else {
@@ -1699,7 +1736,7 @@ fn raf_real_samples_match_embedded_preview() {
         let theirs = grid_means(&prev, 8, 1);
         let balance = info.wb_source == WbSource::Generic;
         let (mean, max, rank, used) = agreement(&ours, &theirs, balance);
-        let line = format!(
+        let mut line = format!(
             "{name}: {variant:?} {layout:?} {}-bit raster {}x{} crop {}x{}+{}+{} out {}x{} black {} wb {:?} decode {:.2}s (debug) | vs embedded {}x{}: chroma mean {mean:.4} max {max:.4} rank {rank:.3} cells {used}",
             info.bits,
             info.raster.0,
@@ -1716,8 +1753,28 @@ fn raf_real_samples_match_embedded_preview() {
             best.width,
             best.height,
         );
-        if mean > CHROMA_MEAN || max > CHROMA_MAX || rank < RANK_MIN || used < 16 {
+        let outside = |mean: f64, max: f64, rank: f64, used: usize| {
+            mean > RAF_CHROMA_MEAN || max > RAF_CHROMA_MAX || rank < RANK_MIN || used < 16
+        };
+        if outside(mean, max, rank, used) {
             failures.push(line.clone());
+        }
+        // Negative controls: a wrong pattern reading must fail.
+        let plan = plan_of(&data);
+        for (label, pattern) in wrong_patterns(&plan) {
+            let mut wrong = plan.clone();
+            wrong.pattern = pattern;
+            let img = develop(&data, &wrong, &CancelToken::new(), Output::Display8)
+                .expect("develop the control");
+            let (m, x, k, u) = agreement(&grid_means(&img, 8, 4), &theirs, balance);
+            let fails = outside(m, x, k, u);
+            line.push_str(&format!(
+                " | control {label}: chroma mean {m:.4} max {x:.4} rank {k:.3} cells {u} {}",
+                if fails { "fails" } else { "PASSES" }
+            ));
+            if !fails {
+                failures.push(format!("{name}: control {label} passes the tolerances"));
+            }
         }
         println!("{line}");
     }
