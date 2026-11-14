@@ -1329,3 +1329,61 @@ fn move_runs_off_event_loop() {
     assert_eq!(listing(out.path()), ["b.png"]);
     assert!(!paths[1].exists());
 }
+
+#[test]
+fn move_without_safe_rename_writes_a_new_name() {
+    let (dir, paths, out, mut h) = move_setup("mv-fat", &["a.png", "b.png", "c.png"], 0);
+    let bytes = std::fs::read(&paths[1]).unwrap();
+    // The target drive has no rename that cannot replace a file (FAT).
+    h.disk.no_safe_rename(&name(out.path()));
+    h.act(Action::ToggleSelect(1));
+    move_to(&mut h, out.path());
+    // The file is written under its final name, created new; no temporary
+    // file is left; the source goes after the copy.
+    assert_eq!(listing(out.path()), ["b.png"]);
+    assert_eq!(std::fs::read(out.join("b.png")).unwrap(), bytes);
+    assert_eq!(listing(dir.path()), ["a.png", "c.png"]);
+    let ops: Vec<&str> = h
+        .disk
+        .ops_on("b.png")
+        .into_iter()
+        .filter(|op| matches!(*op, "rename_new" | "copy_new" | "remove_file"))
+        .collect();
+    assert_eq!(ops, ["rename_new", "copy_new", "copy_new", "remove_file"]);
+    assert!(h.app().notice().is_none());
+}
+
+#[test]
+fn move_never_replaces_a_file_that_appears() {
+    // Across drives: the copy is ready, but another program wrote the name
+    // meanwhile. The final rename refuses it.
+    let (dir, paths, out, mut h) = move_setup("mv-race", &["a.png", "b.png", "c.png"], 0);
+    let bytes = std::fs::read(&paths[1]).unwrap();
+    h.disk.other_drive("b.png");
+    h.disk.appear_on_copy(&out.join("b.png"), b"theirs");
+    h.act(Action::ToggleSelect(1));
+    move_to(&mut h, out.path());
+    assert_eq!(std::fs::read(out.join("b.png")).unwrap(), b"theirs");
+    assert_eq!(listing(out.path()), ["b.png"], "the copy went");
+    assert_eq!(std::fs::read(&paths[1]).unwrap(), bytes);
+    assert_eq!(listing(dir.path()), ["a.png", "b.png", "c.png"]);
+    assert_eq!(h.app().selection(), [paths[1].clone()]);
+    let folder_name = name(out.path());
+    assert_eq!(
+        h.app().notice(),
+        Some(format!("Did not move b.png: {folder_name} has a file of that name").as_str())
+    );
+
+    // On a drive without a safe rename: the copy to the final name, created
+    // new, refuses the name as well, and the file there is not removed.
+    let (dir, paths, out, mut h) = move_setup("mv-race-fat", &["a.png", "b.png"], 0);
+    h.disk.no_safe_rename(&name(out.path()));
+    h.disk.appear_on_copy(&out.join("b.png"), b"theirs too");
+    h.act(Action::ToggleSelect(1));
+    move_to(&mut h, out.path());
+    assert_eq!(std::fs::read(out.join("b.png")).unwrap(), b"theirs too");
+    assert_eq!(listing(out.path()), ["b.png"]);
+    assert!(paths[1].exists());
+    assert_eq!(listing(dir.path()), ["a.png", "b.png"]);
+    assert_eq!(h.app().selection(), [paths[1].clone()]);
+}

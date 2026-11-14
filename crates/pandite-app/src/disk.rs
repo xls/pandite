@@ -64,10 +64,12 @@ pub trait Disk: FileAccess {
         std::fs::remove_file(path)
     }
 
-    /// Give the file `from` the new name `to`, never replacing a file:
-    /// fails with [`io::ErrorKind::AlreadyExists`] when `to` exists and
-    /// with [`io::ErrorKind::CrossesDevices`] when the two names are on
-    /// different drives. See [`rename_new`].
+    /// Give the file `from` the new name `to` in one step that never
+    /// replaces a file: fails with [`io::ErrorKind::AlreadyExists`] when
+    /// `to` exists, with [`io::ErrorKind::CrossesDevices`] when the two
+    /// names are on different drives, and with
+    /// [`io::ErrorKind::Unsupported`] when the drive has no such step (the
+    /// file is then where it was). See [`rename_new`].
     fn rename_new(&self, from: &Path, to: &Path) -> io::Result<()> {
         rename_new(from, to)
     }
@@ -169,13 +171,19 @@ pub fn write_atomic_with(
     }
 }
 
-/// Rename `from` to `to` without replacing a file. See
+/// Rename `from` to `to` in one step that never replaces a file. See
 /// [`Disk::rename_new`].
 ///
-/// Windows renames with `MoveFileExW` without the flag that replaces. Other
-/// systems make a second link and remove the first; on a file system
-/// without links (FAT, some network shares) they rename after a check, so
-/// a file that appears at `to` in between is replaced.
+/// - Windows: `MoveFileExW` without the flag that replaces.
+/// - Linux: `renameat2` with `RENAME_NOREPLACE`.
+/// - macOS: `renamex_np` with `RENAME_EXCL`.
+///
+/// When Linux or macOS cannot do that on the drive (an old kernel, a file
+/// system without the flag), a second link is made and the first removed;
+/// a link never replaces a file either. A drive without links (FAT, some
+/// network shares) answers [`io::ErrorKind::Unsupported`]: there is no
+/// check followed by a plain rename, which could replace a file that
+/// appears in between.
 pub fn rename_new(from: &Path, to: &Path) -> io::Result<()> {
     platform::rename_new(from, to)
 }
@@ -194,48 +202,90 @@ pub fn copy_new(from: &Path, to: &Path) -> io::Result<u64> {
 /// the move then fails with [`io::ErrorKind::AlreadyExists`] and nothing
 /// changes.
 ///
-/// On the same drive this is a rename. Across drives the file is copied
-/// to a temporary name in `dir`, flushed, checked for its full size and
-/// renamed to its final name; only then is the source removed. When a
-/// step fails, the copy goes and the source stays, so a file is never half
-/// at its final name and a source is never removed before its copy is
-/// complete.
+/// On the same drive this is a rename that never replaces a file (see
+/// [`Disk::rename_new`]). Across drives, or on a drive without such a
+/// rename, the file is copied to a temporary name in `dir`, flushed,
+/// checked for its full size and given its final name by that rename. On
+/// a drive without it, the copy is written under the final name itself,
+/// created new, so a file that appears there in between stays and the move
+/// fails. Only after a complete copy is the source removed. When a step
+/// fails, the copy goes and the source stays, and a file that is not ours
+/// is never removed.
 pub fn move_into(disk: &dyn Disk, from: &Path, dir: &Path) -> io::Result<PathBuf> {
     let name = from
         .file_name()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "the path has no file name"))?;
     let to = dir.join(name);
+    // Only a quick answer for the common case; the steps below never
+    // replace a file on their own.
     if disk.file_info(&to).is_ok() {
         return Err(already_there());
     }
     match disk.rename_new(from, &to) {
         Ok(()) => return Ok(to),
-        Err(err) if err.kind() != io::ErrorKind::CrossesDevices => return Err(err),
-        Err(_) => {}
+        Err(err)
+            if matches!(
+                err.kind(),
+                io::ErrorKind::CrossesDevices | io::ErrorKind::Unsupported
+            ) => {}
+        Err(err) => return Err(err),
     }
+    copy_then_remove(disk, from, &to)?;
+    Ok(to)
+}
+
+/// Copy `from` to the free name `to` without ever replacing a file there,
+/// then remove `from`. See [`move_into`].
+fn copy_then_remove(disk: &dyn Disk, from: &Path, to: &Path) -> io::Result<()> {
     let size = disk.file_info(from)?.stamp.len;
-    let temp = temp_path_for(&to);
-    let placed = disk
+    let complete = |path: &Path, written: u64| -> io::Result<()> {
+        let on_disk = disk.file_info(path)?.stamp.len;
+        if written == size && on_disk == size {
+            Ok(())
+        } else {
+            Err(io::Error::other("the copy is not complete"))
+        }
+    };
+    // A copy that failed to create its file (the name was taken) made
+    // nothing to remove.
+    let drop_copy = |path: &Path, err: &io::Error| {
+        if err.kind() != io::ErrorKind::AlreadyExists {
+            let _ = disk.remove_file(path);
+        }
+    };
+    let temp = temp_path_for(to);
+    if let Err(err) = disk
         .copy_new(from, &temp)
-        .and_then(|written| {
-            let on_disk = disk.file_info(&temp)?.stamp.len;
-            if written == size && on_disk == size {
-                Ok(())
-            } else {
-                Err(io::Error::other("the copy is not complete"))
-            }
-        })
-        .and_then(|()| disk.rename_new(&temp, &to));
-    if let Err(err) = placed {
-        let _ = disk.remove_file(&temp);
+        .and_then(|written| complete(&temp, written))
+    {
+        drop_copy(&temp, &err);
         return Err(err);
+    }
+    match disk.rename_new(&temp, to) {
+        Ok(()) => {}
+        Err(err) if err.kind() == io::ErrorKind::Unsupported => {
+            // No rename here can promise not to replace: write the final
+            // name itself, created new.
+            let _ = disk.remove_file(&temp);
+            if let Err(err) = disk
+                .copy_new(from, to)
+                .and_then(|written| complete(to, written))
+            {
+                drop_copy(to, &err);
+                return Err(err);
+            }
+        }
+        Err(err) => {
+            let _ = disk.remove_file(&temp);
+            return Err(err);
+        }
     }
     if let Err(err) = disk.remove_file(from) {
         // The source stays, so the copy goes: the file is in one place.
-        let _ = disk.remove_file(&to);
+        let _ = disk.remove_file(to);
         return Err(err);
     }
-    Ok(to)
+    Ok(())
 }
 
 /// The error of a move onto a name that is taken.
@@ -277,12 +327,76 @@ mod platform {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
+#[allow(unsafe_code)]
 mod platform {
+    use std::ffi::CString;
     use std::io;
+    use std::os::unix::ffi::OsStrExt;
     use std::path::Path;
 
+    fn c_path(path: &Path) -> io::Result<CString> {
+        CString::new(path.as_os_str().as_bytes())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "the path holds a NUL byte"))
+    }
+
+    /// The rename of this system that never replaces a file.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    fn rename_exclusive(from: &Path, to: &Path) -> io::Result<()> {
+        let (from, to) = (c_path(from)?, c_path(to)?);
+        // The system call itself, so no particular C library is needed.
+        // SAFETY: both paths are NUL-terminated and live for the call; the
+        // other arguments are plain integers.
+        let r = unsafe {
+            libc::syscall(
+                libc::SYS_renameat2,
+                libc::AT_FDCWD,
+                from.as_ptr(),
+                libc::AT_FDCWD,
+                to.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        if r == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+
+    /// The rename of this system that never replaces a file.
+    #[cfg(target_vendor = "apple")]
+    fn rename_exclusive(from: &Path, to: &Path) -> io::Result<()> {
+        let (from, to) = (c_path(from)?, c_path(to)?);
+        // SAFETY: both paths are NUL-terminated and live for the call.
+        let r = unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) };
+        if r == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+
+    /// Other Unix systems have no such rename here; links still work.
+    #[cfg(not(any(target_os = "linux", target_os = "android", target_vendor = "apple")))]
+    fn rename_exclusive(_from: &Path, _to: &Path) -> io::Result<()> {
+        Err(io::Error::from_raw_os_error(libc::ENOSYS))
+    }
+
+    /// True when `err` says the kernel or the file system cannot do the
+    /// step at all (rather than that this file cannot go).
+    fn not_supported(err: &io::Error) -> bool {
+        // ENOTSUP and EOPNOTSUPP are one code on Linux and two on macOS.
+        let codes = [libc::ENOSYS, libc::EINVAL, libc::ENOTSUP, libc::EOPNOTSUPP];
+        err.raw_os_error().is_some_and(|code| codes.contains(&code))
+    }
+
     pub(super) fn rename_new(from: &Path, to: &Path) -> io::Result<()> {
+        match rename_exclusive(from, to) {
+            Err(err) if not_supported(&err) => {}
+            done => return done,
+        }
+        // A second link never replaces a file; then the first goes.
         match std::fs::hard_link(from, to) {
             Ok(()) => match std::fs::remove_file(from) {
                 Ok(()) => Ok(()),
@@ -291,20 +405,14 @@ mod platform {
                     Err(err)
                 }
             },
-            Err(err)
-                if matches!(
-                    err.kind(),
-                    io::ErrorKind::AlreadyExists | io::ErrorKind::CrossesDevices
-                ) =>
-            {
-                Err(err)
+            // FAT answers EPERM: it has no links.
+            Err(err) if not_supported(&err) || err.raw_os_error() == Some(libc::EPERM) => {
+                Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "this drive cannot rename a file without the risk of replacing another",
+                ))
             }
-            Err(_) => {
-                if std::fs::symlink_metadata(to).is_ok() {
-                    return Err(super::already_there());
-                }
-                std::fs::rename(from, to)
-            }
+            Err(err) => Err(err),
         }
     }
 }
@@ -400,7 +508,19 @@ mod tests {
         // A copy never writes over a file either.
         let err = copy_new(&src.join("b.png"), &dst.join("b.png")).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(dst.join("b.png")).unwrap(), b"old b");
         assert_eq!(copy_new(&src.join("b.png"), &dst.join("c.png")).unwrap(), 5);
+        // In one folder too: the rename of this system refuses the name of
+        // another file and leaves both as they were.
+        std::fs::write(src.join("x.png"), b"x").unwrap();
+        std::fs::write(src.join("y.png"), b"y").unwrap();
+        let err = rename_new(&src.join("x.png"), &src.join("y.png")).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(src.join("x.png")).unwrap(), b"x");
+        assert_eq!(std::fs::read(src.join("y.png")).unwrap(), b"y");
+        rename_new(&src.join("x.png"), &src.join("z.png")).unwrap();
+        assert!(!src.join("x.png").exists());
+        assert_eq!(std::fs::read(src.join("z.png")).unwrap(), b"x");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
