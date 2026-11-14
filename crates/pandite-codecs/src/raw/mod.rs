@@ -23,6 +23,7 @@
 
 mod arw;
 mod cr3;
+mod nef;
 mod raf;
 mod rw2;
 mod srw;
@@ -75,6 +76,7 @@ const DEVELOPERS: &[&Developer] = &[
     &cr3::DEVELOPER,
     &raf::DEVELOPER,
     &rw2::DEVELOPER,
+    &nef::DEVELOPER,
 ];
 
 /// Decodes camera RAW files (DNG from sensor data, other formats through
