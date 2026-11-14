@@ -947,12 +947,22 @@ fn selection_select_does_not_toggle() {
     assert_eq!(selected(&mut h), ["a.png", "b.png", "c.png"]);
     h.key(Key::Space, NONE);
     assert_eq!(selected(&mut h), ["b.png", "c.png"]);
-    // Shift+Left on a selected image keeps it selected.
+    // A Shift run that starts on a selected image unselects as it moves.
     h.act(Action::GoTo(2));
     assert!(h.wait_shown(&paths[2]));
     h.key(Key::Left, SHIFT);
-    assert_eq!(selected(&mut h), ["b.png", "c.png"]);
+    assert_eq!(selected(&mut h), ["b.png"]);
     assert_eq!(h.app().index(), Some(1));
+    h.key(Key::Left, SHIFT);
+    assert!(selected(&mut h).is_empty());
+    assert_eq!(h.app().index(), Some(0));
+    // The run keeps its direction: image 0 is not selected and stays so.
+    h.key(Key::Left, SHIFT);
+    assert!(selected(&mut h).is_empty());
+    // Shift goes up; the next run starts on an unselected image and selects.
+    h.input(InputEvent::ModifiersChanged(NONE));
+    h.key(Key::Right, SHIFT);
+    assert_eq!(selected(&mut h), ["a.png"]);
 }
 
 #[test]

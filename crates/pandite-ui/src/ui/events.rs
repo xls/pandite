@@ -67,6 +67,9 @@ impl Ui {
             }
             InputEvent::Tick => {}
         }
+        if !self.mods.shift {
+            self.shift_unselects = None;
+        }
         self.toolbar.compute(ctx.window_size.w, &m);
         self.refresh_cursor(ctx, &m);
         self.finish(ctx);
@@ -93,7 +96,7 @@ impl Ui {
         }
     }
 
-    fn wake(&mut self) {
+    pub(super) fn wake(&mut self) {
         self.last_activity = self.now;
     }
 

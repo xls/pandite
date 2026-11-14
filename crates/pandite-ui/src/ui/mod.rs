@@ -162,6 +162,10 @@ pub struct Ui {
     last_update: Option<Duration>,
     pointer: Option<Point>,
     mods: Modifiers,
+    /// What Shift+Left and Shift+Right do while Shift stays down: true
+    /// unselects, false selects. Set by the first of them from the image
+    /// on screen, cleared when Shift goes up.
+    shift_unselects: Option<bool>,
     capture: Option<(Capture, PointerButton)>,
     hover: Target,
     hover_since: Duration,
@@ -208,6 +212,7 @@ impl Ui {
             last_update: None,
             pointer: None,
             mods: Modifiers::NONE,
+            shift_unselects: None,
             capture: None,
             hover: Target::None,
             hover_since: Duration::ZERO,
@@ -963,6 +968,20 @@ impl Ui {
         self.menu = Some(menu);
     }
 
+    /// The selection change of Shift+Left and Shift+Right for the image on
+    /// screen. The first one after Shift went down sets the direction.
+    fn push_shift_mark(&mut self, ctx: &UiContext<'_>, out: &mut Vec<Action>) {
+        self.wake();
+        let selected = ctx.current_selected();
+        if *self.shift_unselects.get_or_insert(selected) {
+            if selected {
+                out.push(Action::ToggleSelect(ctx.index));
+            }
+        } else {
+            out.push(Action::Select(ctx.index));
+        }
+    }
+
     /// Run a command. `origin` is where a context menu opened, used to
     /// zoom at that point.
     fn run_command(
@@ -984,18 +1003,27 @@ impl Ui {
             Command::CopyImage => out.push(Action::CopyImage),
             Command::MoveToTrash => out.push(Action::MoveToTrash),
             Command::DeleteFile => out.push(Action::DeleteFile),
-            Command::ToggleSelect => out.push(Action::ToggleSelect(ctx.index)),
-            Command::ClearSelection => out.push(Action::ClearSelection),
-            // Select the image on screen, then move on; at an end of the
-            // folder only the selection happens, so a held key never wraps.
+            // A change of the selection shows the toolbar with its count,
+            // and the toolbar fades again after the idle time.
+            Command::ToggleSelect => {
+                self.wake();
+                out.push(Action::ToggleSelect(ctx.index));
+            }
+            Command::ClearSelection => {
+                self.wake();
+                out.push(Action::ClearSelection);
+            }
+            // Mark the image on screen, then move on; at an end of the
+            // folder only the mark changes, so a held key never wraps. A run
+            // that starts on a selected image unselects, any other selects.
             Command::SelectPrevious => {
-                out.push(Action::Select(ctx.index));
+                self.push_shift_mark(ctx, out);
                 if ctx.index > 0 && ctx.count > 1 {
                     out.push(Action::Previous);
                 }
             }
             Command::SelectNext => {
-                out.push(Action::Select(ctx.index));
+                self.push_shift_mark(ctx, out);
                 if ctx.index + 1 < ctx.count {
                     out.push(Action::Next);
                 }

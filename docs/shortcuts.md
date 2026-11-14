@@ -157,6 +157,11 @@ change it.
   Shift+Left selects the current image and then shows the previous image.
   An image that is selected stays selected. The image that shows next is
   not selected by that key.
+- When you press Shift on a selected image, Shift+Right and Shift+Left
+  clear the selection of each image they leave. This continues until you
+  release Shift.
+- Space, Backspace, Shift+Right and Shift+Left show the toolbar. The
+  toolbar hides again after the usual idle time.
 - Hold Shift+Right or Shift+Left to select a run of images. At the first
   or the last image, the key selects the image and the view stays.
 - Backspace clears the selection of all images. When no image is selected,
@@ -165,7 +170,7 @@ change it.
   check mark in the top left corner of its thumbnail. Other thumbnails
   show no badge.
 - A click on a thumbnail shows that image, also a click on its badge.
-- The label "Marked" in the top right corner of the image shows that the
+- The label "Marked" in the bottom left corner of the image shows that the
   current image is selected.
 - The toolbar shows the number of selected images, for example
   "3 selected", next to the position.

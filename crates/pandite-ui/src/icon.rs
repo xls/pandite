@@ -70,6 +70,8 @@ pub enum Icon {
     Cloud,
     /// A down chevron (drop-down lists).
     ChevronDown,
+    /// The check mark of a thumbnail badge, at the size of the badge.
+    Mark,
 }
 
 const W: f32 = 2.0;
@@ -345,7 +347,7 @@ const CHEVRON_DOWN: &[Op] = &[path(&[(6.0, 9.0), (12.0, 15.0), (18.0, 9.0)], 2.2
 
 impl Icon {
     /// Every icon.
-    pub const ALL: [Icon; 27] = [
+    pub const ALL: [Icon; 28] = [
         Icon::Open,
         Icon::SaveAs,
         Icon::CopyPath,
@@ -373,6 +375,7 @@ impl Icon {
         Icon::Warning,
         Icon::Cloud,
         Icon::ChevronDown,
+        Icon::Mark,
     ];
 
     /// The position of this icon in [`Icon::ALL`].
@@ -417,6 +420,7 @@ impl Icon {
             Icon::ExitFullscreen => "exit-fullscreen",
             Icon::More => "more",
             Icon::Check => "check",
+            Icon::Mark => "mark",
             Icon::Close => "close",
             Icon::Picture => "picture",
             Icon::Warning => "warning",
@@ -448,12 +452,22 @@ impl Icon {
             Icon::Fullscreen => (FULLSCREEN, Transform::Identity),
             Icon::ExitFullscreen => (EXIT_FULLSCREEN, Transform::Identity),
             Icon::More => (MORE, Transform::Identity),
-            Icon::Check => (CHECK, Transform::Identity),
+            Icon::Check | Icon::Mark => (CHECK, Transform::Identity),
             Icon::Close => (CLOSE, Transform::Identity),
             Icon::Picture => (PICTURE, Transform::Identity),
             Icon::Warning => (WARNING, Transform::Identity),
             Icon::Cloud => (CLOUD, Transform::Identity),
             Icon::ChevronDown => (CHEVRON_DOWN, Transform::Identity),
+        }
+    }
+
+    /// The pixel size this icon is rasterized at when the toolbar icons are
+    /// `px` pixels. The mark of a thumbnail badge is drawn at 12/20 of that
+    /// size, and a mask made at its own size stays sharp there.
+    pub fn raster_px(self, px: u32) -> u32 {
+        match self {
+            Icon::Mark => ((px as f32 * 0.6).round() as u32).max(1),
+            _ => px,
         }
     }
 
@@ -505,8 +519,11 @@ impl IconCache {
         }
         if self.rasterized_px != px || self.images.len() != Icon::ALL.len() {
             self.images.clear();
-            self.images
-                .extend(Icon::ALL.iter().map(|icon| icon.rasterize(px)));
+            self.images.extend(
+                Icon::ALL
+                    .iter()
+                    .map(|icon| icon.rasterize(icon.raster_px(px))),
+            );
             self.rasterized_px = px;
         }
         for (icon, image) in Icon::ALL.iter().zip(&self.images) {

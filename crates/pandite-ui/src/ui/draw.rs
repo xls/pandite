@@ -87,9 +87,8 @@ impl Ui {
         out.clip(None);
     }
 
-    /// The "Marked" pill in the top right corner of the visible image while
-    /// the image on screen is selected. It keeps below the toolbar band
-    /// when the image leaves room for that, and fits its label at every
+    /// The "Marked" pill in the bottom left corner of the visible image
+    /// while the image on screen is selected. It fits its label at every
     /// scale.
     fn draw_marked(
         &self,
@@ -111,36 +110,36 @@ impl Ui {
         let h = m.marked_h();
         let w = (measure.measure(MARKED, font).w + 2.0 * m.marked_pad()).ceil();
         let margin = m.px(10.0);
-        let top = visible.y + margin;
-        let mut y = top.max(content.y + m.toolbar_h() + margin);
-        if y + h + margin > visible.bottom() {
-            y = top.max(visible.bottom() - margin - h);
-        }
-        let x = (visible.right() - margin - w).max(visible.x);
+        let y = (visible.bottom() - margin - h).max(visible.y);
+        let x = (visible.x + margin).min((visible.right() - w).max(visible.x));
         let r = Rect::new(x.round(), y.round(), w, h);
+        // The fill stops under the middle of the outline, so no light
+        // edge shows outside the dark line.
+        let line = m.px(1.5);
         out.rect(
-            paint::outset(r, m.hairline()),
-            t.shadow,
-            h * 0.5 + m.hairline(),
+            paint::outset(r, -line * 0.5),
+            t.check_fill,
+            (h - line) * 0.5,
         );
-        out.rect(r, t.check_fill, h * 0.5);
-        out.border(r, t.check_line, m.px(1.5), h * 0.5);
-        paint::text_center(out, measure, r, MARKED, font, t.check_line);
+        out.border(r, t.check_line, line, h * 0.5);
+        paint::text_center(out, measure, r, MARKED, font, t.check_mark);
     }
 
     /// The marker of a selected thumbnail: a small round badge with a
-    /// check mark, in the colors of the "Marked" pill.
+    /// blue check mark, in the colors of the "Marked" pill.
     fn draw_thumb_badge(&self, b: Rect, m: &Metrics, t: &Theme, out: &mut DrawList) {
         let radius = b.w * 0.5;
+        // The fill stops under the middle of the outline, as in the pill.
+        let line = m.px(1.5);
         out.rect(
-            paint::outset(b, m.hairline()),
-            t.shadow,
-            radius + m.hairline(),
+            paint::outset(b, -line * 0.5),
+            t.check_fill,
+            radius - line * 0.5,
         );
-        out.rect(b, t.check_fill, radius);
-        out.border(b, t.check_line, m.px(1.5), radius);
-        // The mark is a little smaller than the badge.
-        paint::icon(out, b, Icon::Check, b.w - m.px(2.0), t.check_line);
+        out.border(b, t.check_line, line, radius);
+        // The mark is a little smaller than the badge and has its own
+        // mask at that size.
+        paint::icon(out, b, Icon::Mark, b.w - m.px(2.0), t.check_mark);
     }
 
     fn draw_toolbar(

@@ -54,6 +54,12 @@ fn shortcuts_cover_every_action() {
         let out = key(&mut ui, &selected, s.key, s.mods);
         note(&out, &s.label());
     }
+    // Shift+Right on an image that is not selected selects it.
+    let mut ui = Ui::new();
+    note(
+        &key(&mut ui, &ctx, Key::Right, Modifiers::SHIFT),
+        "Shift+Right, not selected",
+    );
 
     // Crop mode keys.
     let mut ui = Ui::new();
@@ -324,13 +330,20 @@ fn layout_scales_with_dpi() {
     let mut sink = FakeSink::default();
     assert!(ui1.sync_textures(&ctx1, &mut sink));
     assert_eq!(sink.uploads.len(), Icon::ALL.len());
-    assert!(sink.uploads.iter().all(|u| u.1 == 20 && u.2 == 20 && u.3));
+    // The badge mark has its own, smaller mask.
+    let mark = Icon::Mark.texture_id();
+    assert!(sink
+        .uploads
+        .iter()
+        .all(|u| u.3 && u.1 == u.2 && u.1 == if u.0 == mark { 12 } else { 20 }));
     assert!(!ui1.sync_textures(&ctx1, &mut sink), "cached");
     assert_eq!(sink.uploads.len(), Icon::ALL.len());
     let mut ctx15 = ctx1;
     ctx15.scale_factor = 1.5;
     assert!(ui1.sync_textures(&ctx15, &mut sink));
-    assert!(sink.uploads[Icon::ALL.len()..].iter().all(|u| u.1 == 30));
+    assert!(sink.uploads[Icon::ALL.len()..]
+        .iter()
+        .all(|u| u.1 == if u.0 == mark { 18 } else { 30 }));
     assert_eq!(ui1.icon_size(), 30);
     ui1.invalidate_textures();
     assert!(ui1.sync_textures(&ctx15, &mut sink));

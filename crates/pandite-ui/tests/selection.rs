@@ -52,6 +52,7 @@ fn inside(r: Rect, outer: Rect) -> bool {
 fn checks_in(list: &DrawList, area: Rect) -> Vec<Rect> {
     icon_draws(list, Icon::Check)
         .into_iter()
+        .chain(icon_draws(list, Icon::Mark))
         .map(|(r, _)| r)
         .filter(|r| area.contains(r.center()))
         .collect()
@@ -240,24 +241,25 @@ fn gallery_draws_badge_for_selected() {
         // The pointer rests on the image, away from the strip.
         move_to(&mut ui, &ctx, Point::new(600.0, 200.0));
         let list = frame(&mut ui, &ctx);
-        let (side, inset) = (px(14.0, scale), px(4.0, scale));
+        let (side, inset, line) = (px(14.0, scale), px(4.0, scale), px(1.5, scale));
         let drawn: Vec<usize> = thumbnail_draws(&list).iter().map(|d| d.0).collect();
         assert!(drawn.contains(&2) && drawn.contains(&5) && drawn.contains(&7));
         for i in drawn {
             let cell = cell_of(&list, i);
             let marks = checks_in(&list, corner(cell));
             if i == 2 || i == 5 {
-                // A small round badge in the top left corner: a gray blue
-                // disc with a dark check mark, at the size of the scale.
+                // A small round badge in the top left corner: a white
+                // disc with a blue check mark, at the size of the scale.
                 assert_eq!(marks.len(), 1, "thumbnail {i} at scale {scale}");
                 let mark = marks[0];
                 assert_eq!(mark.w, side - px(2.0, scale));
                 let disc = round_fills_at(&list, mark.center(), theme.check_fill);
                 assert!(
-                    disc.iter().any(|(r, radius)| r.w == side
-                        && r.h == side
-                        && *radius == side * 0.5
-                        && (r.x - cell.x, r.y - cell.y) == (inset, inset)),
+                    disc.iter().any(|(r, radius)| r.w == side - line
+                        && r.h == side - line
+                        && *radius == (side - line) * 0.5
+                        && (r.x - cell.x, r.y - cell.y)
+                            == (inset + line * 0.5, inset + line * 0.5)),
                     "badge of thumbnail {i} at scale {scale}: {disc:?}"
                 );
             } else {
@@ -267,10 +269,13 @@ fn gallery_draws_badge_for_selected() {
         }
         // Nothing else in the frame carries a check mark: the image on
         // screen (index 0) is not selected.
-        assert_eq!(icon_draws(&list, Icon::Check).len(), 2);
-        assert!(icon_draws(&list, Icon::Check)
+        assert!(icon_draws(&list, Icon::Check).is_empty());
+        assert_eq!(icon_draws(&list, Icon::Mark).len(), 2);
+        assert!(icon_draws(&list, Icon::Mark)
             .iter()
-            .all(|(_, tint)| *tint == theme.check_line));
+            .all(|(_, tint)| *tint == theme.check_mark));
+        // The mark is blue and differs from the soft outline.
+        assert!(theme.check_mark.b > theme.check_mark.r && theme.check_mark != theme.check_line);
     }
 }
 
@@ -398,8 +403,22 @@ fn shift_arrows_select_then_move() {
     assert_eq!(
         key(&mut ui, &selected, Key::Right, SHIFT),
         vec![Action::Select(3), Action::Next],
-        "a selected image stays selected"
+        "a selected image stays selected while the run selects"
     );
+    // Shift goes up and down again on a selected image: this run
+    // unselects, and it leaves an unselected image alone.
+    ui.handle_event(InputEvent::ModifiersChanged(Modifiers::NONE), &ctx);
+    assert_eq!(
+        key(&mut ui, &selected, Key::Right, SHIFT),
+        vec![Action::ToggleSelect(3), Action::Next]
+    );
+    assert_eq!(key(&mut ui, &ctx, Key::Left, SHIFT), vec![Action::Previous]);
+    assert_eq!(
+        key(&mut ui, &selected, Key::Left, SHIFT),
+        vec![Action::ToggleSelect(3), Action::Previous]
+    );
+    // The next run starts on an unselected image and selects again.
+    ui.handle_event(InputEvent::ModifiersChanged(Modifiers::NONE), &ctx);
     // A held key repeats, so a run of images gets selected.
     let held = ui.handle_event(
         InputEvent::KeyDown {
@@ -531,20 +550,28 @@ fn selected_image_shows_badge() {
         let pill = round_fills_at(&list, label.center(), theme.check_fill);
         let (pill, radius) = *pill
             .iter()
-            .find(|(r, _)| r.h == px(20.0, scale))
-            .unwrap_or_else(|| panic!("a pill 20 px high at scale {scale}: {pill:?}"));
-        // Rounded at its full height, and wide enough for its label with
+            .find(|(r, _)| r.h == px(20.0, scale) - px(1.5, scale))
+            .unwrap_or_else(|| panic!("a pill fill at scale {scale}: {pill:?}"));
+        // Rounded at its full height, and its fill (inside the outline) holds its label with
         // the padding on both sides, at every scale.
         assert_eq!(radius, pill.h * 0.5);
         assert!(inside(label, pill), "{label:?} in {pill:?}");
-        assert!(pill.w >= label.w + 2.0 * px(8.0, scale) - 1.0, "{pill:?}");
-        assert_eq!(text_color(&list, "Marked"), Some(theme.check_line));
-        // In the top right corner of the image, below the toolbar band.
+        assert!(
+            pill.w >= label.w + 2.0 * px(8.0, scale) - 1.0 - px(1.5, scale),
+            "{pill:?}"
+        );
+        assert_eq!(text_color(&list, "Marked"), Some(theme.check_mark));
+        // White, a little translucent, with a blue label.
+        assert_eq!(
+            theme.check_fill,
+            pandite_core::Color::rgba(255, 255, 255, 235)
+        );
+        // In the bottom left corner of the image.
         let visible = image.intersect(content).unwrap();
         assert!(inside(pill, visible));
-        assert!(pill.center().x > visible.center().x && pill.center().y < visible.center().y);
-        assert!(pill.y >= 40.0 * scale, "{pill:?} under the toolbar");
-        assert!(visible.right() - pill.right() < 40.0 * scale);
+        assert!(pill.center().x < visible.center().x && pill.center().y > visible.center().y);
+        assert!(pill.x - visible.x < 40.0 * scale);
+        assert!(visible.bottom() - pill.bottom() < 40.0 * scale);
         // A label, not a check mark.
         assert!(checks_in(&list, content).is_empty());
 
@@ -907,4 +934,30 @@ fn move_key_ignored_in_text_field_dialog_and_crop() {
 
     // Viewing again: M moves.
     assert_eq!(press_key(&mut ui, &ctx, Key::M), vec![Action::MoveTo]);
+}
+
+#[test]
+fn selection_keys_show_the_toolbar() {
+    let ctx = image_ctx();
+    let shown =
+        |ui: &mut Ui, t: u64| !icon_draws(&frame(ui, &at(ctx, ms(t))), Icon::Open).is_empty();
+    for (k, mods) in [
+        (Key::Space, Modifiers::NONE),
+        (Key::Backspace, Modifiers::NONE),
+        (Key::Right, Modifiers::SHIFT),
+    ] {
+        let mut ui = Ui::new();
+        assert!(shown(&mut ui, 0));
+        // Long idle: the toolbar is gone.
+        assert!(!shown(&mut ui, 30_000), "{k:?}");
+        assert!(!shown(&mut ui, 30_100), "{k:?}");
+        // The key brings it back, and it fades after the idle time.
+        let mut selected = at(ctx, ms(30_200));
+        selected.selected = &[3];
+        key(&mut ui, &selected, k, mods);
+        assert!(shown(&mut ui, 30_300), "{k:?}");
+        assert!(shown(&mut ui, 30_900), "{k:?}");
+        assert!(!shown(&mut ui, 60_000), "{k:?}");
+        assert!(!shown(&mut ui, 60_100), "{k:?}");
+    }
 }
