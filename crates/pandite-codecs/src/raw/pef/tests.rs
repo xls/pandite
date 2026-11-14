@@ -6,7 +6,7 @@ use super::fixtures::*;
 use super::huffman::{self, Table};
 use super::meta::{self, Class, Form, Plan, Relative, Variant};
 use super::*;
-use crate::raw::arw::tests::{agreement, grid_means, LinearF32, CHROMA_MAX, CHROMA_MEAN, RANK_MIN};
+use crate::raw::arw::tests::{agreement, grid_means, LinearF32, RANK_MIN};
 use pandite_core::{CancelToken, DecodeOptions, Error, PixelFormat};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
@@ -1357,36 +1357,44 @@ fn specified_crop(w: usize, h: usize, v: Variant) -> Option<(usize, usize, usize
     })
 }
 
-/// Models whose developed colors the specification itself does not bring
-/// within the chromaticity gate of the Sony test, with the reason. Both use
-/// the generic matrix (no model calibration exists, OQ-7). For them the
-/// chromaticity distances are printed and not gated; the rank correlation
-/// and the cell count stay gated. Every other file meets the Sony gate.
-const CHROMA_EXCEPTIONS: &[(&str, &str)] = &[
-    (
-        "PENTAX K-3 Mark III",
-        "generic matrix (OQ-7); M17 records 0.184, the largest chromaticity error of the kept samples, from the higher saturation of the camera JPEG in green foliage",
-    ),
-    (
-        "PENTAX *ist DS",
-        "generic matrix (OQ-7); one saturated red cell; the 3008 x 2000 preview is not an exact crop of the raster (M9)",
-    ),
-];
+/// The tolerances of the comparison with the camera JPEG: one set for
+/// every PEF sample, nothing fitted per file or per model. The chromaticity
+/// limits are twice those of the Sony test, because the specification has
+/// no model color matrix for several bodies (the generic matrix, OQ-7), the
+/// camera JPEG renders saturated colors more saturated than the
+/// colorimetric development (M17: green foliage, blue fabric), and the
+/// specification's own record M17 gives 0.184 for the K-3 Mark III by its
+/// method. The rank correlation and the cell count keep the Sony values.
+const PEF_CHROMA_MEAN: f64 = 0.10;
+const PEF_CHROMA_MAX: f64 = 0.30;
+/// Fewest usable cells, as in the Sony test.
+const MIN_CELLS: usize = 16;
+
+/// True when a comparison (mean, max, rank, cells) meets the tolerances.
+fn within((mean, max, rank, used): (f64, f64, f64, usize)) -> bool {
+    mean <= PEF_CHROMA_MEAN && max <= PEF_CHROMA_MAX && rank >= RANK_MIN && used >= MIN_CELLS
+}
 
 /// Every `.PEF` file in the folder named by `PANDITE_PEF_SAMPLES` (absolute,
 /// or relative to the workspace root) decodes through the sensor-data path
 /// when its variant is in scope, at the crop size of the specification, and
-/// agrees with the file's own largest embedded JPEG by the method and
-/// tolerances of `arw_real_samples_match_embedded_preview`: 8 x 8 grid cell
-/// means of the default display rendering, exposure matched by one gain on
-/// luminance, rg chromaticity distance (mean 0.05, largest 0.15) over the
-/// usable cells and a Spearman rank correlation of cell luminance of at
-/// least 0.90; a global per-channel balance first when the white balance
-/// is not as shot. The models of [`CHROMA_EXCEPTIONS`] have their
-/// chromaticity distances printed, not gated. Out-of-scope files must show
-/// their preview. The Huffman streams must end in the last byte of their
-/// strip (M5), and the strips of TV-8 and TV-9 must start with the values
-/// of the vectors.
+/// agrees with the file's own largest embedded JPEG by the method of
+/// `arw_real_samples_match_embedded_preview`: 8 x 8 grid cell means of the
+/// default display rendering, exposure matched by one gain on luminance, rg
+/// chromaticity distance over the usable cells and a Spearman rank
+/// correlation of cell luminance; a global per-channel balance first when
+/// the white balance is not as shot. The tolerances are
+/// [`PEF_CHROMA_MEAN`] and [`PEF_CHROMA_MAX`] with the Sony rank and cell
+/// count, the same for every file.
+///
+/// Negative control: every color file is developed a second time with its
+/// CFA pattern shifted by one column, and that development must fail the
+/// same tolerances; the test fails when a control passes. The monochrome
+/// file (P4) has no CFA and so no control.
+///
+/// Out-of-scope files must show their preview. The Huffman streams must end
+/// in the last byte of their strip (M5), and the strips of TV-8 and TV-9
+/// must start with the values of the vectors.
 #[test]
 fn pef_real_samples_match_embedded_preview() {
     let Ok(dir) = std::env::var("PANDITE_PEF_SAMPLES") else {
@@ -1525,8 +1533,31 @@ fn pef_real_samples_match_embedded_preview() {
         let balance = matches!(info.wb, WbSource::Table | WbSource::Generic);
         let (raw_mean, raw_max, _, _) = agreement(&ours, &theirs, false);
         let (mean, max, rank, used) = agreement(&ours, &theirs, balance);
+        // The negative control: the CFA pattern shifted by one column, the
+        // color of pixel (x, y) is CFA[2 * (y mod 2) + ((x + 1) mod 2)].
+        let control = if variant == Variant::P4 {
+            None
+        } else {
+            let mut shifted = plan.clone();
+            let p = plan.cfa;
+            shifted.cfa = [p[1], p[0], p[3], p[2]];
+            let img = super::develop(&data, &shifted, &display, Output::Display8)
+                .expect("control develops");
+            Some(agreement(&grid_means(&img, 8, 4), &theirs, balance))
+        };
+        let control_note = match control {
+            None => " | control: none, P4 has no CFA".to_string(),
+            Some(k @ (cm, cx, cr, cu)) => format!(
+                " | control (CFA shifted one column): chroma mean {cm:.4} max {cx:.4} rank {cr:.3} cells {cu}: {}",
+                if within(k) {
+                    "PASSES, test fails"
+                } else {
+                    "fails the tolerances"
+                }
+            ),
+        };
         let line = format!(
-            "{name}: model {} {variant:?} raster {}x{} crop {}x{}+{}+{} out {}x{} wb {:?} matrix {}{} decode {:.2}s (debug) | vs embedded {}x{}: chroma mean {mean:.4} max {max:.4} rank {rank:.3} cells {used}{}{stream_note}",
+            "{name}: model {} {variant:?} raster {}x{} crop {}x{}+{}+{} out {}x{} wb {:?} matrix {}{} decode {:.2}s (debug) | vs embedded {}x{}: chroma mean {mean:.4} max {max:.4} rank {rank:.3} cells {used}{}{control_note}{stream_note}",
             info.model,
             info.raster.0,
             info.raster.1,
@@ -1552,19 +1583,10 @@ fn pef_real_samples_match_embedded_preview() {
                 String::new()
             },
         );
-        let chroma_ok = mean <= CHROMA_MEAN && max <= CHROMA_MAX;
-        let exception = CHROMA_EXCEPTIONS
-            .iter()
-            .find(|e| e.0 == info.model && !info.matrix_from_table);
-        if rank < RANK_MIN || used < 16 || (!chroma_ok && exception.is_none()) {
+        if !within((mean, max, rank, used)) || control.is_some_and(within) {
             failures.push(line.clone());
         }
         println!("{line}");
-        if let (false, Some((_, why))) = (chroma_ok, exception) {
-            println!(
-                "{name}: TOLERANCE EXCEPTION: chroma outside the gate of the Sony test (mean {CHROMA_MEAN}, max {CHROMA_MAX}): {why}"
-            );
-        }
     }
     assert!(failures.is_empty(), "outside tolerance: {failures:#?}");
 }
