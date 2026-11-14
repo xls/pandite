@@ -10,7 +10,7 @@ const MAX_ENTRIES: u64 = 1024;
 
 /// Byte size of one value of TIFF field type `typ` (TIFF 6.0 section 2;
 /// type 13 is the IFD type of R-ARW-8). `None` for types outside 1 to 13.
-fn type_size(typ: u16) -> Option<u64> {
+pub(crate) fn type_size(typ: u16) -> Option<u64> {
     match typ {
         1 | 2 | 6 | 7 => Some(1),
         3 | 8 => Some(2),
@@ -22,7 +22,7 @@ fn type_size(typ: u16) -> Option<u64> {
 
 /// One IFD entry with the location of its value bytes resolved.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct Entry {
+pub(crate) struct Entry {
     /// Tag number.
     pub tag: u16,
     /// Field type, 1 to 13.

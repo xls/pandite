@@ -220,7 +220,7 @@ pub(super) fn strip_raw(w: u32, h: u32, bits: u16, compression: u16, rows: u32) 
 }
 
 /// Parse a hex dump with optional "0000:" address prefixes.
-pub(super) fn hex(s: &str) -> Vec<u8> {
+pub(crate) fn hex(s: &str) -> Vec<u8> {
     s.lines()
         .flat_map(|l| {
             let l = l.split_once(':').map_or(l, |(_, rest)| rest);
@@ -568,7 +568,7 @@ pub(super) fn flat_block(c: u16) -> [u8; 16] {
 }
 
 /// A baseline JPEG of `w` x `h` pixels in one color.
-pub(super) fn jpeg(w: u16, h: u16, rgb: [u8; 3]) -> Vec<u8> {
+pub(crate) fn jpeg(w: u16, h: u16, rgb: [u8; 3]) -> Vec<u8> {
     let px: Vec<u8> = (0..usize::from(w) * usize::from(h))
         .flat_map(|_| [rgb[0], rgb[1], rgb[2], 255])
         .collect();
