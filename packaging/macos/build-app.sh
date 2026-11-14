@@ -72,7 +72,7 @@ fi
 # The team identifier stands in parentheses at the end of the identity name.
 TEAM_ID=${PANDITE_APPLE_TEAM_ID:-}
 if [ -z "$TEAM_ID" ]; then
-  TEAM_ID=$(printf '%s' "$IDENTITY" | sed -n 's/.*(([A-Z0-9]{10}))$//p')
+  TEAM_ID=$(printf '%s' "$IDENTITY" | sed -n 's/.*(\([A-Z0-9]\{10\}\))$/\1/p')
 fi
 NOTARIZE=0
 if [ -n "$IDENTITY" ] && [ -n "${PANDITE_APPLE_ID:-}" ] && [ -n "$TEAM_ID" ] && [ -n "${PANDITE_APPLE_APP_PASSWORD:-}" ]; then
