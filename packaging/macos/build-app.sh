@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the universal pandite.app, sign it ad hoc and pack it as .dmg and .zip.
+# Build the universal pandite.app, sign it and pack it as .dmg and .zip.
 #
 # Usage: packaging/macos/build-app.sh <version> <out_dir> [<cargo_target_dir>]
 #
@@ -8,6 +8,17 @@
 #   <cargo_target_dir>/x86_64-apple-darwin/release/pandite
 # Writes <out_dir>/pandite-<version>-universal-apple-darwin.dmg and .zip.
 # PANDITE_BUNDLE_ID overrides the placeholder bundle identifier.
+#
+# Signature:
+#   PANDITE_MACOS_SIGN_IDENTITY  a "Developer ID Application: ..." identity in
+#                                the keychain. Without it the app gets an ad
+#                                hoc signature, which Gatekeeper does not trust.
+#   PANDITE_MACOS_KEYCHAIN       the keychain that holds the identity (optional)
+# Notarization (only with a Developer ID signature), all three together:
+#   PANDITE_APPLE_ID, PANDITE_APPLE_TEAM_ID, PANDITE_APPLE_APP_PASSWORD
+#                                (an app-specific password of the Apple ID)
+# With them the app and the disk image go to the Apple notary service and
+# get their tickets stapled, so they open without a warning, also offline.
 # Runs on macOS only (lipo, codesign, ditto, hdiutil, plutil).
 set -euo pipefail
 
@@ -51,12 +62,54 @@ cp "$HERE/pandite.icns" "$APP/Contents/Resources/pandite.icns"
 cp "$ROOT/LICENSE" "$APP/Contents/Resources/LICENSE.txt"
 cp "$ROOT/docs/THIRD-PARTY-NOTICES.md" "$APP/Contents/Resources/THIRD-PARTY-NOTICES.md"
 
-# Ad hoc signature: Apple Silicon refuses unsigned code, and the bundle
-# signature seals Info.plist and the resources.
-codesign --force --sign - --timestamp=none "$APP"
+IDENTITY=${PANDITE_MACOS_SIGN_IDENTITY:-}
+KEYCHAIN_ARGS=()
+if [ -n "${PANDITE_MACOS_KEYCHAIN:-}" ]; then
+  KEYCHAIN_ARGS=(--keychain "$PANDITE_MACOS_KEYCHAIN")
+fi
+NOTARIZE=0
+if [ -n "$IDENTITY" ] && [ -n "${PANDITE_APPLE_ID:-}" ] && [ -n "${PANDITE_APPLE_TEAM_ID:-}" ] && [ -n "${PANDITE_APPLE_APP_PASSWORD:-}" ]; then
+  NOTARIZE=1
+fi
+
+# Send a file to the Apple notary service and wait for the answer. On a
+# refusal, print the log of the service and stop.
+notarize() {
+  local file=$1 result id
+  result=$(xcrun notarytool submit "$file" --wait --output-format json \
+    --apple-id "$PANDITE_APPLE_ID" --team-id "$PANDITE_APPLE_TEAM_ID" --password "$PANDITE_APPLE_APP_PASSWORD")
+  echo "$result"
+  if ! echo "$result" | grep -q '"status" *: *"Accepted"'; then
+    id=$(echo "$result" | sed -n 's/.*"id" *: *"\([^"]*\)".*/\1/p' | head -n 1)
+    if [ -n "$id" ]; then
+      xcrun notarytool log "$id" --apple-id "$PANDITE_APPLE_ID" --team-id "$PANDITE_APPLE_TEAM_ID" \
+        --password "$PANDITE_APPLE_APP_PASSWORD" >&2 || true
+    fi
+    echo "the Apple notary service did not accept $file" >&2
+    exit 1
+  fi
+}
+
+if [ -n "$IDENTITY" ]; then
+  # Developer ID signature with the hardened runtime and a secure time
+  # stamp: the notary service requires both.
+  codesign --force --options runtime --timestamp --sign "$IDENTITY" ${KEYCHAIN_ARGS[@]+"${KEYCHAIN_ARGS[@]}"} "$APP"
+else
+  # Ad hoc signature: Apple Silicon refuses unsigned code, and the bundle
+  # signature seals Info.plist and the resources.
+  codesign --force --sign - --timestamp=none "$APP"
+fi
 codesign --verify --strict --verbose=2 "$APP"
 
 rm -f "$OUT/$NAME.zip" "$OUT/$NAME.dmg"
+if [ "$NOTARIZE" = 1 ]; then
+  # The service takes an archive. The ticket then goes into the app, and
+  # the zip and the disk image below carry the app with its ticket.
+  ditto -c -k --sequesterRsrc --keepParent "$APP" "$WORK/notary.zip"
+  notarize "$WORK/notary.zip"
+  xcrun stapler staple "$APP"
+  xcrun stapler validate "$APP"
+fi
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$OUT/$NAME.zip"
 
 DMG_SRC="$WORK/dmg"
@@ -76,6 +129,14 @@ for attempt in 1 2 3 4 5; do
 done
 [ "$made" = 1 ] || { echo "hdiutil could not create the disk image" >&2; exit 1; }
 hdiutil verify "$OUT/$NAME.dmg"
+if [ -n "$IDENTITY" ]; then
+  codesign --force --timestamp --sign "$IDENTITY" ${KEYCHAIN_ARGS[@]+"${KEYCHAIN_ARGS[@]}"} "$OUT/$NAME.dmg"
+fi
+if [ "$NOTARIZE" = 1 ]; then
+  notarize "$OUT/$NAME.dmg"
+  xcrun stapler staple "$OUT/$NAME.dmg"
+  xcrun stapler validate "$OUT/$NAME.dmg"
+fi
 
 echo "wrote $OUT/$NAME.dmg"
 echo "wrote $OUT/$NAME.zip"

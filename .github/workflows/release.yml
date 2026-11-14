@@ -26,6 +26,11 @@
 # Optional secrets add sideload-signed copies of the MSIX packages:
 #   PANDITE_SIGNING_CERT_BASE64 (a .pfx file, base64), PANDITE_SIGNING_CERT_PASSWORD
 # See docs/store-submission.md.
+# Optional secrets sign the macOS app with a Developer ID and notarize it:
+#   PANDITE_MACOS_CERT_BASE64 (the Developer ID Application certificate with
+#   its private key as a .p12 file, base64), PANDITE_MACOS_CERT_PASSWORD,
+#   PANDITE_APPLE_ID, PANDITE_APPLE_TEAM_ID, PANDITE_APPLE_APP_PASSWORD
+# See docs/building.md.
 
 name: Release
 
@@ -237,6 +242,7 @@ jobs:
     timeout-minutes: 90
     env:
       VERSION: ${{ needs.version.outputs.version }}
+      HAS_MACOS_CERT: ${{ secrets.PANDITE_MACOS_CERT_BASE64 != '' }}
     steps:
       - uses: actions/checkout@v5
 
@@ -254,8 +260,38 @@ jobs:
       - name: Third-party notices
         run: node packaging/third-party-notices.mjs
 
+      - name: Developer ID certificate in a temporary keychain (only when the secret exists)
+        if: env.HAS_MACOS_CERT == 'true'
+        env:
+          CERT_BASE64: ${{ secrets.PANDITE_MACOS_CERT_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.PANDITE_MACOS_CERT_PASSWORD }}
+        run: |
+          cert="$RUNNER_TEMP/pandite-developer-id.p12"
+          keychain="$RUNNER_TEMP/pandite-signing.keychain-db"
+          trap 'rm -f "$cert"' EXIT
+          printf '%s' "$CERT_BASE64" | base64 --decode > "$cert"
+          key=$(openssl rand -hex 24)
+          security create-keychain -p "$key" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$key" "$keychain"
+          security import "$cert" -k "$keychain" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$key" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          identity=$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -n 1)
+          [ -n "$identity" ] || { echo "the .p12 file holds no Developer ID Application identity" >&2; exit 1; }
+          echo "PANDITE_MACOS_SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+          echo "PANDITE_MACOS_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+
       - name: Universal app, disk image and zip
+        env:
+          PANDITE_APPLE_ID: ${{ secrets.PANDITE_APPLE_ID }}
+          PANDITE_APPLE_TEAM_ID: ${{ secrets.PANDITE_APPLE_TEAM_ID }}
+          PANDITE_APPLE_APP_PASSWORD: ${{ secrets.PANDITE_APPLE_APP_PASSWORD }}
         run: bash packaging/macos/build-app.sh "$VERSION" dist target
+
+      - name: Remove the temporary keychain
+        if: always() && env.HAS_MACOS_CERT == 'true'
+        run: security delete-keychain "$RUNNER_TEMP/pandite-signing.keychain-db" || true
 
       - uses: actions/upload-artifact@v4
         with:

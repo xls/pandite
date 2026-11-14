@@ -16,6 +16,8 @@
 //! most 30 minutes). The next image opens in that process without the
 //! start-up cost, and its folder's gallery without decoding again.
 
+#[cfg(target_os = "macos")]
+mod finder;
 mod input;
 mod native;
 mod smoke;
@@ -159,6 +161,17 @@ pub fn run(cli: Cli) -> i32 {
         }
     };
     let proxy = event_loop.create_proxy();
+    #[cfg(target_os = "macos")]
+    {
+        // Finder sends a file as an event, not on the command line.
+        let proxy = proxy.clone();
+        finder::install(move |path| {
+            let _ = proxy.send_event(UserEvent::Resident(Request::Open {
+                path: Some(path),
+                launched: None,
+            }));
+        });
+    }
     let dormant = Arc::new(AtomicBool::new(false));
     let stays = may_stay(&cli) && settings.stay_ready && become_resident(&proxy, &dormant);
     if cli.background && !stays {

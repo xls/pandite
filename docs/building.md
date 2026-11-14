@@ -154,7 +154,26 @@ accepts. For the Store identity values and for signing, see
 3. Find `pandite-0.1.0-universal-apple-darwin.dmg` and
    `pandite-0.1.0-universal-apple-darwin.zip` in `dist`.
 
-The script signs the app ad hoc. It does not notarize the app. To change the
+Without more settings, the script signs the app ad hoc and does not notarize
+it. macOS then warns the user before the first start.
+
+To sign with a Developer ID, set `PANDITE_MACOS_SIGN_IDENTITY` to the name of
+a "Developer ID Application" identity in your keychain. To notarize also, set
+`PANDITE_APPLE_ID`, `PANDITE_APPLE_TEAM_ID` and `PANDITE_APPLE_APP_PASSWORD`
+(an app-specific password of that Apple ID). The script then sends the app
+and the disk image to the Apple notary service and staples the tickets.
+
+The Release workflow does the same when these repository secrets exist:
+
+| Secret | Value |
+| --- | --- |
+| `PANDITE_MACOS_CERT_BASE64` | The Developer ID Application certificate with its private key, exported as a `.p12` file and encoded with `base64` |
+| `PANDITE_MACOS_CERT_PASSWORD` | The password of the `.p12` file |
+| `PANDITE_APPLE_ID` | The Apple ID of the developer account |
+| `PANDITE_APPLE_TEAM_ID` | The team identifier (10 characters) |
+| `PANDITE_APPLE_APP_PASSWORD` | An app-specific password of the Apple ID |
+
+To change the
 placeholder bundle identifier, set `PANDITE_BUNDLE_ID` before you run the
 script.
 

@@ -48,7 +48,7 @@ libc = "0.2"
 arboard = { version = "3.7", default-features = false, features = ["image-data"] }
 libc = "0.2"
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSError", "NSFileManager", "NSString", "NSURL"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSError", "NSFileManager", "NSString", "NSURL"] }
 
 [lints]
 workspace = true
