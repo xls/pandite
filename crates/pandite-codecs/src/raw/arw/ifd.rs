@@ -147,12 +147,12 @@ pub(super) fn chain(data: &[u8], first: u32) -> Vec<Dir<'_>> {
 impl<'a> Dir<'a> {
     /// The entry of `tag` with at least one value, in any entry order
     /// (R-ARW-7). A count of 0 counts as absent (R-ARW-16).
-    pub(super) fn entry(&self, tag: u16) -> Option<&Entry> {
+    pub(crate) fn entry(&self, tag: u16) -> Option<&Entry> {
         self.entries.iter().find(|e| e.tag == tag && e.count > 0)
     }
 
     /// True when `tag` is present with at least one value.
-    pub(super) fn has(&self, tag: u16) -> bool {
+    pub(crate) fn has(&self, tag: u16) -> bool {
         self.entry(tag).is_some()
     }
 
@@ -171,7 +171,7 @@ impl<'a> Dir<'a> {
     /// All values of an unsigned integer tag. TIFF 6.0 readers accept
     /// BYTE, SHORT and LONG for unsigned integer fields; R-ARW-8 adds the
     /// IFD type. `Ok(None)` when absent or of another type.
-    pub(super) fn uints(&self, tag: u16) -> ArwResult<Option<Vec<u32>>> {
+    pub(crate) fn uints(&self, tag: u16) -> ArwResult<Option<Vec<u32>>> {
         let Some(e) = self.entry(tag) else {
             return Ok(None);
         };
@@ -192,7 +192,7 @@ impl<'a> Dir<'a> {
     }
 
     /// The first value of an unsigned integer tag.
-    pub(super) fn uint(&self, tag: u16) -> ArwResult<Option<u32>> {
+    pub(crate) fn uint(&self, tag: u16) -> ArwResult<Option<u32>> {
         Ok(self.uints(tag)?.and_then(|v| v.first().copied()))
     }
 
@@ -252,7 +252,7 @@ impl<'a> Dir<'a> {
 
     /// An ASCII value with all trailing zero bytes and spaces removed
     /// (R-ARW-10).
-    pub(super) fn ascii(&self, tag: u16) -> ArwResult<Option<&'a [u8]>> {
+    pub(crate) fn ascii(&self, tag: u16) -> ArwResult<Option<&'a [u8]>> {
         let Some(e) = self.entry(tag) else {
             return Ok(None);
         };
