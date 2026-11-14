@@ -170,7 +170,7 @@ The Release workflow does the same when these repository secrets exist:
 | `PANDITE_MACOS_CERT_BASE64` | The Developer ID Application certificate with its private key, exported as a `.p12` file and encoded with `base64` |
 | `PANDITE_MACOS_CERT_PASSWORD` | The password of the `.p12` file |
 | `PANDITE_APPLE_ID` | The Apple ID of the developer account |
-| `PANDITE_APPLE_TEAM_ID` | The team identifier (10 characters) |
+| `PANDITE_APPLE_TEAM_ID` | Optional. The team identifier (10 characters). Without it, the build reads it from the certificate name |
 | `PANDITE_APPLE_APP_PASSWORD` | An app-specific password of the Apple ID |
 
 To change the

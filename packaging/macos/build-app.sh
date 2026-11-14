@@ -14,9 +14,11 @@
 #                                the keychain. Without it the app gets an ad
 #                                hoc signature, which Gatekeeper does not trust.
 #   PANDITE_MACOS_KEYCHAIN       the keychain that holds the identity (optional)
-# Notarization (only with a Developer ID signature), all three together:
-#   PANDITE_APPLE_ID, PANDITE_APPLE_TEAM_ID, PANDITE_APPLE_APP_PASSWORD
+# Notarization (only with a Developer ID signature), both together:
+#   PANDITE_APPLE_ID, PANDITE_APPLE_APP_PASSWORD
 #                                (an app-specific password of the Apple ID)
+#   PANDITE_APPLE_TEAM_ID        optional: read from the identity name
+#                                when it is not set
 # With them the app and the disk image go to the Apple notary service and
 # get their tickets stapled, so they open without a warning, also offline.
 # Runs on macOS only (lipo, codesign, ditto, hdiutil, plutil).
@@ -67,8 +69,13 @@ KEYCHAIN_ARGS=()
 if [ -n "${PANDITE_MACOS_KEYCHAIN:-}" ]; then
   KEYCHAIN_ARGS=(--keychain "$PANDITE_MACOS_KEYCHAIN")
 fi
+# The team identifier stands in parentheses at the end of the identity name.
+TEAM_ID=${PANDITE_APPLE_TEAM_ID:-}
+if [ -z "$TEAM_ID" ]; then
+  TEAM_ID=$(printf '%s' "$IDENTITY" | sed -n 's/.*(([A-Z0-9]{10}))$//p')
+fi
 NOTARIZE=0
-if [ -n "$IDENTITY" ] && [ -n "${PANDITE_APPLE_ID:-}" ] && [ -n "${PANDITE_APPLE_TEAM_ID:-}" ] && [ -n "${PANDITE_APPLE_APP_PASSWORD:-}" ]; then
+if [ -n "$IDENTITY" ] && [ -n "${PANDITE_APPLE_ID:-}" ] && [ -n "$TEAM_ID" ] && [ -n "${PANDITE_APPLE_APP_PASSWORD:-}" ]; then
   NOTARIZE=1
 fi
 
@@ -77,12 +84,12 @@ fi
 notarize() {
   local file=$1 result id
   result=$(xcrun notarytool submit "$file" --wait --output-format json \
-    --apple-id "$PANDITE_APPLE_ID" --team-id "$PANDITE_APPLE_TEAM_ID" --password "$PANDITE_APPLE_APP_PASSWORD")
+    --apple-id "$PANDITE_APPLE_ID" --team-id "$TEAM_ID" --password "$PANDITE_APPLE_APP_PASSWORD")
   echo "$result"
   if ! echo "$result" | grep -q '"status" *: *"Accepted"'; then
     id=$(echo "$result" | sed -n 's/.*"id" *: *"\([^"]*\)".*/\1/p' | head -n 1)
     if [ -n "$id" ]; then
-      xcrun notarytool log "$id" --apple-id "$PANDITE_APPLE_ID" --team-id "$PANDITE_APPLE_TEAM_ID" \
+      xcrun notarytool log "$id" --apple-id "$PANDITE_APPLE_ID" --team-id "$TEAM_ID" \
         --password "$PANDITE_APPLE_APP_PASSWORD" >&2 || true
     fi
     echo "the Apple notary service did not accept $file" >&2
