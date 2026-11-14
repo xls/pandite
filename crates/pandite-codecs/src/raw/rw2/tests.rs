@@ -7,9 +7,7 @@ use super::meta::{self, Class, Relative, Variant, WbSource};
 use super::sensor;
 use super::*;
 use crate::raw::arw::render;
-use crate::raw::arw::tests::{
-    agreement, grid_means, noise, LinearF32, CHROMA_MAX, CHROMA_MEAN, RANK_MIN,
-};
+use crate::raw::arw::tests::{agreement, grid_means, noise, LinearF32, RANK_MIN};
 use pandite_core::{CancelToken, DecodeOptions, Error, PixelFormat};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
@@ -1432,42 +1430,44 @@ const CAMERA_VECTORS: &[(&str, usize, usize, &[u16])] = &[
     ),
 ];
 
-/// Samples whose comparison exceeds a Sony tolerance, with the tolerance
-/// that the specification's own measurement record of the same sample
-/// justifies: file name, source, mean tolerance, largest-cell tolerance.
-///
-/// M8 records, per sample, the mean chromaticity error of the decoder of
-/// the document against the same embedded JPEG: the sum of the absolute
-/// r, g and b chromaticity differences per 16 x 16 block. For any block
-/// that sum is never below the rg distance used here (|dr| + |dg| alone is
-/// already at least sqrt(dr^2 + dg^2)), so the recorded value is the error
-/// the document itself measured and accepted for the sample. Only the
-/// exceeded metric takes the recorded value; the other keeps the Sony
-/// tolerance. Measured with this decoder (display rendering):
-/// - DC-GH5S (S15, generic matrix, OQ-9): mean 0.0721 above 0.05; M8 0.161.
-/// - DC-G9 (S16, generic matrix, OQ-9): largest cell 0.1724 above 0.15;
-///   M8 0.297 (the document names this file its worst, OQ-9).
-/// - DC-S1 (S17): mean 0.0593 above 0.05; M8 0.098. The colorimetric
-///   result is 0.0295 and 0.0994 (inside the Sony tolerances); the shared
-///   display rendering moves the saturated red cells of this scene.
-const M8_TOLERANCES: &[(&str, &str, f64, f64)] = &[
-    ("DC-GH5S_14bit_1x1.RW2", "S15", 0.161, CHROMA_MAX),
-    ("DC-G9_HighRes_secondary_4x3.RW2", "S16", CHROMA_MEAN, 0.297),
-    ("DC-S1_3x2.RW2", "S17", 0.098, CHROMA_MAX),
-];
+/// Tolerances of the comparison with the camera's own JPEG, one set for
+/// every RW2 sample, nothing fitted per file: mean chromaticity distance
+/// at most 0.08 and largest cell at most 0.20 (the Sony test allows 0.05
+/// and 0.15), with the Sony rank correlation (0.90) and minimum of 16
+/// usable cells. The limits are wider than the Sony ones because several
+/// models have no row in the color table and use the generic matrix
+/// (OQ-9: DC-G9, DC-GH5S), and because the shared display rendering adds
+/// to the distance (DC-S1: 0.0295 and 0.0994 colorimetric, 0.0593 and
+/// 0.1498 displayed). The Fujifilm decoder uses the same set for the same
+/// reason. A negative control (the CFA read one column off) must fail them.
+const RW2_CHROMA_MEAN: f64 = 0.08;
+const RW2_CHROMA_MAX: f64 = 0.20;
+/// Fewest usable cells of a comparison (the Sony value).
+const MIN_CELLS: usize = 16;
+
+/// True when a comparison (mean, max, rank, usable cells) lies inside the
+/// RW2 tolerances.
+fn within(mean: f64, max: f64, rank: f64, used: usize) -> bool {
+    mean <= RW2_CHROMA_MEAN && max <= RW2_CHROMA_MAX && rank >= RANK_MIN && used >= MIN_CELLS
+}
 
 /// Every `.RW2` and `.RAW` file in the folder named by
 /// `PANDITE_RW2_SAMPLES` (absolute, or relative to the workspace root)
 /// decodes through the sensor-data path when its variant is in scope, at
 /// the size of the active area, and agrees with the file's own largest
-/// embedded JPEG by the method and tolerances of the Sony test
+/// embedded JPEG by the method of the Sony test
 /// `arw_real_samples_match_embedded_preview`: the default display
 /// rendering on an 8 x 8 grid of cell means, exposure matched by one gain,
-/// rg chromaticity distance per usable cell (mean at most 0.05, largest
-/// cell at most 0.15) and a Spearman rank correlation of cell luminance of
-/// at least 0.90; files without as-shot white balance are compared after
-/// one global gain per channel. The samples of [`M8_TOLERANCES`] use the
-/// tolerance of the specification's record for the metric they exceed.
+/// rg chromaticity distance per usable cell and a Spearman rank
+/// correlation of cell luminance; files without as-shot white balance are
+/// compared after one global gain per channel. The tolerances are
+/// [`RW2_CHROMA_MEAN`], [`RW2_CHROMA_MAX`], `RANK_MIN` and [`MIN_CELLS`].
+///
+/// Negative control: every in-scope sample with an embedded JPEG is also
+/// developed with a wrong CFA reading (the pattern shifted by one column,
+/// so red and blue pixels are read as green and green as red or blue) and
+/// must fail the same tolerances; the test fails when a control passes.
+///
 /// RAW files (V7, V8) carry no embedded JPEG (M13, OQ-16): they must
 /// develop, and are reported without a comparison. Out-of-scope files must
 /// return the preview. The camera vectors of TV-5 to TV-7 are checked on
@@ -1593,12 +1593,8 @@ fn rw2_real_samples_match_embedded_preview() {
         let balance = matches!(info.wb, WbSource::Table | WbSource::Generic);
         let (raw_mean, raw_max, _, _) = agreement(&ours, &theirs, false);
         let (mean, max, rank, used) = agreement(&ours, &theirs, balance);
-        let (mean_tol, max_tol, record) = M8_TOLERANCES
-            .iter()
-            .find(|t| t.0 == name)
-            .map_or((CHROMA_MEAN, CHROMA_MAX, ""), |t| (t.2, t.3, t.1));
         line.push_str(&format!(
-            " | vs embedded {}x{}: chroma mean {mean:.4} max {max:.4} rank {rank:.3} cells {used}{} | tolerance mean {mean_tol} max {max_tol} rank {RANK_MIN}{}",
+            " | vs embedded {}x{}: chroma mean {mean:.4} max {max:.4} rank {rank:.3} cells {used}{}",
             best.width,
             best.height,
             if balance {
@@ -1606,14 +1602,24 @@ fn rw2_real_samples_match_embedded_preview() {
             } else {
                 String::new()
             },
-            if record.is_empty() {
-                " (Sony)".to_string()
-            } else {
-                format!(" (M8 record of {record})")
-            },
         ));
-        if mean > mean_tol || max > max_tol || rank < RANK_MIN || used < 16 {
+        if !within(mean, max, rank, used) {
             failures.push(line.clone());
+        }
+        // The negative control: the CFA colors of the plan shifted by one
+        // column (position 2 * y + x takes the color of 2 * y + (x + 1) mod
+        // 2), developed with the same display rendering.
+        let mut wrong = plan.clone();
+        wrong.colors = [0, 1, 2, 3].map(|k| plan.colors[(k & 2) | ((k + 1) & 1)]);
+        let control = develop(&data, &wrong, &CancelToken::new(), Output::Display8)
+            .expect("control develops");
+        let ctrl = grid_means(&control, 8, 4);
+        let (cm, cx, cr, cu) = agreement(&ctrl, &theirs, balance);
+        line.push_str(&format!(
+            " | control (CFA one column off): chroma mean {cm:.4} max {cx:.4} rank {cr:.3} cells {cu}"
+        ));
+        if within(cm, cx, cr, cu) {
+            failures.push(format!("{name}: the negative control passes: {line}"));
         }
         println!("{line}");
     }
