@@ -171,3 +171,32 @@ fn folder_scan_handles_missing_and_empty() {
     assert!(lib.get(0).is_ready() && lib.get(2).is_ready());
     assert_eq!(h.dec.count(&Call::full("img01.fake")), 0);
 }
+
+#[test]
+fn unknown_file_is_refused_before_it_is_read() {
+    // A document that no decoder knows, by its first bytes or its name.
+    let mut h = Harness::new("refuse-early", |_| {});
+    let doc = h.dir.path().join("manual.pdf");
+    std::fs::write(
+        &doc,
+        [
+            b"%PDF-1.7
+"
+            .as_slice(),
+            &[7u8; 300_000],
+        ]
+        .concat(),
+    )
+    .unwrap();
+    let lib = Arc::clone(h.lib());
+    lib.set_items(vec![doc]);
+    lib.set_current(0);
+    h.idle();
+    h.pump();
+    match lib.get(0) {
+        Fetch::Failed(err) => assert!(matches!(*err, Error::Unsupported(_)), "{err}"),
+        other => panic!("expected an unsupported file, got {other:?}"),
+    }
+    // The file was looked at, and its data was never read in full.
+    assert_eq!(h.files.reads("manual.pdf"), 0);
+}

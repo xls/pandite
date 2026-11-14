@@ -96,6 +96,10 @@ impl FileAccess for StdDisk {
         StdFiles.file_info(path)
     }
 
+    fn read_header(&self, path: &Path, len: usize) -> Option<io::Result<Vec<u8>>> {
+        StdFiles.read_header(path, len)
+    }
+
     fn read(
         &self,
         path: &Path,

@@ -502,6 +502,10 @@ impl FileAccess for FakeFiles {
         Ok(self.localize(StdFiles.file_info(path)?))
     }
 
+    fn read_header(&self, path: &Path, len: usize) -> Option<io::Result<Vec<u8>>> {
+        StdFiles.read_header(path, len)
+    }
+
     fn read(&self, path: &Path, cancel: &CancelToken) -> Result<Source> {
         let name = name_of(path);
         let mut g = lock(&self.state);

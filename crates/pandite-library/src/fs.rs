@@ -120,6 +120,13 @@ pub trait FileAccess: Send + Sync {
         Ok(FileInfo::from_metadata(name, &meta))
     }
 
+    /// The first bytes of the file, at most `len`, or `None` when this
+    /// file system cannot tell without a full read. The library uses them
+    /// to refuse a file that no decoder knows before it reads the file.
+    fn read_header(&self, _path: &Path, _len: usize) -> Option<io::Result<Vec<u8>>> {
+        None
+    }
+
     /// Read the whole file. Check `cancel` at least every
     /// [`READ_CHUNK`] bytes and return [`pandite_core::Error::Cancelled`] once
     /// it is set.
@@ -132,7 +139,18 @@ pub trait FileAccess: Send + Sync {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct StdFiles;
 
-impl FileAccess for StdFiles {}
+impl FileAccess for StdFiles {
+    fn read_header(&self, path: &Path, len: usize) -> Option<io::Result<Vec<u8>>> {
+        Some(std_read_header(path, len))
+    }
+}
+
+/// The first bytes of `path`, at most `len`, through `std::fs`.
+pub fn std_read_header(path: &Path, len: usize) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::with_capacity(len);
+    File::open(path)?.take(len as u64).read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
 
 /// True when the file data is stored on this machine.
 ///

@@ -46,7 +46,7 @@ pub use downscale::{box_downscale, fit_size};
 pub use downscale::{box_downscale_reference, box_downscale_with, DownscaleLevel};
 pub use folder::{natural_cmp, FolderList};
 pub use fs::{
-    is_local, read_chunked, std_list_dir, FileAccess, FileInfo, Stamp, StdFiles,
+    is_local, read_chunked, std_list_dir, std_read_header, FileAccess, FileInfo, Stamp, StdFiles,
     FILE_ATTRIBUTE_OFFLINE, FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS, FILE_ATTRIBUTE_RECALL_ON_OPEN,
     READ_CHUNK,
 };

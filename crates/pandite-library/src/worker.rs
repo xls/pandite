@@ -343,6 +343,19 @@ fn read(
     } else {
         shared.lock().mark_local_read(task);
     }
+    // A file that no decoder knows by its first bytes or its extension is
+    // refused here, before the whole file is read: a large document, or
+    // one on a slow drive, would keep the user waiting for nothing.
+    if let Some(Ok(header)) = shared
+        .files
+        .read_header(path, pandite_core::provider::SNIFF_LEN)
+    {
+        let probe = Source::from_vec(header, Some(path.to_path_buf()));
+        if shared.registry.decoder_for(&probe).is_none() {
+            let err = Error::Unsupported(path.display().to_string());
+            return Err(leave(Early::Failed(err, stamp)));
+        }
+    }
     let start = Instant::now();
     let read = guard(|| shared.files.read(path, &task.cancel));
     timings.read = Some(start.elapsed());
