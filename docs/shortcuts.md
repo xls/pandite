@@ -53,7 +53,7 @@ On macOS, Ctrl is the Command key and Alt is the Option key.
 | Context menu | Menu, Shift+F10 |
 | Keyboard shortcuts | F1 |
 | Close dialog or quit | Esc |
-| Quit | Ctrl+Q, Ctrl+W |
+| Quit | Q, Ctrl+Q, Ctrl+W |
 
 ### In crop mode
 
@@ -102,6 +102,8 @@ On macOS, Ctrl is the Command key and Alt is the Option key.
   Ctrl+Q. pandite does not wait for a slow file, a decode, an image copy or
   text recognition.
 - A held Esc does not repeat. When it closes a dialog, pandite stays open.
+- Q closes pandite, the same as Ctrl+Q. In a dialog or a question, Q is a
+  letter: it goes to the text field and pandite stays open.
 - To leave full screen, press F11 or Alt+Enter. To leave crop mode without
   a crop, press C or click Cancel.
 - In a dialog, Full screen and Quit stay available. The dialog receives all

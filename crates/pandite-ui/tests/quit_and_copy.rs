@@ -304,3 +304,24 @@ fn ctrl_shift_c_copies_path() {
     empty.count = 0;
     assert!(key(&mut Ui::new(), &empty, Key::C, Modifiers::CTRL_SHIFT).is_empty());
 }
+
+#[test]
+fn q_quits_and_is_a_letter_in_dialogs() {
+    let quit = vec![Action::Quit];
+    let ctx = image_ctx();
+    // In the view and in crop mode, Q closes the program like Escape.
+    assert_eq!(press_key(&mut Ui::new(), &ctx, Key::Q), quit);
+    let mut ui = Ui::new();
+    press_key(&mut ui, &ctx, Key::C);
+    assert_eq!(ui.mode(), UiMode::Crop);
+    assert_eq!(press_key(&mut ui, &ctx, Key::Q), quit);
+    // Ctrl+Q still quits.
+    assert_eq!(key(&mut Ui::new(), &ctx, Key::Q, Modifiers::CTRL), quit);
+    // In a question, a plain Q does not quit; Ctrl+Q does.
+    let mut ui = Ui::new();
+    ui.show_confirm(ConfirmRequest::new(9, "Replace?", "Replace the file?"));
+    assert_eq!(ui.mode(), UiMode::Modal);
+    assert!(!press_key(&mut ui, &ctx, Key::Q).contains(&Action::Quit));
+    assert_eq!(ui.mode(), UiMode::Modal);
+    assert_eq!(key(&mut ui, &ctx, Key::Q, Modifiers::CTRL), quit);
+}

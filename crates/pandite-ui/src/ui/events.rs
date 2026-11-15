@@ -693,9 +693,11 @@ impl Ui {
         }
         if self.confirm.is_some() || self.dialog.is_some() {
             let confirm = self.confirm.is_some();
-            // Window commands stay available in dialogs.
+            // Window commands stay available in dialogs. A plain Q is a
+            // letter there: it goes to the text field, not to Quit.
+            let typed = key == Key::Q && !mods.ctrl && !mods.alt;
             if let Some(cmd @ (Command::Fullscreen | Command::Quit)) =
-                command_for_key(key, mods, false)
+                command_for_key(key, mods, false).filter(|_| !typed)
             {
                 if !repeat {
                     self.run_command(cmd, ctx, None, out);

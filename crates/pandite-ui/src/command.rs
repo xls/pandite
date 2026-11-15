@@ -449,6 +449,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
     Shortcut::new(Key::F10, SHIFT, Command::ContextMenu),
     Shortcut::new(Key::F1, N, Command::Help),
     Shortcut::new(Key::Escape, N, Command::Cancel),
+    Shortcut::new(Key::Q, N, Command::Quit),
     Shortcut::new(Key::Q, CTRL, Command::Quit),
     Shortcut::new(Key::W, CTRL, Command::Quit),
     Shortcut::new(Key::Enter, N, Command::CropApply),
