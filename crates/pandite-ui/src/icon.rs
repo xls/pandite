@@ -7,7 +7,7 @@
 //! and drawn with [`pandite_core::DrawCmd::Image`] whose tint is the icon
 //! color. Rasterization runs again only when the pixel size changes.
 
-use crate::raster::{rasterize, Op, Shape, Transform, P};
+use crate::raster::{rasterize, Op, Shape, Transform, GRID, P};
 use pandite_core::{ImageBuf, PixelFormat, TextureId, TextureSink};
 
 /// First texture id used for icons. See [`Icon::texture_id`].
@@ -75,6 +75,9 @@ pub enum Icon {
 }
 
 const W: f32 = 2.0;
+
+/// Width of a stroke on screen in pixels, up to 150 percent display scale.
+const STROKE_PX: f32 = 1.25;
 
 const fn path(pts: &'static [P], width: f32) -> Op {
     Op::Add(Shape::Path {
@@ -475,7 +478,26 @@ impl Icon {
     /// row major, top row first).
     pub fn coverage(self, size: u32) -> Vec<u8> {
         let (ops, transform) = self.shape();
-        rasterize(ops, transform, size.clamp(1, 1024))
+        let size = size.clamp(1, 1024);
+        rasterize(ops, transform, size, self.stroke(size))
+    }
+
+    /// The factor on every stroke width of the icon at `size` pixels.
+    ///
+    /// The shapes are drawn with strokes of [`W`] grid units, which is a
+    /// heavy line. On screen a stroke is [`STROKE_PX`] pixels wide up to a
+    /// display scale of 150 percent and grows with the scale above that,
+    /// so the icons stay light at every scale. A factor above 1 is not
+    /// used: very small icons keep the drawn weight.
+    pub fn stroke(self, size: u32) -> f32 {
+        // The size of the icon at 100 percent scale.
+        let base = match self {
+            Icon::Mark => 12.0,
+            _ => 20.0,
+        };
+        let scale = size as f32 / base;
+        let px = STROKE_PX * (scale / 1.5).max(1.0);
+        (px * GRID / size as f32 / W).min(1.0)
     }
 
     /// The icon as a white RGBA8 image whose alpha is the coverage, ready

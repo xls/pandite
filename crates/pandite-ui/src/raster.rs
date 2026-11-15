@@ -126,7 +126,7 @@ fn sd_polygon(p: P, pts: &[P]) -> f32 {
 
 impl Shape {
     /// Signed distance from `p` to the shape edge, negative inside.
-    pub(crate) fn distance(&self, p: P) -> f32 {
+    pub(crate) fn distance(&self, p: P, stroke: f32) -> f32 {
         match *self {
             Shape::Path { pts, width, closed } => {
                 let mut d = f32::INFINITY;
@@ -140,11 +140,13 @@ impl Shape {
                 if closed && n > 2 {
                     d = d.min(dist_segment(p, pts[n - 1], pts[0]));
                 }
-                d - width * 0.5
+                d - width * stroke * 0.5
             }
             Shape::Fill { pts } => sd_polygon(p, pts),
             Shape::Disc { c, r } => len(p.0 - c.0, p.1 - c.1) - r,
-            Shape::Ring { c, r, width } => (len(p.0 - c.0, p.1 - c.1) - r).abs() - width * 0.5,
+            Shape::Ring { c, r, width } => {
+                (len(p.0 - c.0, p.1 - c.1) - r).abs() - width * stroke * 0.5
+            }
             Shape::Arc {
                 c,
                 r,
@@ -166,7 +168,7 @@ impl Shape {
                     let b = end(start + sweep);
                     len(p.0 - a.0, p.1 - a.1).min(len(p.0 - b.0, p.1 - b.1))
                 };
-                d - width * 0.5
+                d - width * stroke * 0.5
             }
             Shape::Box { x, y, w, h, r } => sd_rounded_box(p, x, y, w, h, r),
             Shape::Frame {
@@ -176,25 +178,25 @@ impl Shape {
                 h,
                 r,
                 width,
-            } => sd_rounded_box(p, x, y, w, h, r).abs() - width * 0.5,
+            } => sd_rounded_box(p, x, y, w, h, r).abs() - width * stroke * 0.5,
             Shape::Outline { parts, width } => {
                 let union = parts
                     .iter()
-                    .map(|s| s.distance(p))
+                    .map(|s| s.distance(p, stroke))
                     .fold(f32::INFINITY, f32::min);
-                union.abs() - width * 0.5
+                union.abs() - width * stroke * 0.5
             }
         }
     }
 }
 
 /// Signed distance of a whole icon description at `p`.
-pub(crate) fn distance(ops: &[Op], p: P) -> f32 {
+pub(crate) fn distance(ops: &[Op], p: P, stroke: f32) -> f32 {
     let mut d = f32::INFINITY;
     for op in ops {
         match op {
-            Op::Add(shape) => d = d.min(shape.distance(p)),
-            Op::Cut(shape, grow) => d = d.max(-(shape.distance(p) - grow)),
+            Op::Add(shape) => d = d.min(shape.distance(p, stroke)),
+            Op::Cut(shape, grow) => d = d.max(-(shape.distance(p, stroke) - grow)),
         }
     }
     d
@@ -202,7 +204,7 @@ pub(crate) fn distance(ops: &[Op], p: P) -> f32 {
 
 /// Rasterize `ops` into a `size` x `size` coverage mask (0 to 255, row
 /// major, top row first).
-pub(crate) fn rasterize(ops: &[Op], transform: Transform, size: u32) -> Vec<u8> {
+pub(crate) fn rasterize(ops: &[Op], transform: Transform, size: u32, stroke: f32) -> Vec<u8> {
     let size = size.max(1);
     let units_per_px = GRID / size as f32;
     let mut out = Vec::with_capacity((size * size) as usize);
@@ -215,7 +217,7 @@ pub(crate) fn rasterize(ops: &[Op], transform: Transform, size: u32) -> Vec<u8> 
                 Transform::MirrorX => (GRID - gx, gy),
                 Transform::Transpose => (gy, gx),
             };
-            let d_px = distance(ops, p) / units_per_px;
+            let d_px = distance(ops, p, stroke) / units_per_px;
             let coverage = (0.5 - d_px).clamp(0.0, 1.0);
             out.push((coverage * 255.0).round() as u8);
         }
@@ -233,7 +235,7 @@ mod tests {
             c: (12.0, 12.0),
             r: 8.0,
         })];
-        let mask = rasterize(&ops, Transform::Identity, 24);
+        let mask = rasterize(&ops, Transform::Identity, 24, 1.0);
         assert_eq!(mask[12 * 24 + 12], 255);
         assert_eq!(mask[0], 0);
         let partial = mask.iter().filter(|&&v| v > 0 && v < 255).count();
@@ -258,7 +260,7 @@ mod tests {
                 0.0,
             ),
         ];
-        let mask = rasterize(&ops, Transform::Identity, 24);
+        let mask = rasterize(&ops, Transform::Identity, 24, 1.0);
         assert_eq!(mask[12 * 24 + 12], 0);
         assert_eq!(mask[4 * 24 + 4], 255);
     }
@@ -279,7 +281,8 @@ mod tests {
                 (
                     12.0 + 8.0 * std::f32::consts::FRAC_1_SQRT_2,
                     12.0 + 8.0 * std::f32::consts::FRAC_1_SQRT_2
-                )
+                ),
+                1.0
             ) < 0.0
         );
         assert!(
@@ -288,7 +291,8 @@ mod tests {
                 (
                     12.0 - 8.0 * std::f32::consts::FRAC_1_SQRT_2,
                     12.0 - 8.0 * std::f32::consts::FRAC_1_SQRT_2
-                )
+                ),
+                1.0
             ) > 3.0
         );
     }
@@ -299,9 +303,9 @@ mod tests {
             c: (4.0, 12.0),
             r: 2.0,
         })];
-        let plain = rasterize(&ops, Transform::Identity, 24);
-        let mirrored = rasterize(&ops, Transform::MirrorX, 24);
-        let transposed = rasterize(&ops, Transform::Transpose, 24);
+        let plain = rasterize(&ops, Transform::Identity, 24, 1.0);
+        let mirrored = rasterize(&ops, Transform::MirrorX, 24, 1.0);
+        let transposed = rasterize(&ops, Transform::Transpose, 24, 1.0);
         assert_eq!(plain[12 * 24 + 3], 255);
         assert_eq!(mirrored[12 * 24 + 20], 255);
         assert_eq!(transposed[3 * 24 + 12], 255);
