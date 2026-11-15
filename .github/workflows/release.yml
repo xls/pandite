@@ -333,7 +333,7 @@ jobs:
           security import "$cert" -k "$keychain" -P "$CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/productbuild
           security set-key-partition-list -S apple-tool:,apple: -s -k "$key" "$keychain" > /dev/null
           security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
-          app=$(security find-identity -v "$keychain" | sed -n 's/.*"\(\(Apple Distribution\|3rd Party Mac Developer Application\): [^"]*\)".*/\1/p' | head -n 1)
+          app=$(security find-identity -v "$keychain" | sed -n -E 's/.*"((Apple Distribution|3rd Party Mac Developer Application): [^"]*)".*/\1/p' | head -n 1)
           installer=$(security find-identity -v "$keychain" | sed -n 's/.*"\(3rd Party Mac Developer Installer: [^"]*\)".*/\1/p' | head -n 1)
           [ -n "$app" ] || { echo "the store .p12 file holds no Apple Distribution identity" >&2; exit 1; }
           [ -n "$installer" ] || { echo "the store .p12 file holds no 3rd Party Mac Developer Installer identity" >&2; exit 1; }
