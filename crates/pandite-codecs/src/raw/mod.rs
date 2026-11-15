@@ -997,6 +997,17 @@ fn develop(d: &[u8], i: &Dng, cancel: &CancelToken, eight_bit: bool) -> Result<I
         }
         average(sum, cnt)
     };
+    // A 2 x 2 pattern with all three colors: per position in the pattern,
+    // its own color and those of its horizontal, vertical and diagonal
+    // neighbors. The 3 x 3 neighborhood (clipped at the edges) then always
+    // holds every color, as `camera` finds.
+    let bayer: Option<[[usize; 4]; 4]> = (i.cfa && i.pattern_dim == (2, 2) && aw >= 2 && ah >= 2)
+        .then(|| {
+            let cell = [0, 1, 2, 3].map(|k| color(k / 2, k % 2));
+            [0, 1, 2, 3].map(|q| [cell[q], cell[q ^ 1], cell[q ^ 2], cell[q ^ 3]])
+        })
+        .filter(|b| (0..3).all(|c| b.iter().any(|q| q[0] == c)));
+
     let neutral = i.neutral.unwrap_or([1.0, 1.0, 1.0]);
     let wb = neutral.map(|n| (1.0 / n) as f32);
     let matrix = i
@@ -1059,10 +1070,66 @@ fn develop(d: &[u8], i: &Dng, cancel: &CancelToken, eight_bit: bool) -> Result<I
     let bands: Vec<(usize, &mut [u8])> = out.chunks_mut(BAND * row_bytes).enumerate().collect();
     crate::pool::run(bands, cancel, |(b, part)| {
         let y0 = cy + b * BAND;
+        let Some(bayer) = bayer else {
+            for (row, line) in part.chunks_exact_mut(row_bytes).enumerate() {
+                let y = y0 + row;
+                for (px, x) in line.chunks_exact_mut(bpp).zip(cx..cx + cw) {
+                    finish(camera(y, x), px);
+                }
+            }
+            return Ok(());
+        };
+        // Bayer: normalize the band and one row above and below once, then
+        // average the neighbors in the order `camera` adds them, so the
+        // result is the same to the bit.
+        let rows = part.len() / row_bytes;
+        let (ylo, yhi) = (y0.saturating_sub(1), (y0 + rows).min(ah - 1));
+        let mut levels = vec![0f32; (yhi - ylo + 1) * aw];
+        for (yy, line) in (ylo..=yhi).zip(levels.chunks_exact_mut(aw)) {
+            for (xx, v) in line.iter_mut().enumerate() {
+                *v = norm(yy, xx, 0);
+            }
+        }
         for (row, line) in part.chunks_exact_mut(row_bytes).enumerate() {
             let y = y0 + row;
+            let inner_row = y >= 1 && y + 1 < ah;
+            let r1 = (y - ylo) * aw;
             for (px, x) in line.chunks_exact_mut(bpp).zip(cx..cx + cw) {
-                finish(camera(y, x), px);
+                let [own, h, v, dg] = bayer[(y & 1) * 2 + (x & 1)];
+                let mut sum = [0f32; 3];
+                let mut cnt = [0u32; 3];
+                sum[own] = levels[r1 + x];
+                cnt[own] = 1;
+                if inner_row && x >= 1 && x + 1 < aw {
+                    let (r0, r2) = (r1 - aw, r1 + aw);
+                    for (c, k) in [
+                        (dg, r0 + x - 1),
+                        (v, r0 + x),
+                        (dg, r0 + x + 1),
+                        (h, r1 + x - 1),
+                        (h, r1 + x + 1),
+                        (dg, r2 + x - 1),
+                        (v, r2 + x),
+                        (dg, r2 + x + 1),
+                    ] {
+                        if c != own {
+                            sum[c] += levels[k];
+                            cnt[c] += 1;
+                        }
+                    }
+                } else {
+                    // The edges: the clipped neighborhood, row by row.
+                    for yy in y.saturating_sub(1)..=(y + 1).min(ah - 1) {
+                        for xx in x.saturating_sub(1)..=(x + 1).min(aw - 1) {
+                            let c = bayer[(yy & 1) * 2 + (xx & 1)][0];
+                            if c != own {
+                                sum[c] += levels[(yy - ylo) * aw + xx];
+                                cnt[c] += 1;
+                            }
+                        }
+                    }
+                }
+                finish(average(sum, cnt), px);
             }
         }
         Ok(())
@@ -1094,6 +1161,65 @@ mod tests {
             vec![0xABC, 0x123]
         );
         assert_eq!(unpack(&[0x34, 0x12], 1, 16, true).unwrap(), vec![0x1234]);
+    }
+
+    /// The 2 x 2 Bayer path gives the same pixels, to the bit, as the
+    /// general path: the same mosaic described as a 2 x 4 pattern takes
+    /// the general path. Odd sizes, a crop and a black pattern cover the
+    /// edges and the band seams.
+    #[test]
+    fn bayer_path_matches_general_path() {
+        let (w, h) = (75usize, 2 * BAND + 37);
+        let mut state = 0x1234_5678u32;
+        let sensor: Vec<u8> = (0..w * h)
+            .flat_map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                (500 + (state % 15000) as u16).to_le_bytes()
+            })
+            .collect();
+        let dng = |pattern_dim: (usize, usize), pattern: Vec<u8>| Dng {
+            le: true,
+            width: w as u32,
+            height: h as u32,
+            bits: 16,
+            spp: 1,
+            compression: 1,
+            cfa: true,
+            pattern_dim,
+            pattern,
+            chunks: vec![(0, sensor.len())],
+            tile: (w, h),
+            tiled: false,
+            linearization: Vec::new(),
+            black_dim: (2, 2),
+            black: vec![510.0, 520.0, 530.0, 540.0],
+            white: 15000.0,
+            active: (1, 2, h as u32, w as u32 - 1),
+            crop: Some((1.0, 3.0, 66.0, 150.0)),
+            color_matrix: Some([0.9, -0.2, -0.1, -0.4, 1.3, 0.1, -0.1, 0.2, 0.6]),
+            neutral: Some([0.5, 1.0, 0.7]),
+            baseline_exposure: 0.5,
+            float: false,
+        };
+        for cfa in [[0u8, 1, 1, 2], [1, 0, 2, 1], [2, 1, 1, 0]] {
+            let fast = dng((2, 2), cfa.to_vec());
+            let wide = [
+                cfa[0], cfa[1], cfa[0], cfa[1], cfa[2], cfa[3], cfa[2], cfa[3],
+            ];
+            let general = dng((2, 4), wide.to_vec());
+            for eight_bit in [true, false] {
+                let cancel = CancelToken::new();
+                let a = develop(&sensor, &fast, &cancel, eight_bit).unwrap();
+                let b = develop(&sensor, &general, &cancel, eight_bit).unwrap();
+                assert_eq!((a.width(), a.height()), (66, 150));
+                assert!(
+                    a.data() == b.data(),
+                    "pattern {cfa:?}, eight bit {eight_bit}"
+                );
+            }
+        }
     }
 
     #[test]
