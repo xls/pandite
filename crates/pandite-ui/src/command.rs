@@ -96,8 +96,8 @@ pub enum Command {
     ContextMenu,
     /// Show the keyboard shortcut overlay.
     Help,
-    /// Escape: close the topmost menu, overlay or dialog, or quit when
-    /// none is open.
+    /// Escape: close the topmost menu, overlay or dialog, else dismiss the
+    /// prompt, or quit when none of them is open.
     Cancel,
     /// Close the application.
     Quit,

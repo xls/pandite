@@ -72,6 +72,22 @@ pub(crate) enum CropButton {
     Cancel,
 }
 
+/// A part of the prompt panel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PromptPart {
+    Button,
+    Close,
+    Panel,
+}
+
+/// Where the prompt panel and its two controls were drawn.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PromptRects {
+    pub panel: Rect,
+    pub button: Rect,
+    pub close: Rect,
+}
+
 /// What lies under the pointer, topmost first.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Target {
@@ -87,6 +103,7 @@ pub(crate) enum Target {
     ToolbarBar,
     CropBar(CropButton),
     CropBarPanel,
+    Prompt(PromptPart),
     InfoPanel,
     Gallery(Option<usize>),
     EmptyOpen,
@@ -99,6 +116,8 @@ pub(crate) enum Capture {
     Toolbar(crate::command::Command),
     More,
     CropBar(CropButton),
+    /// The button or the close mark of the prompt.
+    Prompt(PromptPart),
     Menu(Option<usize>),
     Form {
         confirm: bool,
@@ -196,6 +215,8 @@ pub struct Ui {
     text_clicks: Option<(Duration, Point, u32)>,
     /// Where the information panel was drawn in the last frame.
     info_rect: Option<Rect>,
+    /// Where the prompt was drawn in the last frame.
+    prompt_rects: Option<PromptRects>,
 }
 
 impl Default for Ui {
@@ -240,6 +261,7 @@ impl Ui {
             text_sel: None,
             text_clicks: None,
             info_rect: None,
+            prompt_rects: None,
         }
     }
 
@@ -785,6 +807,17 @@ impl Ui {
             }
             return Target::ToolbarBar;
         }
+        if let Some(r) = self.prompt_shown(ctx) {
+            if r.button.contains(p) {
+                return Target::Prompt(PromptPart::Button);
+            }
+            if r.close.contains(p) {
+                return Target::Prompt(PromptPart::Close);
+            }
+            if r.panel.contains(p) {
+                return Target::Prompt(PromptPart::Panel);
+            }
+        }
         if self.info_shown(ctx).is_some_and(|r| r.contains(p)) {
             return Target::InfoPanel;
         }
@@ -809,6 +842,18 @@ impl Ui {
     /// allows it (crop mode hides it, so the whole image stays editable).
     pub(crate) fn info_wanted(&self, ctx: &UiContext<'_>) -> bool {
         ctx.info_visible && !ctx.info.is_empty() && self.crop.is_none()
+    }
+
+    /// True when the context has a prompt and the mode allows it (crop
+    /// mode hides it, as it hides the information panel).
+    pub(crate) fn prompt_wanted(&self, ctx: &UiContext<'_>) -> bool {
+        ctx.prompt.is_some() && self.crop.is_none()
+    }
+
+    /// The prompt rectangles of the last frame, while the prompt still
+    /// shows.
+    fn prompt_shown(&self, ctx: &UiContext<'_>) -> Option<PromptRects> {
+        self.prompt_rects.filter(|_| self.prompt_wanted(ctx))
     }
 
     /// The information panel rectangle of the last frame, while the panel
@@ -1156,9 +1201,9 @@ impl Ui {
         });
     }
 
-    /// Escape: close the topmost menu, overlay or dialog. With none open
-    /// it quits, whatever else goes on (full screen, crop mode, a text
-    /// selection, a load).
+    /// Escape: close the topmost menu, overlay or dialog, else dismiss the
+    /// prompt. With none of them it quits, whatever else goes on (full
+    /// screen, crop mode, a text selection, a load).
     fn cancel(&mut self, ctx: &UiContext<'_>, out: &mut Vec<Action>) {
         if self.menu.is_some() {
             self.menu = None;
@@ -1168,6 +1213,11 @@ impl Ui {
             self.confirm_event(&crate::form::FormEvent::Cancel, ctx, out);
         } else if self.dialog.is_some() {
             self.dialog_event(crate::form::FormEvent::Cancel, ctx, out);
+        } else if let Some(prompt) = ctx.prompt.filter(|_| self.prompt_wanted(ctx)) {
+            out.push(Action::PromptResult {
+                id: prompt.id,
+                accepted: false,
+            });
         } else {
             out.push(Action::Quit);
         }
@@ -1241,6 +1291,7 @@ impl Ui {
             _ => match self.hover {
                 Target::Toolbar(cmd) if self.command_enabled(cmd, ctx) => CursorShape::Hand,
                 Target::More | Target::CropBar(_) | Target::EmptyOpen => CursorShape::Hand,
+                Target::Prompt(PromptPart::Button | PromptPart::Close) => CursorShape::Hand,
                 Target::Gallery(Some(_)) => CursorShape::Hand,
                 Target::Form { confirm, id, .. } => {
                     if field_hover(confirm, id, self) {

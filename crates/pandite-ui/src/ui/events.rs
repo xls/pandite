@@ -1,6 +1,6 @@
 //! Input handling: pointer, wheel, keyboard and text.
 
-use super::{Capture, CropButton, Dialog, Target, TextGrip, Ui};
+use super::{Capture, CropButton, Dialog, PromptPart, Target, TextGrip, Ui};
 use crate::action::{Action, WHEEL_ZOOM_STEP};
 use crate::command::{command_for_key, Command};
 use crate::confirm::{Answer, ConfirmOwner};
@@ -320,6 +320,11 @@ impl Ui {
             Target::Toolbar(cmd) if button == PointerButton::Left => Capture::Toolbar(cmd),
             Target::More if button == PointerButton::Left => Capture::More,
             Target::CropBar(b) if button == PointerButton::Left => Capture::CropBar(b),
+            Target::Prompt(part @ (PromptPart::Button | PromptPart::Close))
+                if button == PointerButton::Left =>
+            {
+                Capture::Prompt(part)
+            }
             Target::Gallery(index) => match button {
                 PointerButton::Left => Capture::Gallery {
                     index,
@@ -371,7 +376,7 @@ impl Ui {
                 PointerButton::Right => Capture::RightPress,
                 _ => Capture::Swallow,
             },
-            Target::ToolbarBar | Target::CropBarPanel | Target::InfoPanel
+            Target::ToolbarBar | Target::CropBarPanel | Target::InfoPanel | Target::Prompt(_)
                 if button == PointerButton::Right =>
             {
                 Capture::RightPress
@@ -509,6 +514,14 @@ impl Ui {
                     self.run_command(cmd, ctx, None, out);
                 }
             }
+            Capture::Prompt(part) => {
+                if let Some(prompt) = ctx.prompt.filter(|_| target == Target::Prompt(part)) {
+                    out.push(Action::PromptResult {
+                        id: prompt.id,
+                        accepted: part == PromptPart::Button,
+                    });
+                }
+            }
             Capture::Menu(Some(i)) => {
                 if target == Target::MenuItem(i) {
                     self.activate_menu(i, ctx, out);
@@ -567,6 +580,7 @@ impl Ui {
                         | Target::ToolbarBar
                         | Target::CropBarPanel
                         | Target::InfoPanel
+                        | Target::Prompt(_)
                 ) {
                     self.open_context_menu(pos, ctx);
                 }

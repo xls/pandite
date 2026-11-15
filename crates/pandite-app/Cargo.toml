@@ -36,8 +36,9 @@ arboard = { version = "3.7", default-features = false }
 # The trash (src/trash.rs) uses libc for the user id and the local time
 # on Linux, and NSFileManager through objc2 on macOS. Windows calls
 # shell32 directly. A move (src/disk.rs) renames without replacing a file
-# through libc on Linux and macOS. All of these crates are in the tree
-# already.
+# through libc on Linux and macOS. Folder grants in the App Sandbox
+# (src/sandbox.rs) are security-scoped bookmarks through NSURL and NSData.
+# All of these crates are in the tree already.
 [target.'cfg(all(unix, not(target_vendor = "apple")))'.dependencies]
 winit = { version = "0.30.13", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen", "wayland-csd-adwaita"] }
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
@@ -48,7 +49,7 @@ libc = "0.2"
 arboard = { version = "3.7", default-features = false, features = ["image-data"] }
 libc = "0.2"
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSError", "NSFileManager", "NSString", "NSURL"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSError", "NSFileManager", "NSString", "NSURL"] }
 
 [lints]
 workspace = true

@@ -42,6 +42,9 @@
   <true/>
   <key>NSHumanReadableCopyright</key>
   <string>Copyright (c) 2026 Thomas Rizos. MIT License.</string>
+  <!-- Pandite uses no encryption. App Store Connect then asks no export compliance questions. -->
+  <key>ITSAppUsesNonExemptEncryption</key>
+  <false/>
   <key>CFBundleDocumentTypes</key>
   <array>
     <dict>

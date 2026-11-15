@@ -29,6 +29,7 @@ use crate::console;
 use crate::disk::{Disk, StdDisk};
 use crate::platform::Waker;
 use crate::resident::{self, Reply, Request};
+use crate::sandbox::{self, SandboxDisk, Store};
 use crate::settings::{self, ensure_on_screen, first_open_rect, Settings, ThemeChoice};
 use pandite_core::{Content, DrawList, Point, Rect, Size};
 use pandite_library::KeptThumbnails;
@@ -37,7 +38,7 @@ use pandite_render::{
     Renderer, TextMeasurer,
 };
 use pandite_ui::{InputEvent, ThemeKind};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
@@ -153,6 +154,15 @@ pub fn run(cli: Cli) -> i32 {
     } else {
         load_settings(settings::settings_path(cli.config_dir.as_deref()))
     };
+    // In the macOS App Sandbox, the folders the user allowed earlier load
+    // on a worker while the window opens. Outside it nothing runs here.
+    let access = sandbox::active().then(|| {
+        let file = settings_path
+            .as_deref()
+            .and_then(Path::parent)
+            .map(|dir| dir.join(sandbox::GRANTS_FILE));
+        Store::open(sandbox::system_bookmarks(), file, Arc::new(SandboxDisk))
+    });
     let event_loop = match EventLoop::<UserEvent>::with_user_event().build() {
         Ok(event_loop) => event_loop,
         Err(err) => {
@@ -184,6 +194,7 @@ pub fn run(cli: Cli) -> i32 {
     }
     let early_gpu = start_gpu(&proxy, start, gpu_options(&settings));
     let mut shell = Shell::new(cli, start, settings, settings_path, proxy);
+    shell.access = access;
     shell.early_gpu = early_gpu;
     shell.resident = stays;
     shell.dormant = dormant;
@@ -321,6 +332,8 @@ struct Shell {
     stall: Option<Arc<smoke::StallDisk>>,
     timing: Option<timing::Timing>,
     timing_printed: bool,
+    /// The folder grants of the macOS App Sandbox; `None` outside it.
+    access: Option<Arc<Store>>,
 }
 
 fn theme_kind(theme: Theme) -> ThemeKind {
@@ -403,6 +416,7 @@ impl Shell {
             stall,
             timing,
             timing_printed: false,
+            access: None,
         }
     }
 
@@ -573,9 +587,10 @@ impl Shell {
                 registry
             }
         };
-        let disk: Arc<dyn Disk> = match &self.stall {
-            Some(stall) => Arc::clone(stall) as Arc<dyn Disk>,
-            None => Arc::new(StdDisk),
+        let disk: Arc<dyn Disk> = match (&self.stall, &self.access) {
+            (Some(stall), _) => Arc::clone(stall) as Arc<dyn Disk>,
+            (None, Some(_)) => Arc::new(SandboxDisk),
+            (None, None) => Arc::new(StdDisk),
         };
         let open = self.cli.smoke.clone().or_else(|| self.cli.path.clone());
         let size_to_image = self.settings.window.is_none() || self.settings.size_window_to_image;
@@ -603,6 +618,7 @@ impl Shell {
             dialogs: Box::new(native::NativeDialogs::new(Arc::clone(&window))),
             window: Box::new(native::NativeWindow::new(Arc::clone(&window))),
             waker: self.waker(),
+            sandbox: self.access.clone(),
         };
         let app = App::new(startup, platform)
             .map_err(|e| (format!("cannot start the image library: {e}"), 1))?;

@@ -10,6 +10,7 @@ use pandite_core::Registry;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::ffi::OsStr;
+use std::io;
 use std::path::{Path, PathBuf};
 
 /// Compare two file names the way people sort them: case-insensitive, and
@@ -70,6 +71,7 @@ pub struct FolderList {
     paths: Vec<PathBuf>,
     info: Vec<FileInfo>,
     opened: Option<usize>,
+    listing_error: Option<io::ErrorKind>,
 }
 
 impl FolderList {
@@ -86,8 +88,8 @@ impl FolderList {
     /// unknown extension, because decoders also match by signature. When
     /// `opened` is a directory, that directory is listed and no entry is
     /// marked as opened. Failures never panic: an unreadable folder yields
-    /// just the opened file, and a missing file yields its siblings with no
-    /// opened index.
+    /// just the opened file (and [`FolderList::listing_error`] tells why),
+    /// and a missing file yields its siblings with no opened index.
     pub fn scan_with(opened: &Path, registry: &Registry, files: &dyn FileAccess) -> Self {
         if opened.as_os_str().is_empty() {
             return Self::default();
@@ -118,7 +120,10 @@ impl FolderList {
         } else {
             dir.as_path()
         };
-        let listed = files.list_dir(listing_dir).unwrap_or_default();
+        let (listed, listing_error) = match files.list_dir(listing_dir) {
+            Ok(listed) => (listed, None),
+            Err(err) => (Vec::new(), Some(err.kind())),
+        };
         let mut entries: Vec<FileInfo> = listed
             .into_iter()
             .filter(|info| info.is_file && registry.can_open_path(&dir.join(&info.name)))
@@ -150,6 +155,7 @@ impl FolderList {
             paths,
             info,
             opened,
+            listing_error,
         }
     }
 
@@ -210,6 +216,14 @@ impl FolderList {
     /// The index of the file passed to the scan, when it exists.
     pub fn opened_index(&self) -> Option<usize> {
         self.opened
+    }
+
+    /// Why the folder could not be listed, when it could not. The list
+    /// then holds only the opened file. A folder the system does not let
+    /// the program read (the macOS App Sandbox before the user allows the
+    /// folder) gives [`io::ErrorKind::PermissionDenied`].
+    pub fn listing_error(&self) -> Option<io::ErrorKind> {
+        self.listing_error
     }
 
     /// The index of `path`, compared component by component.

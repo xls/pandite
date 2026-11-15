@@ -96,9 +96,10 @@ On macOS, Ctrl is the Command key and Alt is the Option key.
   recognition is off, or Windows has no OCR language, the shortcut overlay
   does not show them.
 - Esc closes the topmost menu, dialog, question or the shortcut overlay.
-  When none of these is open, Esc closes pandite. This is also true in full
-  screen, in crop mode, while text is selected, while the image information
-  panel shows and while a file loads.
+  In the Mac App Store version, Esc then closes the notice that asks for
+  access to a folder. When none of these is open, Esc closes pandite. This
+  is also true in full screen, in crop mode, while text is selected, while
+  the image information panel shows and while a file loads.
 - I shows or hides the image information panel. Shift+I and Ctrl+I do
   nothing. The panel is not a dialog: all other keys work as before. In
   crop mode, the panel hides until the crop ends.

@@ -21,7 +21,28 @@
 #                                when it is not set
 # With them the app and the disk image go to the Apple notary service and
 # get their tickets stapled, so they open without a warning, also offline.
-# Runs on macOS only (lipo, codesign, ditto, hdiutil, plutil).
+#
+# App Sandbox builds (optional, see docs/mac-app-store.md). Without these
+# variables the script makes the Developer ID build above:
+#   PANDITE_MACOS_SANDBOX_TEST=1 sign the app of the disk image with the App
+#                                Sandbox entitlements (pandite.entitlements)
+#                                and write <out_dir>/pandite-<version>-
+#                                universal-macos-sandbox-test.dmg, to try the
+#                                sandbox before a store submission. Signature
+#                                and notarization as above.
+#   PANDITE_MACOS_STORE=1        write <out_dir>/pandite-<version>-macos-
+#                                appstore.pkg for App Store Connect instead of
+#                                the disk image. Needs all three:
+#   PANDITE_MACOS_STORE_APP_IDENTITY        an "Apple Distribution: ..." or
+#                                "3rd Party Mac Developer Application: ..."
+#                                identity in the keychain
+#   PANDITE_MACOS_STORE_INSTALLER_IDENTITY  a "3rd Party Mac Developer
+#                                Installer: ..." identity in the keychain
+#   PANDITE_MACOS_PROVISIONING_PROFILE      the Mac App Store provisioning
+#                                profile (.provisionprofile) of the bundle id
+#   PANDITE_MACOS_KEYCHAIN applies to these identities too.
+# Runs on macOS only (lipo, codesign, ditto, hdiutil, plutil; the store
+# package also security, PlistBuddy, productbuild and pkgutil).
 set -euo pipefail
 
 VERSION=${1:?usage: build-app.sh <version> <out_dir> [<cargo_target_dir>]}
@@ -35,6 +56,20 @@ X64="$TARGET_DIR/x86_64-apple-darwin/release/pandite"
 NAME="pandite-$VERSION-universal-macos"
 # CFBundleVersion takes numbers and dots only: drop a pre-release suffix.
 BUNDLE_VERSION=${VERSION%%[-+]*}
+ENTITLEMENTS="$HERE/pandite.entitlements"
+STORE=0
+SANDBOX_TEST=0
+if [ "${PANDITE_MACOS_STORE:-}" = 1 ]; then
+  STORE=1
+fi
+if [ "${PANDITE_MACOS_SANDBOX_TEST:-}" = 1 ]; then
+  SANDBOX_TEST=1
+  NAME="$NAME-sandbox-test"
+fi
+if [ "$STORE" = 1 ] && [ "$SANDBOX_TEST" = 1 ]; then
+  echo "set PANDITE_MACOS_STORE or PANDITE_MACOS_SANDBOX_TEST, not both" >&2
+  exit 1
+fi
 
 for bin in "$ARM" "$X64"; do
   [ -f "$bin" ] || { echo "binary not found: $bin" >&2; exit 1; }
@@ -97,7 +132,50 @@ notarize() {
   fi
 }
 
-if [ -n "$IDENTITY" ]; then
+if [ "$STORE" = 1 ]; then
+  # Mac App Store: the sandbox entitlements plus the application and team
+  # identifiers of the provisioning profile, the profile inside the app,
+  # and an installer package signed for App Store Connect. No notarization:
+  # Apple signs what the store accepts.
+  APP_IDENTITY=${PANDITE_MACOS_STORE_APP_IDENTITY:?set PANDITE_MACOS_STORE_APP_IDENTITY to an Apple Distribution identity}
+  INSTALLER_IDENTITY=${PANDITE_MACOS_STORE_INSTALLER_IDENTITY:?set PANDITE_MACOS_STORE_INSTALLER_IDENTITY to a 3rd Party Mac Developer Installer identity}
+  PROFILE=${PANDITE_MACOS_PROVISIONING_PROFILE:?set PANDITE_MACOS_PROVISIONING_PROFILE to the Mac App Store provisioning profile}
+  [ -f "$PROFILE" ] || { echo "provisioning profile not found: $PROFILE" >&2; exit 1; }
+  cp "$PROFILE" "$APP/Contents/embedded.provisionprofile"
+  security cms -D -i "$PROFILE" > "$WORK/profile.plist"
+  PROFILE_APP_ID=$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.application-identifier' "$WORK/profile.plist")
+  PROFILE_TEAM=$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$WORK/profile.plist")
+  BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$PLIST")
+  if [ "$PROFILE_APP_ID" != "$PROFILE_TEAM.$BUNDLE_ID" ]; then
+    echo "the provisioning profile is for $PROFILE_APP_ID, the app is $PROFILE_TEAM.$BUNDLE_ID" >&2
+    exit 1
+  fi
+  STORE_ENTITLEMENTS="$WORK/store.entitlements"
+  cp "$ENTITLEMENTS" "$STORE_ENTITLEMENTS"
+  /usr/libexec/PlistBuddy -c "Add :com.apple.application-identifier string $PROFILE_APP_ID" "$STORE_ENTITLEMENTS"
+  /usr/libexec/PlistBuddy -c "Add :com.apple.developer.team-identifier string $PROFILE_TEAM" "$STORE_ENTITLEMENTS"
+  plutil -lint "$STORE_ENTITLEMENTS"
+  codesign --force --options runtime --timestamp --entitlements "$STORE_ENTITLEMENTS" \
+    --sign "$APP_IDENTITY" ${KEYCHAIN_ARGS[@]+"${KEYCHAIN_ARGS[@]}"} "$APP"
+  codesign --verify --strict --verbose=2 "$APP"
+  PKG="$OUT/pandite-$VERSION-macos-appstore.pkg"
+  rm -f "$PKG"
+  productbuild --component "$APP" /Applications --sign "$INSTALLER_IDENTITY" \
+    ${KEYCHAIN_ARGS[@]+"${KEYCHAIN_ARGS[@]}"} "$PKG"
+  pkgutil --check-signature "$PKG"
+  echo "wrote $PKG"
+  exit 0
+fi
+
+if [ "$SANDBOX_TEST" = 1 ]; then
+  # The app of the default build with the App Sandbox entitlements. These
+  # entitlements need no provisioning profile.
+  if [ -n "$IDENTITY" ]; then
+    codesign --force --options runtime --timestamp --entitlements "$ENTITLEMENTS" --sign "$IDENTITY" ${KEYCHAIN_ARGS[@]+"${KEYCHAIN_ARGS[@]}"} "$APP"
+  else
+    codesign --force --sign - --timestamp=none --entitlements "$ENTITLEMENTS" "$APP"
+  fi
+elif [ -n "$IDENTITY" ]; then
   # Developer ID signature with the hardened runtime and a secure time
   # stamp: the notary service requires both.
   codesign --force --options runtime --timestamp --sign "$IDENTITY" ${KEYCHAIN_ARGS[@]+"${KEYCHAIN_ARGS[@]}"} "$APP"

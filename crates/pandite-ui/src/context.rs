@@ -120,6 +120,23 @@ impl InfoRow {
     }
 }
 
+/// A message with one action that stays at the bottom of the content area
+/// until the application takes it away (for example "Allow Pandite to
+/// show the other images in this folder" with "Allow..."). It is not a
+/// dialog: keys and pointer gestures elsewhere act as without it. A click
+/// on the button answers [`crate::Action::PromptResult`] with `accepted`
+/// set; the close mark and Escape answer with it cleared.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Prompt<'a> {
+    /// Chosen by the application to match the answer.
+    pub id: u64,
+    /// The message, on one line (shortened at the end when it does not
+    /// fit).
+    pub message: &'a str,
+    /// The label of the button.
+    pub button: &'a str,
+}
+
 /// An encoder the bulk dialog offers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EncoderInfo<'a> {
@@ -175,6 +192,9 @@ pub struct UiContext<'a> {
     pub loading: Option<Loading<'a>>,
     /// A message that stays while set (for example why a file failed).
     pub notice: Option<&'a str>,
+    /// A message with an action button and a close mark, drawn above the
+    /// notice while set. Hidden in crop mode.
+    pub prompt: Option<Prompt<'a>>,
     /// Encoders the bulk dialog offers.
     pub encoders: &'a [EncoderInfo<'a>],
     /// True when this platform reads text in images and the user allows
@@ -220,6 +240,7 @@ impl Default for UiContext<'_> {
             bulk: None,
             loading: None,
             notice: None,
+            prompt: None,
             encoders: &[],
             text_enabled: false,
             text: None,

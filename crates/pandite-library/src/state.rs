@@ -14,6 +14,7 @@ use crate::kept::{KeptThumbnail, KeptThumbnails};
 use crate::{Event, Fetch, LoadTimings, Reduced, Stats};
 use pandite_core::{CancelToken, Content, Error, ImageBuf, Result};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::io;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -274,6 +275,8 @@ pub(crate) struct State {
     list_running: Option<ListRunning>,
     list_gen: u64,
     last_dir: Option<PathBuf>,
+    /// Why the listing that made the list could not read its folder.
+    listing_error: Option<io::ErrorKind>,
     events: VecDeque<Event>,
     next_id: u64,
     threads: HashMap<u64, ThreadSlot>,
@@ -315,6 +318,7 @@ impl State {
             list_running: None,
             list_gen: 0,
             last_dir: None,
+            listing_error: None,
             events: VecDeque::new(),
             next_id: 1,
             threads: HashMap::new(),
@@ -442,6 +446,10 @@ impl State {
         self.current
     }
 
+    pub fn listing_error(&self) -> Option<io::ErrorKind> {
+        self.listing_error
+    }
+
     /// Show `path` at once as a one-item list and list its folder on a worker.
     pub fn open(&mut self, path: PathBuf) {
         if self.kept.as_ref().is_some_and(|k| !k.serves(&path)) {
@@ -452,6 +460,7 @@ impl State {
         self.list_gen += 1;
         self.list_pending = Some((self.list_gen, path.clone()));
         self.last_dir = path.parent().map(Path::to_path_buf);
+        self.listing_error = None;
         self.user_cancelled.remove(&path);
         self.replace_items(vec![path], Some(0), false);
         self.preempt();
@@ -474,6 +483,7 @@ impl State {
         self.cancel_listing();
         self.list_pending = None;
         self.list_gen += 1;
+        self.listing_error = None;
         let current = self
             .current
             .and_then(|c| self.items.get(c))
@@ -725,6 +735,7 @@ impl State {
                 .map(|(_, p)| p.clone())
                 .collect();
         }
+        self.listing_error = list.listing_error();
         let (dir, paths, info) = list.into_parts();
         // Kept thumbnails of another folder or size are dropped here.
         let side = self.cfg.thumb_size;
