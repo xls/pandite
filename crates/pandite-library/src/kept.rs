@@ -36,8 +36,10 @@ impl fmt::Debug for KeptThumbnail {
 pub struct KeptThumbnails {
     /// The folder the thumbnails belong to.
     pub folder: PathBuf,
-    /// The longest thumbnail side they were made for. A library with
-    /// another thumbnail size drops them.
+    /// The thumbnail size they were made for
+    /// ([`crate::LibraryConfig::thumb_size`]). A library with another
+    /// thumbnail size drops them, also when its size changes to another
+    /// one before they are used.
     pub thumb_size: u32,
     /// The thumbnails by file path.
     pub entries: HashMap<PathBuf, KeptThumbnail>,

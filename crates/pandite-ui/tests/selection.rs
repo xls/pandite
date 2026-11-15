@@ -9,13 +9,19 @@ mod support;
 
 use pandite_core::{DrawCmd, DrawList, Point, Rect, Size};
 use pandite_ui::{
-    Action, ActionKind, Command, ConfirmRequest, Icon, InputEvent, Key, Modifiers, PointerButton,
-    Theme, ThumbState, Ui, UiContext, UiMode, SHORTCUTS,
+    Action, ActionKind, Command, ConfirmRequest, GallerySize, Icon, InputEvent, Key, Modifiers,
+    PointerButton, Theme, ThumbState, Ui, UiContext, UiMode, SHORTCUTS,
 };
 use support::*;
 
+/// A window wide enough for the first eight cells of the largest size at
+/// scale 2.
 fn gallery_ctx(count: usize, index: usize, thumbs: &'static [ThumbState]) -> UiContext<'static> {
-    let mut ctx = image_ctx();
+    let wide = UiContext {
+        window_size: Size::new(2600.0, 900.0),
+        ..base_ctx()
+    };
+    let mut ctx = with_image(wide, 4000, 3000);
     ctx.count = count;
     ctx.index = index;
     ctx.thumbnails = thumbs;
@@ -233,9 +239,12 @@ fn space_no_longer_moves_to_next() {
 #[test]
 fn gallery_draws_badge_for_selected() {
     let theme = Theme::for_kind(image_ctx().theme);
-    for scale in [1.0, 1.5, 2.0] {
+    // The badge keeps its size in every cell size.
+    let sizes = GallerySize::ALL.into_iter();
+    for (size, scale) in sizes.flat_map(|g| [1.0, 1.5, 2.0].map(|s| (g, s))) {
         let mut ctx = gallery_ctx(20, 0, ready(20));
         ctx.scale_factor = scale;
+        ctx.gallery_size = size;
         ctx.selected = &[2, 5];
         let mut ui = Ui::new();
         // The pointer rests on the image, away from the strip.
@@ -250,7 +259,7 @@ fn gallery_draws_badge_for_selected() {
             if i == 2 || i == 5 {
                 // A small round badge in the top left corner: a white
                 // disc with a blue check mark, at the size of the scale.
-                assert_eq!(marks.len(), 1, "thumbnail {i} at scale {scale}");
+                assert_eq!(marks.len(), 1, "thumbnail {i} at {size:?} {scale}");
                 let mark = marks[0];
                 assert_eq!(mark.w, side - px(2.0, scale));
                 let disc = round_fills_at(&list, mark.center(), theme.check_fill);
@@ -260,7 +269,7 @@ fn gallery_draws_badge_for_selected() {
                         && *radius == (side - line) * 0.5
                         && (r.x - cell.x, r.y - cell.y)
                             == (inset + line * 0.5, inset + line * 0.5)),
-                    "badge of thumbnail {i} at scale {scale}: {disc:?}"
+                    "badge of thumbnail {i} at {size:?} {scale}: {disc:?}"
                 );
             } else {
                 assert!(marks.is_empty(), "thumbnail {i} is not selected");
@@ -282,9 +291,11 @@ fn gallery_draws_badge_for_selected() {
 #[test]
 fn gallery_no_checkbox_on_unselected() {
     let theme = Theme::for_kind(image_ctx().theme);
-    for scale in [1.0, 1.5, 2.0] {
+    let sizes = GallerySize::ALL.into_iter();
+    for (size, scale) in sizes.flat_map(|g| [1.0, 1.5, 2.0].map(|s| (g, s))) {
         let mut ctx = gallery_ctx(20, 0, ready(20));
         ctx.scale_factor = scale;
+        ctx.gallery_size = size;
         ctx.selected = &[5];
         let mut ui = Ui::new();
         let list = frame(&mut ui, &ctx);
@@ -297,7 +308,7 @@ fn gallery_no_checkbox_on_unselected() {
             for (i, cell) in &cells {
                 assert!(
                     marker_in(&list, *cell, theme).is_none(),
-                    "thumbnail {i} at scale {scale}, {why}"
+                    "thumbnail {i} at {size:?} {scale}, {why}"
                 );
                 assert!(checks_in(&list, *cell).is_empty(), "{i} {why}");
             }
@@ -326,9 +337,11 @@ fn gallery_no_checkbox_on_unselected() {
 #[test]
 fn gallery_click_never_changes_selection() {
     let theme = Theme::for_kind(image_ctx().theme);
-    for scale in [1.0, 1.25, 1.5, 2.0] {
+    let sizes = GallerySize::ALL.into_iter();
+    for (size, scale) in sizes.flat_map(|g| [1.0, 1.25, 1.5, 2.0].map(|s| (g, s))) {
         let mut ctx = gallery_ctx(20, 0, ready(20));
         ctx.scale_factor = scale;
+        ctx.gallery_size = size;
         ctx.selected = &[0, 5];
         let mut ui = Ui::new();
         let list = frame(&mut ui, &ctx);
@@ -338,7 +351,7 @@ fn gallery_click_never_changes_selection() {
         // A click on the badge of a selected thumbnail shows that image and
         // leaves the selection alone.
         let out = click(&mut ui, &ctx, badge.center());
-        assert_eq!(out, vec![Action::GoTo(5)], "scale {scale}");
+        assert_eq!(out, vec![Action::GoTo(5)], "{size:?} {scale}");
         // The same corner of an unselected thumbnail: the same.
         let same = Point::new(
             c6.x + (badge.center().x - c5.x),

@@ -253,6 +253,13 @@ impl FakeDecoder {
         wait_until(&self.state, &self.cv, |s| s.starts.contains(call))
     }
 
+    /// Wait until `call` started `n` times.
+    pub fn wait_starts(&self, call: &Call, n: usize) -> bool {
+        wait_until(&self.state, &self.cv, |s| {
+            s.starts.iter().filter(|c| *c == call).count() >= n
+        })
+    }
+
     /// How the first decode of `call` ended.
     pub fn wait_end(&self, call: &Call) -> Option<End> {
         let mut end = None;

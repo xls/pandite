@@ -18,12 +18,12 @@
 //! and read-ahead or thumbnails would slow the image the user waits for.
 //! Jobs already running finish.
 
-use super::{ErrorEntry, Role, Staged};
+use super::{ErrorEntry, Role, Staged, Thumb};
 use super::{Kind, ListRunning, Outcome, PlanJob, Running, State, Task, Work};
 use crate::cache::Entry;
 use crate::fs::Stamp;
 use crate::{Event, Reduced};
-use pandite_core::{CancelToken, Content};
+use pandite_core::{CancelToken, Content, ImageBuf};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -418,13 +418,17 @@ impl State {
                 Class::Go
             }
             Kind::Thumb => {
-                if self.thumbs.contains(path) || self.thumb_errors.contains_key(path) {
+                // A stale thumbnail is made again; it shows meanwhile.
+                if self.thumb_fresh(path) || self.thumb_errors.contains_key(path) {
                     return Class::Done;
                 }
                 if self.running_thumb.contains_key(path) {
                     return Class::Running;
                 }
-                if !self.full.contains(path) && !self.screen.contains(path) {
+                let cached = self.full.contains(path)
+                    || self.screen_source(path).is_some()
+                    || self.stale_source(path).is_some();
+                if !cached {
                     let decoding = |map: &HashMap<PathBuf, Running>| {
                         map.get(path).is_some_and(|r| !r.cancel.is_cancelled())
                     };
@@ -438,9 +442,12 @@ impl State {
                 let ranker = self.thumb_ranker();
                 let rank = ranker.rank(job.index);
                 let side = self.cfg.thumb_size as usize;
+                // The new thumbnail replaces the stale one of the file.
+                let stale = self.thumbs.get(path).map_or(0, |e| e.bytes);
                 let estimate = side
                     .saturating_mul(side)
-                    .saturating_mul(THUMB_BYTES_PER_PIXEL);
+                    .saturating_mul(THUMB_BYTES_PER_PIXEL)
+                    .saturating_sub(stale);
                 if !self
                     .thumbs
                     .would_fit(estimate, rank, rank.0 == 0, |i| ranker.rank(i))
@@ -558,12 +565,18 @@ impl State {
         let path = self.items[job.index].clone();
         let id = self.new_id();
         let cancel = CancelToken::new();
+        let side = if job.kind == Kind::Thumb {
+            self.cfg.thumb_size
+        } else {
+            0
+        };
         let running = Running {
             id,
             thread: tid,
             cancel: cancel.clone(),
             plan_gen: self.plan.gen,
             plan_pos: Some(pos),
+            side,
             downloading: false,
             local_read: false,
             started: Instant::now(),
@@ -594,18 +607,24 @@ impl State {
                 Work::Screen { path, target }
             }
             Kind::Thumb => {
+                // Cached pixels first: the full decode, then a screen image
+                // or a stale thumbnail that is large enough.
+                let still = |image: &ImageBuf| Arc::new(Content::Still(image.clone()));
                 let from = self
                     .full
                     .get(&path)
                     .map(|e| (Arc::clone(&e.value), e.stamp))
                     .or_else(|| {
-                        self.screen
-                            .get(&path)
-                            .map(|e| (Arc::new(Content::Still(e.value.image.clone())), e.stamp))
+                        self.screen_source(&path)
+                            .map(|e| (still(&e.value.image), e.stamp))
+                    })
+                    .or_else(|| {
+                        let stamp = self.thumbs.get(&path)?.stamp;
+                        self.stale_source(&path).map(|image| (still(image), stamp))
                     });
                 self.set_io(tid, from.is_none());
                 self.running_thumb.insert(path.clone(), running);
-                Work::Thumb { path, from }
+                Work::Thumb { path, from, side }
             }
         };
         Task { id, cancel, work }
@@ -805,9 +824,19 @@ impl State {
             Outcome::Thumb(Ok(image), stamp) => {
                 let ranker = self.thumb_ranker();
                 let rank = ranker.rank(index);
+                let side = running.side;
+                let stale = side != self.cfg.thumb_size;
+                if stale {
+                    // Made for the size before the last change: it shows
+                    // only where nothing else does, and the job runs again.
+                    self.requeue(&running);
+                    if self.thumbs.contains(&path) {
+                        return;
+                    }
+                }
                 let entry = Entry {
                     bytes: image.byte_size(),
-                    value: image,
+                    value: Thumb { image, side },
                     index,
                     stamp,
                 };
@@ -816,7 +845,7 @@ impl State {
                     .insert(path.clone(), entry, rank, rank.0 == 0, |i| ranker.rank(i))
                 {
                     self.push(Event::ThumbnailReady { index, path });
-                } else if running.plan_gen == self.plan.gen {
+                } else if !stale && running.plan_gen == self.plan.gen {
                     // Everything after this entry ranks no better: stop.
                     if let Some(pos) = running.plan_pos {
                         self.plan.end = self.plan.end.min(pos);

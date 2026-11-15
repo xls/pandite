@@ -158,11 +158,16 @@ fn run_task(shared: &Arc<Shared>, tid: u64, task: &Task, timings: &mut LoadTimin
         },
         Work::Thumb {
             from: Some((content, stamp)),
+            side,
             ..
-        } => Outcome::Thumb(thumbnail_of(shared, task, content), *stamp),
-        Work::Thumb { path, from: None } => match read(shared, tid, task, path, false, timings) {
+        } => Outcome::Thumb(thumbnail_of(shared, task, content, *side), *stamp),
+        Work::Thumb {
+            path,
+            from: None,
+            side,
+        } => match read(shared, tid, task, path, false, timings) {
             Ok((source, stamp)) => {
-                let side = shared.thumb_size;
+                let side = *side;
                 let options = DecodeOptions {
                     target_size: Some((side, side)),
                     first_frame_only: true,
@@ -170,7 +175,7 @@ fn run_task(shared: &Arc<Shared>, tid: u64, task: &Task, timings: &mut LoadTimin
                     cancel: task.cancel.clone(),
                 };
                 let image = guard(|| shared.registry.decode(&source, &options))
-                    .and_then(|content| thumbnail_of(shared, task, &content));
+                    .and_then(|content| thumbnail_of(shared, task, &content, side));
                 Outcome::Thumb(image, stamp)
             }
             Err(early) => early_outcome(early, Outcome::Thumb),
@@ -299,10 +304,9 @@ fn screen_image(
     }))
 }
 
-fn thumbnail_of(shared: &Shared, task: &Task, content: &Content) -> Result<ImageBuf> {
+fn thumbnail_of(shared: &Shared, task: &Task, content: &Content, side: u32) -> Result<ImageBuf> {
     task.cancel.check()?;
-    let side = shared.thumb_size;
-    guard(|| Ok((shared.downscale)(content.first_image(), side)))
+    guard(|| Ok((shared.make_thumbnail)(content.first_image(), side)))
 }
 
 /// The file system part of a task: look at the file, skip non-local files

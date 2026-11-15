@@ -40,7 +40,7 @@ impl Ui {
     /// `ctx` must describe the application at the time of the event.
     pub fn handle_event(&mut self, event: InputEvent, ctx: &UiContext<'_>) -> Vec<Action> {
         self.update(ctx);
-        let m = Metrics::new(ctx.scale_factor);
+        let m = Metrics::of(ctx);
         let mut out = Vec::new();
         match event {
             InputEvent::PointerMove { pos } => self.on_move(pos, ctx, &m, &mut out),
@@ -837,7 +837,7 @@ impl Ui {
         ctx: &UiContext<'_>,
         out: &mut Vec<Action>,
     ) {
-        let m = Metrics::new(ctx.scale_factor);
+        let m = Metrics::of(ctx);
         let outcome = match &mut self.dialog {
             Some(Dialog::Resize(d)) => d.on_event(&event, resize_dialog::image_size(ctx)),
             Some(Dialog::Bulk(d)) => d.on_event(&event, ctx),

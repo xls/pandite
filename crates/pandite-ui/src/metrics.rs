@@ -3,6 +3,8 @@
 //! Every length the interface uses is a logical size multiplied by the
 //! scale factor and rounded to whole pixels, so edges stay crisp.
 
+use crate::context::UiContext;
+use crate::gallery::GallerySize;
 use std::time::Duration;
 
 /// How long the pointer must rest before the toolbar hides.
@@ -24,21 +26,40 @@ pub(crate) const LOADING_DELAY: Duration = Duration::from_millis(150);
 /// Frame interval of the small background-work spinner.
 pub(crate) const BUSY_FRAME: Duration = Duration::from_millis(100);
 
-/// Scaled sizes for one scale factor.
+/// Scaled sizes for one scale factor and gallery size.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Metrics {
     pub scale: f32,
+    /// The size of the gallery cells; the strip lengths follow it.
+    pub gallery: GallerySize,
 }
 
 impl Metrics {
-    /// Sizes for `scale`. Bad or extreme factors are clamped.
+    /// Sizes for `scale` and the default gallery size. Bad or extreme
+    /// factors are clamped.
     pub fn new(scale: f32) -> Self {
         let scale = if scale.is_finite() && scale > 0.0 {
             scale.clamp(0.5, 8.0)
         } else {
             1.0
         };
-        Self { scale }
+        Self {
+            scale,
+            gallery: GallerySize::default(),
+        }
+    }
+
+    /// Sizes for the scale factor and gallery size of `ctx`.
+    pub fn of(ctx: &UiContext<'_>) -> Self {
+        Self::new(ctx.scale_factor).with_gallery(ctx.gallery_size)
+    }
+
+    /// The same sizes with gallery cells of `size`.
+    pub fn with_gallery(self, size: GallerySize) -> Self {
+        Self {
+            gallery: size,
+            ..self
+        }
     }
 
     /// A logical length in whole physical pixels, at least 1.
@@ -93,16 +114,16 @@ impl Metrics {
     }
 
     pub fn gallery_h(&self) -> f32 {
-        self.px(84.0)
+        self.px(self.gallery.strip())
     }
     pub fn cell(&self) -> f32 {
-        self.px(64.0)
+        self.px(self.gallery.cell())
     }
     pub fn cell_gap(&self) -> f32 {
-        self.px(6.0)
+        self.px(self.gallery.gap())
     }
     pub fn gallery_pad(&self) -> f32 {
-        self.px(10.0)
+        self.px(self.gallery.pad())
     }
     /// Side of the round badge on a selected thumbnail.
     pub fn thumb_badge(&self) -> f32 {

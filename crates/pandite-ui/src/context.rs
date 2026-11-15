@@ -1,5 +1,6 @@
 //! The per-frame snapshot the application hands to the interface.
 
+use crate::gallery::GallerySize;
 use crate::theme::ThemeKind;
 use pandite_core::{Affine, Rect, Size, TextLayout, ViewState};
 use std::path::Path;
@@ -49,6 +50,8 @@ pub enum ThumbState {
     #[default]
     Pending,
     /// Uploaded under [`crate::thumbnail_texture_id`] with this pixel size.
+    /// A square of [`GallerySize::cell_px`] fills its cell pixel for pixel;
+    /// any other size is scaled to cover the cell, the longer side cropped.
     Ready {
         /// Thumbnail width in pixels.
         width: u32,
@@ -146,6 +149,11 @@ pub struct UiContext<'a> {
     /// The user's gallery setting. The strip shows when this is set, the
     /// folder has images and the window is tall enough.
     pub gallery_visible: bool,
+    /// The user's thumbnail size. The cells, the gaps between them and
+    /// the strip height follow it. Make the thumbnails
+    /// [`GallerySize::cell_px`] pixels square ([`crate::Ui::thumbnail_px`]):
+    /// the strip then draws them pixel for pixel.
+    pub gallery_size: GallerySize,
     /// The image on screen, `None` when nothing is open or it failed.
     pub image: Option<ImageInfo<'a>>,
     /// Index of the current image in the folder.
@@ -201,6 +209,7 @@ impl Default for UiContext<'_> {
             theme: ThemeKind::Dark,
             fullscreen: false,
             gallery_visible: true,
+            gallery_size: GallerySize::default(),
             image: None,
             index: 0,
             count: 0,

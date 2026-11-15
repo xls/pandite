@@ -300,6 +300,14 @@ pub enum Action {
     /// Show or hide the gallery strip
     /// (flip [`crate::UiContext::gallery_visible`]).
     ToggleGallery,
+    /// Make the gallery thumbnails one size larger (set
+    /// [`crate::UiContext::gallery_size`] to [`crate::GallerySize::larger`]),
+    /// then make them again at the new [`crate::Ui::thumbnail_px`]. Only
+    /// emitted while a larger size exists and the strip is not hidden.
+    LargerThumbnails,
+    /// Make the gallery thumbnails one size smaller, the same way as
+    /// [`Action::LargerThumbnails`].
+    SmallerThumbnails,
     /// Show or hide the information panel
     /// (flip [`crate::UiContext::info_visible`]).
     ToggleInfo,
@@ -406,11 +414,15 @@ pub enum ActionKind {
     MoveTo,
     /// [`Action::CopyTo`].
     CopyTo,
+    /// [`Action::LargerThumbnails`].
+    LargerThumbnails,
+    /// [`Action::SmallerThumbnails`].
+    SmallerThumbnails,
 }
 
 impl ActionKind {
     /// Every kind, in declaration order.
-    pub const ALL: [ActionKind; 44] = [
+    pub const ALL: [ActionKind; 46] = [
         ActionKind::Open,
         ActionKind::SaveAs,
         ActionKind::CopyPath,
@@ -455,6 +467,8 @@ impl ActionKind {
         ActionKind::Select,
         ActionKind::MoveTo,
         ActionKind::CopyTo,
+        ActionKind::LargerThumbnails,
+        ActionKind::SmallerThumbnails,
     ];
 
     /// The position of this kind in [`ActionKind::ALL`]. The match is
@@ -505,6 +519,8 @@ impl ActionKind {
             ActionKind::Select => 41,
             ActionKind::MoveTo => 42,
             ActionKind::CopyTo => 43,
+            ActionKind::LargerThumbnails => 44,
+            ActionKind::SmallerThumbnails => 45,
         }
     }
 }
@@ -554,6 +570,8 @@ impl Action {
             Action::GoTo(_) => ActionKind::GoTo,
             Action::StepBy(_) => ActionKind::StepBy,
             Action::ToggleGallery => ActionKind::ToggleGallery,
+            Action::LargerThumbnails => ActionKind::LargerThumbnails,
+            Action::SmallerThumbnails => ActionKind::SmallerThumbnails,
             Action::ToggleInfo => ActionKind::ToggleInfo,
             Action::ConfirmResult { .. } => ActionKind::ConfirmResult,
             Action::Quit => ActionKind::Quit,

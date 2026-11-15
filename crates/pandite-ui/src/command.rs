@@ -84,6 +84,10 @@ pub enum Command {
     Last,
     /// Show or hide the gallery strip.
     ToggleGallery,
+    /// Make the gallery thumbnails one size larger.
+    LargerThumbnails,
+    /// Make the gallery thumbnails one size smaller.
+    SmallerThumbnails,
     /// Show or hide the information panel.
     ToggleInfo,
     /// Enter or leave full screen.
@@ -111,7 +115,7 @@ pub enum Command {
 
 impl Command {
     /// Every command, in the order the shortcut overlay lists them.
-    pub const ALL: [Command; 46] = [
+    pub const ALL: [Command; 48] = [
         Command::Open,
         Command::SaveAs,
         Command::CopyImage,
@@ -149,6 +153,8 @@ impl Command {
         Command::First,
         Command::Last,
         Command::ToggleGallery,
+        Command::LargerThumbnails,
+        Command::SmallerThumbnails,
         Command::ToggleInfo,
         Command::Fullscreen,
         Command::ContextMenu,
@@ -199,6 +205,8 @@ impl Command {
             Command::First => "First image",
             Command::Last => "Last image",
             Command::ToggleGallery => "Gallery strip",
+            Command::LargerThumbnails => "Larger thumbnails",
+            Command::SmallerThumbnails => "Smaller thumbnails",
             Command::ToggleInfo => "Image information",
             Command::Fullscreen => "Full screen",
             Command::ContextMenu => "Context menu",
@@ -310,6 +318,8 @@ impl Command {
                 | Command::PanRight
                 | Command::Fullscreen
                 | Command::ToggleGallery
+                | Command::LargerThumbnails
+                | Command::SmallerThumbnails
                 | Command::ToggleInfo
                 | Command::ContextMenu
                 | Command::Help
@@ -403,7 +413,8 @@ const CTRL_SHIFT: Modifiers = Modifiers::CTRL_SHIFT;
 /// [`command_for_key`] returns [`Command::CopyImage`], and the interface
 /// copies the selected text instead while a text selection exists.
 /// Ctrl+Shift+C copies the file path. Escape never leaves full screen or
-/// a mode by itself: it closes the topmost dialog, or quits.
+/// a mode by itself: it closes the topmost dialog, or quits. The zoom keys
+/// with Ctrl change the size of the gallery thumbnails.
 pub const SHORTCUTS: &[Shortcut] = &[
     Shortcut::new(Key::O, CTRL, Command::Open),
     Shortcut::new(Key::S, CTRL_SHIFT, Command::SaveAs),
@@ -448,6 +459,9 @@ pub const SHORTCUTS: &[Shortcut] = &[
     Shortcut::new(Key::Home, N, Command::First),
     Shortcut::new(Key::End, N, Command::Last),
     Shortcut::new(Key::G, N, Command::ToggleGallery),
+    Shortcut::new(Key::Plus, CTRL, Command::LargerThumbnails),
+    Shortcut::new(Key::Equals, CTRL, Command::LargerThumbnails),
+    Shortcut::new(Key::Minus, CTRL, Command::SmallerThumbnails),
     Shortcut::new(Key::I, N, Command::ToggleInfo),
     Shortcut::new(Key::F11, N, Command::Fullscreen),
     Shortcut::new(Key::Enter, ALT, Command::Fullscreen),
@@ -631,6 +645,53 @@ mod tests {
             assert!(cmd.repeats() && !cmd.allowed_in_crop(), "{cmd:?}");
         }
         assert_eq!(Command::ToggleSelect.tooltip(), "Select image  (Space)");
+    }
+
+    #[test]
+    fn thumbnail_size_keys() {
+        // Ctrl and the zoom keys change the thumbnail size; Shift does not
+        // matter for these symbol keys.
+        for (key, mods) in [
+            (Key::Plus, Modifiers::CTRL),
+            (Key::Equals, Modifiers::CTRL),
+            (Key::Plus, Modifiers::CTRL_SHIFT),
+            (Key::Equals, Modifiers::CTRL_SHIFT),
+        ] {
+            assert_eq!(
+                command_for_key(key, mods, false),
+                Some(Command::LargerThumbnails),
+                "{key:?} {mods:?}"
+            );
+        }
+        assert_eq!(
+            command_for_key(Key::Minus, Modifiers::CTRL, false),
+            Some(Command::SmallerThumbnails)
+        );
+        // Without Ctrl the same keys zoom the image.
+        assert_eq!(
+            command_for_key(Key::Plus, Modifiers::NONE, false),
+            Some(Command::ZoomIn)
+        );
+        assert_eq!(
+            command_for_key(Key::Minus, Modifiers::NONE, false),
+            Some(Command::ZoomOut)
+        );
+        assert_eq!(
+            Command::LargerThumbnails.tooltip(),
+            "Larger thumbnails  (Ctrl++)"
+        );
+        assert_eq!(
+            Command::SmallerThumbnails.tooltip(),
+            "Smaller thumbnails  (Ctrl+-)"
+        );
+        // One press, one step; like the gallery strip key they work in crop
+        // mode and without an image.
+        for cmd in [Command::LargerThumbnails, Command::SmallerThumbnails] {
+            assert!(
+                !cmd.repeats() && cmd.allowed_in_crop() && !cmd.needs_image(),
+                "{cmd:?}"
+            );
+        }
     }
 
     #[test]

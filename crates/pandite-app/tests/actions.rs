@@ -76,6 +76,8 @@ fn sample(kind: ActionKind, dir: &std::path::Path) -> Action {
         ActionKind::Select => Action::Select(1),
         ActionKind::MoveTo => Action::MoveTo,
         ActionKind::CopyTo => Action::CopyTo,
+        ActionKind::LargerThumbnails => Action::LargerThumbnails,
+        ActionKind::SmallerThumbnails => Action::SmallerThumbnails,
     }
 }
 
@@ -127,6 +129,8 @@ fn kind_of(action: &Action) -> ActionKind {
         Action::Select(_) => ActionKind::Select,
         Action::MoveTo => ActionKind::MoveTo,
         Action::CopyTo => ActionKind::CopyTo,
+        Action::LargerThumbnails => ActionKind::LargerThumbnails,
+        Action::SmallerThumbnails => ActionKind::SmallerThumbnails,
     }
 }
 
@@ -147,6 +151,7 @@ fn every_action_has_a_handler() {
         let action = sample(kind, dir.path());
         assert_eq!(kind_of(&action), kind);
         let gallery = h.app().settings().gallery_visible;
+        let size = h.app().settings().gallery_size;
         let info = h.app().info_visible();
         let fullscreen = h.app().fullscreen();
         let result = h.act(action);
@@ -154,6 +159,12 @@ fn every_action_has_a_handler() {
         match kind {
             ActionKind::ToggleGallery => {
                 assert_ne!(h.app().settings().gallery_visible, gallery)
+            }
+            ActionKind::LargerThumbnails => {
+                assert_eq!(Some(h.app().settings().gallery_size), size.larger())
+            }
+            ActionKind::SmallerThumbnails => {
+                assert_eq!(Some(h.app().settings().gallery_size), size.smaller())
             }
             ActionKind::ToggleInfo => assert_ne!(h.app().info_visible(), info),
             ActionKind::ToggleFullscreen => assert_ne!(h.app().fullscreen(), fullscreen),
@@ -212,7 +223,7 @@ fn every_action_has_a_handler() {
         handled.push(kind);
         h.pump();
     }
-    assert_eq!(handled.len(), 44);
+    assert_eq!(handled.len(), 46);
     // The dialogs asked for: open, save, bulk files, bulk folder, bulk
     // destination, the folder of a move and the folder of a copy.
     assert_eq!(lock(&h.dialogs).shown.len(), 7);

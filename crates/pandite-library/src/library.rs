@@ -22,6 +22,10 @@ pub type WakeFn = Arc<dyn Fn() + Send + Sync>;
 /// the aspect ratio. Runs on worker threads.
 pub type DownscaleFn = Arc<dyn Fn(&ImageBuf, u32) -> ImageBuf + Send + Sync>;
 
+/// Makes the thumbnail of a decoded image for the thumbnail size (for
+/// example a square that fills a gallery cell). Runs on worker threads.
+pub type ThumbnailFn = Arc<dyn Fn(&ImageBuf, u32) -> ImageBuf + Send + Sync>;
+
 /// Tuning for a [`Library`].
 #[derive(Clone)]
 pub struct LibraryConfig {
@@ -46,7 +50,9 @@ pub struct LibraryConfig {
     /// Byte budget for thumbnails (default 64 MiB). Thumbnails in the
     /// visible gallery range are kept even above the budget.
     pub thumb_budget: usize,
-    /// Longest thumbnail side in pixels (default 256).
+    /// The thumbnail size in pixels that [`LibraryConfig::make_thumbnail`]
+    /// gets (default 256). With the default maker it is the longest
+    /// thumbnail side. [`Library::set_thumbnail_size`] changes it later.
     pub thumb_size: u32,
     /// Thumbnails made beyond each end of the visible range before the
     /// rest of the folder (default 32).
@@ -66,8 +72,13 @@ pub struct LibraryConfig {
     /// size only, and full resolution is decoded for the current image
     /// only. When `None`, read-ahead decodes neighbors at full resolution.
     pub screen_size: Option<(u32, u32)>,
-    /// The thumbnail downscaler. Default: [`box_downscale`].
+    /// The downscaler for screen-resolution images, and for thumbnails
+    /// when [`LibraryConfig::make_thumbnail`] is `None`. Default:
+    /// [`box_downscale`].
     pub downscale: DownscaleFn,
+    /// The thumbnail maker (default `None`: [`LibraryConfig::downscale`],
+    /// which fits the longer side into the thumbnail size).
+    pub make_thumbnail: Option<ThumbnailFn>,
     /// File system access. Default: [`StdFiles`].
     pub files: Arc<dyn FileAccess>,
     /// Thumbnails kept from an earlier library (default `None`). They wait
@@ -95,6 +106,7 @@ impl Default for LibraryConfig {
             screen_size: None,
             shutdown_grace: Duration::from_millis(250),
             downscale: Arc::new(box_downscale),
+            make_thumbnail: None,
             files: Arc::new(StdFiles),
             kept_thumbnails: None,
         }
@@ -296,8 +308,8 @@ pub(crate) struct Shared {
     pub registry: Arc<Registry>,
     pub files: Arc<dyn FileAccess>,
     pub downscale: DownscaleFn,
+    pub make_thumbnail: ThumbnailFn,
     pub wake: WakeFn,
-    pub thumb_size: u32,
 }
 
 impl Shared {
@@ -378,6 +390,9 @@ impl Library {
         if let Some(kept) = config.kept_thumbnails {
             state.keep_thumbnails(kept);
         }
+        let make_thumbnail = config
+            .make_thumbnail
+            .unwrap_or_else(|| Arc::clone(&config.downscale));
         let shared = Arc::new(Shared {
             state: Mutex::new(state),
             work_cv: Condvar::new(),
@@ -386,8 +401,8 @@ impl Library {
             registry,
             files: config.files,
             downscale: config.downscale,
+            make_thumbnail,
             wake,
-            thumb_size: config.thumb_size.max(1),
         });
         let library = Self {
             shared,
@@ -520,9 +535,31 @@ impl Library {
         self.shared.lock().set_screen((width, height));
     }
 
-    /// The thumbnail of image `index`.
+    /// The thumbnail of image `index`. After [`Library::set_thumbnail_size`]
+    /// this is the thumbnail of the old size until the new one is made.
     pub fn thumbnail(&self, index: usize) -> Fetch<ImageBuf> {
         self.shared.lock().thumbnail(index)
+    }
+
+    /// Make thumbnails for `side` from now on (the gallery cells changed
+    /// size). Each cached thumbnail of another size stays available until
+    /// its new one is made, which is announced with
+    /// [`Event::ThumbnailReady`] like a first thumbnail. The new one is
+    /// made without a decode from the cached full image of the file, from
+    /// its screen image when the short side of that reaches the new size,
+    /// or from the old thumbnail when the new size is not larger or the old
+    /// thumbnail holds its whole source unreduced. Otherwise the file is
+    /// read and decoded again. Kept thumbnails
+    /// ([`LibraryConfig::kept_thumbnails`]) of another size are dropped.
+    /// The same size again does nothing.
+    pub fn set_thumbnail_size(&self, side: u32) {
+        self.update(|st| st.set_thumb_size(side));
+    }
+
+    /// The thumbnail size in pixels: [`LibraryConfig::thumb_size`] or the
+    /// last [`Library::set_thumbnail_size`].
+    pub fn thumbnail_size(&self) -> u32 {
+        self.shared.lock().thumb_size()
     }
 
     /// Take every queued event, oldest first. Call it after each wake;

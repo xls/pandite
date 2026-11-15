@@ -18,6 +18,7 @@
 use crate::convert::{premul_to_row, row_to_premul, Layout};
 use crate::filter::{Filter, Weights};
 use crate::par;
+use crate::transform::{crop, PixelRect};
 use pandite_core::image::{MAX_BUFFER_BYTES, MAX_DIMENSION};
 use pandite_core::{CancelToken, Error, ImageBuf, Result};
 
@@ -194,7 +195,11 @@ pub fn resize_with(
         return nearest(image, width, height, threads);
     }
     let layout = Layout::of(image.format())?;
-    let input = Input::Image { image, layout };
+    let input = Input::Image {
+        image,
+        layout,
+        area: Area::whole(image),
+    };
     resample(
         &input,
         width as usize,
@@ -204,6 +209,50 @@ pub fn resize_with(
         threads,
         cancel,
     )
+}
+
+/// A rectangle of a source image: columns `x..x + w`, rows `y..y + h`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Area {
+    x: usize,
+    y: usize,
+    w: usize,
+    h: usize,
+}
+
+impl Area {
+    /// The whole of `image`.
+    fn whole(image: &ImageBuf) -> Self {
+        Self {
+            x: 0,
+            y: 0,
+            w: image.width() as usize,
+            h: image.height() as usize,
+        }
+    }
+
+    /// The largest square in the middle of `image`. An odd leftover pixel
+    /// goes to the right or bottom.
+    fn center_square(image: &ImageBuf) -> Self {
+        let (w, h) = (image.width() as usize, image.height() as usize);
+        let side = w.min(h);
+        Self {
+            x: (w - side) / 2,
+            y: (h - side) / 2,
+            w: side,
+            h: side,
+        }
+    }
+
+    /// Row `y` of the area as bytes of `image`.
+    fn row<'a>(&self, image: &'a ImageBuf, y: usize) -> &'a [u8] {
+        let bpp = image.format().bytes_per_pixel();
+        &image.row((self.y + y) as u32)[self.x * bpp..(self.x + self.w) * bpp]
+    }
+
+    fn pixel_rect(&self) -> PixelRect {
+        PixelRect::new(self.x as u32, self.y as u32, self.w as u32, self.h as u32)
+    }
 }
 
 /// The size [`thumbnail`] produces: the largest size whose longer side is at
@@ -241,8 +290,9 @@ pub fn thumbnail(image: &ImageBuf, max_side: u32) -> ImageBuf {
     if (tw, th) == (w, h) {
         return image.clone();
     }
-    let filtered = Layout::of(image.format())
-        .and_then(|layout| thumbnail_filtered(image, layout, tw as usize, th as usize));
+    let filtered = Layout::of(image.format()).and_then(|layout| {
+        thumbnail_filtered(image, layout, Area::whole(image), tw as usize, th as usize)
+    });
     // Only a pixel format unknown to this crate gets here; nearest copies
     // whole pixels and works for every format.
     filtered
@@ -250,19 +300,65 @@ pub fn thumbnail(image: &ImageBuf, max_side: u32) -> ImageBuf {
         .unwrap_or_else(|_| image.clone())
 }
 
-fn thumbnail_filtered(image: &ImageBuf, layout: Layout, tw: usize, th: usize) -> Result<ImageBuf> {
-    let (w, h) = (image.width() as usize, image.height() as usize);
+/// The size [`cover_thumbnail`] produces: a square whose side is `side`,
+/// or the short side of the image when that is smaller (at least 1).
+pub fn cover_thumbnail_size(width: u32, height: u32, side: u32) -> (u32, u32) {
+    let s = width.min(height).min(side).max(1);
+    (s, s)
+}
+
+/// A square thumbnail that fills a `side` x `side` cell: the largest square
+/// in the middle of the image, reduced like [`thumbnail`] to `side`. The
+/// result is the same as [`thumbnail`] of that square cut out with
+/// [`crate::crop`], without the copy of the square. An image whose short
+/// side is below `side` is not enlarged: the result is its middle square at
+/// full resolution. The result keeps the input's pixel format.
+pub fn cover_thumbnail(image: &ImageBuf, side: u32) -> ImageBuf {
+    if image.width() == 0 || image.height() == 0 {
+        return image.clone();
+    }
+    let area = Area::center_square(image);
+    let (t, _) = cover_thumbnail_size(image.width(), image.height(), side);
+    let whole = area == Area::whole(image);
+    if t as usize == area.w {
+        // No reduction: the middle square itself.
+        if whole {
+            return image.clone();
+        }
+        return crop(image, area.pixel_rect()).unwrap_or_else(|_| image.clone());
+    }
+    let filtered = Layout::of(image.format())
+        .and_then(|layout| thumbnail_filtered(image, layout, area, t as usize, t as usize));
+    // Only a pixel format unknown to this crate gets here, as in
+    // `thumbnail`.
+    filtered
+        .or_else(|_| crop(image, area.pixel_rect()).and_then(|sq| nearest(&sq, t, t, 1)))
+        .unwrap_or_else(|_| image.clone())
+}
+
+fn thumbnail_filtered(
+    image: &ImageBuf,
+    layout: Layout,
+    area: Area,
+    tw: usize,
+    th: usize,
+) -> Result<ImageBuf> {
+    let (w, h) = (area.w, area.h);
     let ratio = (w as f64 / tw as f64).min(h as f64 / th as f64);
     // Leave at least a 2x reduction for the final filter.
     let factor = (ratio / 2.0).floor() as usize;
     let target_px = (tw * th) as u64;
     if factor < 2 {
         let threads = par::plan_threads(0, (w * h) as u64 + target_px, th);
-        let input = Input::Image { image, layout };
+        let input = Input::Image {
+            image,
+            layout,
+            area,
+        };
         return resample(&input, tw, th, Filter::Lanczos3, layout, threads, None);
     }
     let shrink_threads = par::plan_threads(0, (w * h) as u64, h.div_ceil(factor));
-    let (sw, sh, data) = box_shrink(image, layout, factor, shrink_threads)?;
+    let (sw, sh, data) = box_shrink(image, layout, area, factor, shrink_threads)?;
     let threads = par::plan_threads(0, (sw * sh) as u64 + target_px, th);
     let input = Input::Premul {
         width: sw,
@@ -272,15 +368,17 @@ fn thumbnail_filtered(image: &ImageBuf, layout: Layout, tw: usize, th: usize) ->
     resample(&input, tw, th, Filter::Lanczos3, layout, threads, None)
 }
 
-/// Average `factor` x `factor` blocks into premultiplied linear floats.
-/// Partial blocks at the right and bottom edges average the pixels they have.
+/// Average `factor` x `factor` blocks of `area` into premultiplied linear
+/// floats. Partial blocks at the right and bottom edges average the pixels
+/// they have.
 fn box_shrink(
     image: &ImageBuf,
     layout: Layout,
+    area: Area,
     factor: usize,
     threads: usize,
 ) -> Result<(usize, usize, Vec<f32>)> {
-    let (w, h) = (image.width() as usize, image.height() as usize);
+    let (w, h) = (area.w, area.h);
     let (sw, sh) = (w.div_ceil(factor), h.div_ceil(factor));
     let row_len = sw * 4;
     let mut out = vec![0.0f32; sh * row_len];
@@ -290,7 +388,7 @@ fn box_shrink(
             let y0 = (first + r) * factor;
             let y1 = (y0 + factor).min(h);
             for y in y0..y1 {
-                row_to_premul(layout, image.row(y as u32), &mut scratch);
+                row_to_premul(layout, area.row(image, y), &mut scratch);
                 for (o, block) in acc.chunks_exact_mut(4).zip(scratch.chunks(4 * factor)) {
                     for p in block.chunks_exact(4) {
                         o[0] += p[0];
@@ -365,6 +463,8 @@ pub(crate) enum Input<'a> {
         image: &'a ImageBuf,
         /// Its layout.
         layout: Layout,
+        /// The part of the source that is read.
+        area: Area,
     },
     /// Premultiplied linear-light RGBA floats, 4 per pixel.
     Premul {
@@ -380,14 +480,14 @@ pub(crate) enum Input<'a> {
 impl Input<'_> {
     fn width(&self) -> usize {
         match self {
-            Input::Image { image, .. } => image.width() as usize,
+            Input::Image { area, .. } => area.w,
             Input::Premul { width, .. } => *width,
         }
     }
 
     fn height(&self) -> usize {
         match self {
-            Input::Image { image, .. } => image.height() as usize,
+            Input::Image { area, .. } => area.h,
             Input::Premul { height, .. } => *height,
         }
     }
@@ -403,8 +503,12 @@ impl Input<'_> {
     /// Source row `y` as premultiplied linear floats.
     fn row<'s>(&'s self, y: usize, scratch: &'s mut [f32]) -> &'s [f32] {
         match self {
-            Input::Image { image, layout } => {
-                row_to_premul(*layout, image.row(y as u32), scratch);
+            Input::Image {
+                image,
+                layout,
+                area,
+            } => {
+                row_to_premul(*layout, area.row(image, y), scratch);
                 scratch
             }
             Input::Premul { width, data, .. } => {
@@ -602,7 +706,11 @@ mod tests {
         push: Option<bool>,
     ) -> ImageBuf {
         let layout = Layout::of(img.format()).unwrap();
-        let input = Input::Image { image: img, layout };
+        let input = Input::Image {
+            image: img,
+            layout,
+            area: Area::whole(img),
+        };
         let resampler = Resampler {
             input: &input,
             horizontal: Weights::new(img.width() as usize, w, filter),
@@ -752,6 +860,130 @@ mod tests {
         }
         let small = noise(20, 10);
         assert!(std::ptr::eq(thumbnail(&small, 64).data(), small.data()));
+    }
+
+    /// Each pixel tells where it is: red is x and green is y (below 256).
+    fn positions(w: u32, h: u32) -> ImageBuf {
+        let data = (0..w * h)
+            .flat_map(|i| [(i % w) as u8, (i / w) as u8, 77, 255])
+            .collect();
+        ImageBuf::new(w, h, PixelFormat::Rgba8, data).unwrap()
+    }
+
+    #[test]
+    fn cover_thumbnail_is_a_square_of_the_cell() {
+        let color = [90, 120, 150, 255];
+        for (w, h, side, want) in [
+            // Landscape, portrait and square sources larger than the cell.
+            (1200, 900, 96, 96),
+            (900, 1200, 96, 96),
+            (500, 500, 128, 128),
+            // A panorama whose short side still fills the cell.
+            (2400, 200, 96, 96),
+            // A panorama whose short side is below the cell: its middle
+            // square, not enlarged.
+            (2000, 60, 96, 60),
+            // Tiny sources.
+            (30, 20, 64, 20),
+            (20, 30, 64, 20),
+            (1, 1, 64, 1),
+            // Exactly the cell, and the pre-shrink path (ratio above 4).
+            (96, 96, 96, 96),
+            (1000, 1000, 64, 64),
+        ] {
+            assert_eq!(cover_thumbnail_size(w, h, side), (want, want), "{w}x{h}");
+            let img = ImageBuf::solid_rgba8(w, h, color).unwrap();
+            let t = cover_thumbnail(&img, side);
+            assert_eq!((t.width(), t.height()), (want, want), "{w}x{h} at {side}");
+            assert_eq!(t.format(), PixelFormat::Rgba8);
+            assert!(t.data().chunks_exact(4).all(|p| p == color), "{w}x{h}");
+        }
+        assert_eq!(cover_thumbnail_size(10, 10, 0), (1, 1));
+        // A square that needs no reduction is a cheap clone.
+        let square = noise(40, 40);
+        assert!(std::ptr::eq(
+            cover_thumbnail(&square, 64).data(),
+            square.data()
+        ));
+    }
+
+    #[test]
+    fn cover_thumbnail_takes_the_middle_square() {
+        // No reduction: the middle square, pixel for pixel. An odd leftover
+        // column or row goes to the right or bottom.
+        for (w, h, dx, dy) in [(250, 100, 75, 0), (100, 201, 0, 50), (101, 100, 0, 0)] {
+            let t = cover_thumbnail(&positions(w, h), 100);
+            assert_eq!((t.width(), t.height()), (100, 100));
+            for (y, x) in [(0, 0), (0, 99), (99, 0), (99, 99), (37, 61)] {
+                let o = ((y * 100 + x) * 4) as usize;
+                let p = &t.data()[o..o + 4];
+                assert_eq!(
+                    p,
+                    [(x + dx) as u8, (y + dy) as u8, 77, 255],
+                    "{w}x{h} at ({x}, {y})"
+                );
+            }
+        }
+        // With a reduction, only the middle third of a three-band image
+        // reaches the thumbnail: no red or blue bleeds in at the edges.
+        let bands = |w: u32, h: u32, vertical: bool| {
+            let data = (0..w * h)
+                .flat_map(|i| {
+                    let (x, y) = (i % w, i / w);
+                    let (pos, len) = if vertical { (y, h) } else { (x, w) };
+                    match 3 * pos / len {
+                        0 => [255, 0, 0, 255],
+                        1 => [0, 255, 0, 255],
+                        _ => [0, 0, 255, 255],
+                    }
+                })
+                .collect();
+            ImageBuf::new(w, h, PixelFormat::Rgba8, data).unwrap()
+        };
+        for (img, side) in [
+            (bands(600, 200, false), 100),
+            (bands(200, 600, true), 50),
+            (bands(1500, 500, false), 64),
+        ] {
+            let t = cover_thumbnail(&img, side);
+            assert_eq!((t.width(), t.height()), (side, side));
+            assert!(
+                t.data().chunks_exact(4).all(|p| p == [0, 255, 0, 255]),
+                "{}x{}",
+                img.width(),
+                img.height()
+            );
+        }
+    }
+
+    #[test]
+    fn cover_thumbnail_equals_crop_then_thumbnail() {
+        let square = |img: &ImageBuf| {
+            let a = Area::center_square(img);
+            crop(img, a.pixel_rect()).unwrap()
+        };
+        for (w, h, side) in [
+            (300, 170, 64),
+            (170, 300, 96),
+            (999, 400, 128),
+            (64, 300, 96),
+        ] {
+            let img = noise(w, h);
+            let t = cover_thumbnail(&img, side);
+            assert_eq!(t.data(), thumbnail(&square(&img), side).data(), "{w}x{h}");
+        }
+        // Deep and float images keep their format and size, and convert to
+        // the 8-bit pixels the gallery uploads.
+        let img = noise(300, 200);
+        for format in [PixelFormat::Rgba16, PixelFormat::RgbaF32] {
+            let deep = crate::convert(&img, format).unwrap();
+            let t = cover_thumbnail(&deep, 64);
+            assert_eq!((t.width(), t.height(), t.format()), (64, 64, format));
+            assert_eq!(t.data(), thumbnail(&square(&deep), 64).data(), "{format:?}");
+            let shown = crate::to_rgba8(&t).unwrap();
+            assert_eq!((shown.width(), shown.height()), (64, 64));
+            assert_eq!(shown.format(), PixelFormat::Rgba8);
+        }
     }
 
     #[test]

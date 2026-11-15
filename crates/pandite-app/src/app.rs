@@ -31,8 +31,9 @@ use pandite_library::{
     natural_cmp, Event, Fetch, FileAccess, KeptThumbnails, Library, LibraryConfig, Reduced,
 };
 use pandite_ui::{
-    Action, BulkJob, BulkSource, ConfirmRequest, CursorShape, EncoderInfo, ImageInfo, InfoRow,
-    InputEvent, Loading, Progress, TextView, ThemeKind, ThumbState, Ui, UiContext, ZOOM_STEP,
+    Action, BulkJob, BulkSource, ConfirmRequest, CursorShape, EncoderInfo, GallerySize, ImageInfo,
+    InfoRow, InputEvent, Loading, Progress, TextView, ThemeKind, ThumbState, Ui, UiContext,
+    ZOOM_STEP,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -654,19 +655,27 @@ impl App {
             size_to_image,
             thumbnails,
         } = startup;
+        let scale = window.scale.max(0.25);
         let config = LibraryConfig {
             read_ahead: settings.read_ahead as usize,
             wrap_around: settings.wrap_around,
             full_budget: (settings.image_cache_mb as usize) << 20,
             thumb_budget: (settings.thumbnail_cache_mb as usize) << 20,
-            thumb_size: 256,
+            // Thumbnails fill a gallery cell pixel for pixel.
+            thumb_size: settings.gallery_size.cell_px(scale),
             shutdown_grace: Duration::from_millis(100),
             downscale: Arc::new(|image: &ImageBuf, max: u32| {
                 let small = pandite_ops::thumbnail(image, max);
-                // Thumbnails of deep images become 8-bit: a quarter of the
-                // memory, and the strip cannot show more anyway.
+                // Screen images of deep images become 8-bit: a quarter of
+                // the memory, and the screen cannot show more anyway.
                 pandite_ops::to_rgba8(&small).unwrap_or(small)
             }),
+            make_thumbnail: Some(Arc::new(|image: &ImageBuf, side: u32| {
+                let square = pandite_ops::cover_thumbnail(image, side);
+                // Thumbnails of deep images become 8-bit: a quarter of the
+                // memory, and the strip cannot show more anyway.
+                pandite_ops::to_rgba8(&square).unwrap_or(square)
+            })),
             files: Arc::clone(&platform.disk) as Arc<dyn FileAccess>,
             // Staged loading: a quick reduced image first, full resolution
             // for the image on screen only, read-ahead at window size.
@@ -707,7 +716,7 @@ impl App {
             settings_path,
             encoders,
             window_size: window.size,
-            scale: window.scale.max(0.25),
+            scale,
             system_theme: window.system_theme,
             fullscreen: window.fullscreen,
             maximized: window.maximized,
@@ -1218,6 +1227,14 @@ impl App {
                 st.save_settings_soon();
                 Handled::Done
             }
+            Action::LargerThumbnails => {
+                let larger = st.settings.gallery_size.larger();
+                st.set_gallery_size(larger)
+            }
+            Action::SmallerThumbnails => {
+                let smaller = st.settings.gallery_size.smaller();
+                st.set_gallery_size(smaller)
+            }
             Action::ToggleInfo => {
                 st.settings.info_panel = !st.settings.info_panel;
                 st.save_settings_soon();
@@ -1323,12 +1340,21 @@ impl App {
         }
     }
 
-    /// The DPI scale factor changed.
+    /// The DPI scale factor changed (the window moved to a screen with
+    /// another scale). The gallery thumbnails are made again at the new
+    /// cell size; the old ones show until then.
     pub fn scale_changed(&mut self, scale: f32) {
         if scale.is_finite() && scale > 0.0 {
             self.st.scale = scale;
+            self.st.sync_thumbnail_size();
             self.st.dirty = true;
         }
+    }
+
+    /// The side in pixels the library makes gallery thumbnails at: the
+    /// cell size of the gallery size setting at the current scale.
+    pub fn thumbnail_px(&self) -> u32 {
+        self.st.library.thumbnail_size()
     }
 
     /// The operating system theme changed.
@@ -1645,6 +1671,7 @@ fn context<'a>(st: &'a State, ui: &Ui, now: Duration) -> UiContext<'a> {
         theme: st.theme(),
         fullscreen: st.fullscreen,
         gallery_visible: st.settings.gallery_visible,
+        gallery_size: st.settings.gallery_size,
         image: None,
         index: st.target.as_ref().map_or(0, |t| t.index),
         count: st.count,
@@ -1745,6 +1772,27 @@ impl State {
         let _ = jobs::spawn("pandite-settings", move || {
             let _ = settings::save(&*disk, &path, &settings);
         });
+    }
+
+    /// Change the gallery size setting to `size` and make the thumbnails
+    /// again at its cell size. `None` (no larger or smaller size) changes
+    /// nothing.
+    fn set_gallery_size(&mut self, size: Option<GallerySize>) -> Handled {
+        let Some(size) = size else {
+            return Handled::Ignored;
+        };
+        self.settings.gallery_size = size;
+        self.sync_thumbnail_size();
+        self.save_settings_soon();
+        Handled::Done
+    }
+
+    /// Tell the library the cell size of the gallery at the current
+    /// scale. A new size makes it remake the thumbnails; each old one
+    /// stays on screen until its new one is uploaded.
+    fn sync_thumbnail_size(&mut self) {
+        let side = self.settings.gallery_size.cell_px(self.scale);
+        self.library.set_thumbnail_size(side);
     }
 
     fn refresh_text(&mut self) {
@@ -2572,6 +2620,7 @@ impl State {
             window_size: Size::new(4000.0, 4000.0),
             scale_factor: self.scale,
             gallery_visible: self.settings.gallery_visible,
+            gallery_size: self.settings.gallery_size,
             count: 2,
             ..UiContext::default()
         };

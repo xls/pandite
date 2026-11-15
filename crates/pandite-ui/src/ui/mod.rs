@@ -249,7 +249,7 @@ impl Ui {
     /// strip when it shows. The toolbar overlays the image and does not
     /// reduce it. Pass this as the viewport to [`pandite_core::ViewState`].
     pub fn content_rect(&self, ctx: &UiContext<'_>) -> Rect {
-        let m = Metrics::new(ctx.scale_factor);
+        let m = Metrics::of(ctx);
         let window = ctx.window_rect();
         match self.gallery_panel(ctx, &m) {
             Some(panel) => Rect::new(window.x, window.y, window.w, (panel.y - window.y).max(0.0)),
@@ -273,18 +273,19 @@ impl Ui {
     /// Gallery indices drawn in the last frame. Decode their thumbnails
     /// first and read ahead around this range.
     pub fn gallery_visible_range(&self, ctx: &UiContext<'_>) -> Range<usize> {
-        let m = Metrics::new(ctx.scale_factor);
+        let m = Metrics::of(ctx);
         match self.gallery_layout(ctx, &m) {
             Some(layout) => layout.visible_range(layout.clamp_scroll(self.gallery.scroll)),
             None => 0..0,
         }
     }
 
-    /// The side in physical pixels of a gallery cell. Decode thumbnails at
-    /// least this large on their short side for crisp cells; the strip
-    /// crops them to squares.
+    /// The side in physical pixels of a gallery cell at the scale factor
+    /// and gallery size of `ctx` ([`crate::GallerySize::cell_px`]). Make
+    /// thumbnails as squares of this side: the strip draws them pixel for
+    /// pixel. Smaller or other shapes are scaled to cover the cell.
     pub fn thumbnail_px(ctx: &UiContext<'_>) -> u32 {
-        Metrics::new(ctx.scale_factor).cell() as u32
+        Metrics::of(ctx).cell() as u32
     }
 
     /// The number of thumbnails that fit whole in the gallery strip at the
@@ -292,7 +293,7 @@ impl Ui {
     /// Page Up and Page Down. The same number when the strip is hidden.
     /// At least 1.
     pub fn gallery_page(ctx: &UiContext<'_>) -> usize {
-        let m = Metrics::new(ctx.scale_factor);
+        let m = Metrics::of(ctx);
         let room = ctx.window_rect().w - 2.0 * m.gallery_pad() - m.cell();
         let pitch = m.cell() + m.cell_gap();
         if room.is_finite() && room > 0.0 {
@@ -369,6 +370,11 @@ impl Ui {
             | Command::MoveTo
             | Command::CopyTo => ctx.image.is_some() || ctx.count > 0,
             Command::ClearSelection => !ctx.selected.is_empty(),
+            // A hidden strip has no thumbnails to resize.
+            Command::LargerThumbnails => ctx.gallery_visible && ctx.gallery_size.larger().is_some(),
+            Command::SmallerThumbnails => {
+                ctx.gallery_visible && ctx.gallery_size.smaller().is_some()
+            }
             Command::CropApply => self.crop.as_ref().is_some_and(|c| c.pixel_rect().is_some()),
             Command::CropSelectAll | Command::CropCancel => self.crop.is_some(),
             Command::SelectAllText => TextGeom::new(ctx).is_some(),
@@ -469,7 +475,7 @@ impl Ui {
     /// drawing each frame; it does nothing when the icons are current.
     /// Returns true when it uploaded.
     pub fn sync_textures(&mut self, ctx: &UiContext<'_>, sink: &mut dyn TextureSink) -> bool {
-        let m = Metrics::new(ctx.scale_factor);
+        let m = Metrics::of(ctx);
         self.icons.sync(m.icon_px(), sink)
     }
 
@@ -562,7 +568,7 @@ impl Ui {
         let dt = prev.map_or(0.0, |t| (now - t).as_secs_f32());
         self.last_update = Some(now);
         self.now = now;
-        let m = Metrics::new(ctx.scale_factor);
+        let m = Metrics::of(ctx);
         self.toolbar.compute(ctx.window_size.w, &m);
 
         // A text selection ends when its layout or image goes away.
@@ -631,7 +637,7 @@ impl Ui {
 
     /// Recompute the redraw schedule after an event or frame.
     fn finish(&mut self, ctx: &UiContext<'_>) {
-        let m = Metrics::new(ctx.scale_factor);
+        let m = Metrics::of(ctx);
         let now = ctx.now;
         let wanted = self.toolbar_wanted(ctx, &m);
         let target = if wanted { 1.0 } else { 0.0 };
@@ -922,7 +928,7 @@ impl Ui {
         let origin = Point::new(more.right(), more.bottom() + 2.0);
         let mut menu = MenuState::new(MenuOwner::Overflow, origin, items);
         // Align the menu's right edge with the button.
-        let m = Metrics::new(ctx.scale_factor);
+        let m = Metrics::of(ctx);
         let w = menu.rect(ctx.window_rect(), &m).w;
         menu.origin.x = (more.right() - w).max(0.0);
         self.menu = Some(menu);
@@ -995,7 +1001,7 @@ impl Ui {
         if !self.command_enabled(cmd, ctx) {
             return;
         }
-        let m = Metrics::new(ctx.scale_factor);
+        let m = Metrics::of(ctx);
         let step = m.pan_step();
         match cmd {
             Command::Open => out.push(Action::Open),
@@ -1083,6 +1089,8 @@ impl Ui {
             Command::First => out.push(Action::GoTo(0)),
             Command::Last => out.push(Action::GoTo(ctx.count - 1)),
             Command::ToggleGallery => out.push(Action::ToggleGallery),
+            Command::LargerThumbnails => out.push(Action::LargerThumbnails),
+            Command::SmallerThumbnails => out.push(Action::SmallerThumbnails),
             Command::ToggleInfo => out.push(Action::ToggleInfo),
             Command::Fullscreen => out.push(Action::ToggleFullscreen),
             Command::ContextMenu => {
@@ -1255,7 +1263,7 @@ impl Ui {
 }
 
 /// The context menu in normal mode. `None` is a separator.
-const CONTEXT_MENU: [Option<Command>; 35] = [
+const CONTEXT_MENU: [Option<Command>; 37] = [
     Some(Command::Open),
     Some(Command::SaveAs),
     Some(Command::CopyImage),
@@ -1287,6 +1295,8 @@ const CONTEXT_MENU: [Option<Command>; 35] = [
     Some(Command::Next),
     None,
     Some(Command::ToggleGallery),
+    Some(Command::LargerThumbnails),
+    Some(Command::SmallerThumbnails),
     Some(Command::Fullscreen),
     Some(Command::Help),
     None,

@@ -6,8 +6,8 @@ mod support;
 use pandite_app::app::WindowState;
 use pandite_app::disk::{self, StdDisk};
 use pandite_app::settings::{
-    self, ensure_on_screen, first_open_rect, LoadNote, MonitorArea, Settings, ThemeChoice,
-    WindowPlacement,
+    self, ensure_on_screen, first_open_rect, GallerySize, LoadNote, MonitorArea, Settings,
+    ThemeChoice, WindowPlacement,
 };
 use pandite_core::{Rect, Size};
 use pandite_ui::{Key, Modifiers};
@@ -190,6 +190,39 @@ fn corrupt_settings_fall_back_to_defaults() {
     let report = h.app.take().unwrap().shutdown(Duration::from_secs(10));
     assert_eq!(report.settings_saved, Some(true));
     assert_eq!(settings::load(&StdDisk, &path).1, LoadNote::Loaded);
+}
+
+#[test]
+fn gallery_size_roundtrips_and_survives_a_bad_value() {
+    let dir = TempDir::new("gallery-size");
+    let path = dir.join("settings.ini");
+    let saved = Settings {
+        gallery_size: GallerySize::Small,
+        theme: ThemeChoice::Light,
+        ..Settings::default()
+    };
+    settings::save(&StdDisk, &path, &saved).unwrap();
+    let (loaded, note) = settings::load(&StdDisk, &path);
+    assert_eq!((loaded.clone(), note), (saved.clone(), LoadNote::Loaded));
+    // A size this version does not know: the default size, the other
+    // settings load and the file stays where it is.
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("gallery_size = small"), "{text}");
+    std::fs::write(
+        &path,
+        text.replace("gallery_size = small", "gallery_size = huge"),
+    )
+    .unwrap();
+    let (loaded, note) = settings::load(&StdDisk, &path);
+    assert_eq!(note, LoadNote::Loaded);
+    assert_eq!(
+        loaded,
+        Settings {
+            gallery_size: GallerySize::Medium,
+            ..saved
+        }
+    );
+    assert!(path.exists() && !dir.join("settings.ini.bad").exists());
 }
 
 #[test]

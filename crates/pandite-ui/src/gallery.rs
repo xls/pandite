@@ -9,10 +9,80 @@
 //! A selected item carries a small round badge in the top left corner of
 //! its cell. The badge is a marker only: a click anywhere on a cell shows
 //! the item, and the pointer never changes the selection.
+//!
+//! The cells come in three sizes ([`GallerySize`]). The gap between cells
+//! and the padding around them grow with the cell; the badge and the ring
+//! around the current item keep their size.
 
 use crate::metrics::Metrics;
 use pandite_core::{Point, Rect};
 use std::ops::Range;
+
+/// The size of the gallery cells.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum GallerySize {
+    /// 64 logical pixels.
+    Small,
+    /// 96 logical pixels.
+    #[default]
+    Medium,
+    /// 128 logical pixels.
+    Large,
+}
+
+impl GallerySize {
+    /// Every size, smallest first.
+    pub const ALL: [GallerySize; 3] = [GallerySize::Small, GallerySize::Medium, GallerySize::Large];
+
+    /// The cell side in logical pixels.
+    pub fn cell(self) -> f32 {
+        match self {
+            GallerySize::Small => 64.0,
+            GallerySize::Medium => 96.0,
+            GallerySize::Large => 128.0,
+        }
+    }
+
+    /// The gap between two cells in logical pixels.
+    pub(crate) fn gap(self) -> f32 {
+        self.cell() * (6.0 / 64.0)
+    }
+
+    /// The space above, below and beside the cells in logical pixels.
+    pub(crate) fn pad(self) -> f32 {
+        self.cell() * (10.0 / 64.0)
+    }
+
+    /// The strip height in logical pixels: the cell and its padding.
+    pub(crate) fn strip(self) -> f32 {
+        self.cell() + 2.0 * self.pad()
+    }
+
+    /// The next larger size, `None` for the largest.
+    pub fn larger(self) -> Option<GallerySize> {
+        match self {
+            GallerySize::Small => Some(GallerySize::Medium),
+            GallerySize::Medium => Some(GallerySize::Large),
+            GallerySize::Large => None,
+        }
+    }
+
+    /// The next smaller size, `None` for the smallest.
+    pub fn smaller(self) -> Option<GallerySize> {
+        match self {
+            GallerySize::Small => None,
+            GallerySize::Medium => Some(GallerySize::Small),
+            GallerySize::Large => Some(GallerySize::Medium),
+        }
+    }
+
+    /// The cell side in physical pixels at DPI scale `scale`, rounded as
+    /// every interface length is. A thumbnail of this side fills a cell
+    /// pixel for pixel.
+    pub fn cell_px(self, scale: f32) -> u32 {
+        Metrics::new(scale).with_gallery(self).cell() as u32
+    }
+}
 
 /// Pure geometry of the strip for one frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -162,23 +232,29 @@ pub(crate) struct GalleryState {
     pub scroll: f32,
     /// Offset the animation moves toward.
     pub target: f32,
-    /// What the strip last kept in view: index, count, width.
-    pub tracked: Option<(usize, usize, u32)>,
+    /// What the strip last kept in view: index, count, width, cell side.
+    pub tracked: Option<(usize, usize, u32, u32)>,
     /// Hovered item.
     pub hover: Option<usize>,
 }
 
 impl GalleryState {
-    /// Keep the current item in view when it, the count or the width
-    /// changed. Jumps without animation the first time.
+    /// Keep the current item in view when it, the count, the width or the
+    /// cell size changed. Jumps without animation the first time and when
+    /// the cell size changed, because every item moved.
     pub fn track(&mut self, layout: &GalleryLayout, index: usize, count: usize) {
-        let key = (index, count, layout.panel.w.round() as u32);
+        let key = (
+            index,
+            count,
+            layout.panel.w.round() as u32,
+            layout.cell.round() as u32,
+        );
         if self.tracked == Some(key) {
             self.scroll = layout.clamp_scroll(self.scroll);
             self.target = layout.clamp_scroll(self.target);
             return;
         }
-        let first = self.tracked.is_none();
+        let first = self.tracked.is_none_or(|t| t.3 != key.3);
         self.tracked = Some(key);
         if count == 0 {
             self.scroll = 0.0;
@@ -228,11 +304,29 @@ mod tests {
     use super::*;
 
     fn layout(count: usize) -> GalleryLayout {
-        GalleryLayout::new(
-            Rect::new(0.0, 700.0, 800.0, 84.0),
-            count,
-            &Metrics::new(1.0),
-        )
+        let m = Metrics::new(1.0);
+        GalleryLayout::new(Rect::new(0.0, 700.0, 800.0, m.gallery_h()), count, &m)
+    }
+
+    #[test]
+    fn sizes_step_through_the_range() {
+        use GallerySize::*;
+        assert_eq!(GallerySize::default(), Medium);
+        assert_eq!(GallerySize::ALL.map(GallerySize::cell), [64.0, 96.0, 128.0]);
+        assert_eq!(
+            GallerySize::ALL.map(GallerySize::larger),
+            [Some(Medium), Some(Large), None]
+        );
+        assert_eq!(
+            GallerySize::ALL.map(GallerySize::smaller),
+            [None, Some(Small), Some(Medium)]
+        );
+        // The cell side in pixels follows the interface rounding.
+        assert_eq!(
+            [1.0, 1.25, 1.5, 2.0].map(|s| Medium.cell_px(s)),
+            [96, 120, 144, 192]
+        );
+        assert_eq!(Small.cell_px(f32::NAN), 64, "a bad scale counts as 1");
     }
 
     #[test]
@@ -262,8 +356,9 @@ mod tests {
 
     #[test]
     fn badge_sits_in_the_cell_corner_at_every_scale() {
-        for scale in [1.0, 1.25, 1.5, 2.0, 3.0] {
-            let m = Metrics::new(scale);
+        let sizes = GallerySize::ALL.into_iter();
+        for (size, scale) in sizes.flat_map(|g| [1.0, 1.25, 1.5, 2.0, 3.0].map(|s| (g, s))) {
+            let m = Metrics::new(scale).with_gallery(size);
             let l = GalleryLayout::new(Rect::new(0.0, 700.0, 2000.0, m.gallery_h()), 40, &m);
             let cell = l.item_rect(3, 0.0);
             let b = l.badge_rect(cell);

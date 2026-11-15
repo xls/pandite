@@ -49,6 +49,8 @@ On macOS, Ctrl is the Command key and Alt is the Option key.
 | First image | Home |
 | Last image | End |
 | Gallery strip | G |
+| Larger thumbnails | Ctrl++, Ctrl+= |
+| Smaller thumbnails | Ctrl+- |
 | Image information | I |
 | Full screen | F11, Alt+Enter |
 | Context menu | Menu, Shift+F10 |
@@ -110,9 +112,43 @@ On macOS, Ctrl is the Command key and Alt is the Option key.
 - In a dialog, Full screen and Quit stay available. The dialog receives all
   other keys.
 - In crop mode, these commands stay available: fit, 1:1, zoom, pan, full
-  screen, gallery strip, image information, context menu, keyboard
-  shortcuts, Esc, quit and the crop commands.
+  screen, gallery strip, larger and smaller thumbnails, image information,
+  context menu, keyboard shortcuts, Esc, quit and the crop commands.
+- Ctrl++ and Ctrl+- change the size of the gallery thumbnails. Without
+  Ctrl, + and - zoom the image. See [Gallery strip](#gallery-strip).
 - The arrow keys move the selection only when a selection exists.
+
+## Gallery strip
+
+The gallery strip shows a thumbnail of each image of the folder along the
+bottom of the window. G shows or hides the strip.
+
+- The thumbnails have three sizes: small, medium and large. Medium is the
+  default.
+- A small thumbnail is 64 pixels, a medium thumbnail is 96 pixels and a
+  large thumbnail is 128 pixels, at a display scale of 100 percent. At
+  other scales, the size changes with the scale. For example, a medium
+  thumbnail is 144 pixels at 150 percent.
+- Ctrl++ or Ctrl+= makes the thumbnails one size larger. Ctrl+- makes them
+  one size smaller. The context menu has the same commands, Larger
+  thumbnails and Smaller thumbnails, below Gallery strip.
+- At the largest size, Larger thumbnails is not available. At the smallest
+  size, Smaller thumbnails is not available. When the strip is hidden,
+  both commands are not available.
+- The height of the strip and the space between the thumbnails change
+  with the size.
+- A thumbnail shows the middle square of its image. pandite makes each
+  thumbnail at the pixel size of its square on the screen, so it is
+  sharp.
+- pandite does not make a thumbnail larger than its image. When an image
+  is smaller than the square, its middle square fills the square at a
+  lower sharpness.
+- When you change the size, or when you move the window to a screen with
+  another scale, pandite makes the thumbnails again. Until a new thumbnail
+  is ready, the old thumbnail fills the new square.
+- pandite saves the size in the settings file, for example
+  `gallery_size = medium`. The values are `small`, `medium` and `large`.
+  An unknown value gives the medium size, and the other settings load.
 
 ## Delete a file
 

@@ -5,7 +5,9 @@
 
 mod support;
 
-use pandite_app::settings::Settings;
+use pandite_app::app::WindowState;
+use pandite_app::settings::{GallerySize, Settings};
+use pandite_core::Size;
 use pandite_library::KeptThumbnails;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -101,6 +103,66 @@ fn thumbs_kept_across_sessions() {
     assert_eq!((s.thumb_entries, s.kept_entries), (NAMES.len(), 0));
     // The second session hands them on in turn.
     assert_eq!(end_session(&mut second).len(), NAMES.len());
+}
+
+#[test]
+fn thumbs_of_another_size_not_reused() {
+    let (_dir, paths) = staged_folder("kept-size");
+    // A second session whose cells have another pixel size: another
+    // scale factor (medium cells of 144 pixels), or another gallery size
+    // (large cells of 128 pixels).
+    let large = Settings {
+        read_ahead: 0,
+        gallery_size: GallerySize::Large,
+        ..Settings::default()
+    };
+    for (scale, settings, side) in [
+        (
+            1.5,
+            Settings {
+                read_ahead: 0,
+                ..Settings::default()
+            },
+            144,
+        ),
+        (1.0, large, 128),
+    ] {
+        let first_dec = GatedDecoder::new();
+        let mut first = harness(&paths[0], &first_dec, None);
+        first.start();
+        settle(&mut first, &paths[0]);
+        let kept = end_session(&mut first);
+        assert_eq!((kept.thumb_size, kept.len()), (THUMB_SIDE, NAMES.len()));
+
+        let second_dec = GatedDecoder::new();
+        let mut second = Harness::new(Config {
+            settings,
+            open: Some(paths[3].clone()),
+            registry: Some(second_dec.registry()),
+            thumbnails: Some(kept),
+            window: WindowState {
+                size: Size::new(1000.0, 800.0),
+                scale,
+                ..WindowState::default()
+            },
+            ..Config::default()
+        });
+        // Dropped at once: they would show at the wrong size.
+        let s = second.app().library().stats();
+        assert_eq!((s.kept_entries, s.kept_bytes), (0, 0), "{side}");
+        second.start();
+        settle(&mut second, &paths[3]);
+        // Made again from the files at the new size, except the opened
+        // image's, which comes from its full decode.
+        let mut decoded = second_dec.thumbnail_decodes_at(side);
+        decoded.sort();
+        let others: Vec<&str> = NAMES.iter().copied().filter(|n| *n != "d.stg").collect();
+        assert_eq!(decoded, others, "{side}");
+        assert!(second_dec.thumbnail_decodes().is_empty(), "{side}");
+        // The next session gets thumbnails of the new size.
+        let next = end_session(&mut second);
+        assert_eq!((next.thumb_size, next.len()), (side, NAMES.len()));
+    }
 }
 
 #[test]

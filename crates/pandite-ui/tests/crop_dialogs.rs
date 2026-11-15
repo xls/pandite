@@ -10,17 +10,17 @@ use pandite_ui::{
 use std::path::{Path, PathBuf};
 use support::*;
 
-/// A 1000 x 500 image shown 1:1 at window position (140, 108).
+/// A 1000 x 500 image shown 1:1 at window position (140, 87).
 fn crop_ctx() -> UiContext<'static> {
     let ctx = with_image(base_ctx(), 1000, 500);
     let r = ctx.image.unwrap().screen_rect;
-    assert_eq!((r.x, r.y, r.w, r.h), (140.0, 108.0, 1000.0, 500.0));
+    assert_eq!((r.x, r.y, r.w, r.h), (140.0, 87.0, 1000.0, 500.0));
     ctx
 }
 
 /// Window position of image pixel (x, y).
 fn ip(x: f32, y: f32) -> Point {
-    Point::new(140.0 + x, 108.0 + y)
+    Point::new(140.0 + x, 87.0 + y)
 }
 
 fn crop_rect(actions: &[Action]) -> PixelRect {
@@ -96,7 +96,7 @@ fn crop_drag_creates_clamped_selection() {
     // 100 pixel drag selects 200 image pixels.
     let mut half = with_image(base_ctx(), 2000, 1000);
     let info = half.image.as_mut().unwrap();
-    info.screen_rect = pandite_core::Rect::new(140.0, 108.0, 1000.0, 500.0);
+    info.screen_rect = pandite_core::Rect::new(140.0, 87.0, 1000.0, 500.0);
     let mut ui = Ui::new();
     press_key(&mut ui, &half, Key::C);
     drag(
