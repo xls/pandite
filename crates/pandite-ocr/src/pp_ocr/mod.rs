@@ -26,7 +26,8 @@
 //! (about 0.1 second). The recognition model takes any width. The
 //! detection model needs a fixed input size, so an optimized plan is kept
 //! for each of the last [`PLANS`] sizes; a new size costs about 0.1
-//! second. Recognition runs on the calling thread only. The cancel token
+//! second. The lines of an image are read on up to [`MAX_LINE_THREADS`]
+//! threads. The cancel token
 //! is checked between the stages, between lines and between the model's
 //! operations.
 
@@ -41,6 +42,7 @@ use pandite_core::{
 };
 use raster::{Bgr, Homography};
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use tract_onnx::prelude::*;
 
@@ -75,6 +77,9 @@ const TEXT_SCORE: f32 = 0.5;
 const PLANS: usize = 4;
 
 type Plan = Arc<TypedRunnableModel>;
+
+/// Most threads that read the lines of one image.
+const MAX_LINE_THREADS: usize = 8;
 
 /// Text recognition with the built-in PP-OCRv6 models. Reads Latin
 /// scripts (with accents), digits, punctuation and Chinese. Fully
@@ -143,14 +148,49 @@ impl PpOcr {
                 ((p[1] - band as f64) * sy).clamp(0.0, ih as f64) as f32,
             )
         };
-        let mut lines = Vec::new();
-        for quad in &boxes {
-            cancel.check()?;
-            if let Some(line) = engine.read_line(&work, quad, cancel, &to_image)? {
-                lines.push(line);
+        // The lines are independent: read them on several threads and keep
+        // their order. One thread stays free for the interface.
+        let threads = std::thread::available_parallelism()
+            .map_or(1, |n| n.get().saturating_sub(1))
+            .clamp(1, MAX_LINE_THREADS)
+            .min(boxes.len().max(1));
+        let next = AtomicUsize::new(0);
+        let read_some = || -> Result<Vec<(usize, OcrLine)>> {
+            let mut found = Vec::new();
+            loop {
+                let i = next.fetch_add(1, Ordering::Relaxed);
+                let Some(quad) = boxes.get(i) else {
+                    return Ok(found);
+                };
+                cancel.check()?;
+                if let Some(line) = engine.read_line(&work, quad, cancel, &to_image)? {
+                    found.push((i, line));
+                }
             }
+        };
+        let mut parts = Vec::with_capacity(threads);
+        if threads == 1 {
+            parts.push(read_some());
+        } else {
+            std::thread::scope(|scope| {
+                let workers: Vec<_> = (0..threads).map(|_| scope.spawn(read_some)).collect();
+                for worker in workers {
+                    // A panic in a worker goes on to the caller, which
+                    // reports it as a failed recognition.
+                    parts.push(
+                        worker
+                            .join()
+                            .unwrap_or_else(|p| std::panic::resume_unwind(p)),
+                    );
+                }
+            });
         }
-        Ok(lines)
+        let mut lines = Vec::new();
+        for part in parts {
+            lines.extend(part?);
+        }
+        lines.sort_by_key(|(i, _)| *i);
+        Ok(lines.into_iter().map(|(_, line)| line).collect())
     }
 }
 
