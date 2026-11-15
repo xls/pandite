@@ -354,7 +354,7 @@ fn context_menu_lists_commands() {
     // A window tall enough for the whole menu below the pointer.
     let ctx = with_image(
         UiContext {
-            window_size: Size::new(1280.0, 900.0),
+            window_size: Size::new(1280.0, 960.0),
             ..base_ctx()
         },
         4000,
@@ -375,6 +375,8 @@ fn context_menu_lists_commands() {
         Command::Undo,
         Command::ToggleSelect,
         Command::ClearSelection,
+        Command::MoveTo,
+        Command::CopyTo,
         Command::MoveToTrash,
         Command::DeleteFile,
         Command::RotateLeft,
@@ -407,6 +409,8 @@ fn context_menu_lists_commands() {
         "Ctrl+Shift+C",
         "F11",
         "Shift+R",
+        "M",
+        "Shift+M",
         "Del",
         "Shift+Del",
     ] {

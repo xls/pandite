@@ -105,7 +105,8 @@ Writes PNG, JPEG, lossless WebP and BMP.
   shows the next image. Shift+Del asks first, then deletes the file for good.
 - **Select.** Space or Shift+arrows select images, which show a badge in
   the gallery strip and a "Marked" label on screen. Del, M (move to a
-  folder) and bulk convert then act on the selected images.
+  folder), Shift+M (copy to a folder) and bulk convert then act on the
+  selected images.
 - **Color.** Embedded ICC profiles convert to sRGB. HDR images are tone
   mapped. Photos turn upright from their EXIF orientation.
 - **Stall safe.** A file stuck on a cloud drive cannot freeze the window.

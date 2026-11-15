@@ -2,8 +2,9 @@
 //! select files (a click on a thumbnail never does), the selection follows
 //! the files through deletes,
 //! rescans and folder changes, Delete and Shift+Delete act on it after a
-//! question, bulk convert offers it as its source, and Move to moves it
-//! into another folder. Shift+Left and Shift+Right select as they move.
+//! question, bulk convert offers it as its source, Move to moves it into
+//! another folder and Copy to copies it there. Shift+Left and Shift+Right
+//! select as they move.
 //! A drive without a trash takes Delete as a removal for good. These tests
 //! use the fake trash of the test disk only.
 
@@ -1396,4 +1397,452 @@ fn move_never_replaces_a_file_that_appears() {
     assert!(paths[1].exists());
     assert_eq!(listing(dir.path()), ["a.png", "b.png"]);
     assert_eq!(h.app().selection(), [paths[1].clone()]);
+}
+
+/// Press Shift+M, pick `folder` in the picker, and wait for the copy to
+/// end.
+fn copy_to(h: &mut Harness, folder: &Path) {
+    h.answer_dialog(vec![folder.to_path_buf()]);
+    h.key(Key::M, SHIFT);
+    assert!(h.wait_until(|a| !a.copying_files()), "the copy ended");
+}
+
+/// The file system calls on `name` that write, rename or remove a file.
+fn change_ops(h: &Harness, name: &str) -> Vec<&'static str> {
+    h.disk
+        .ops_on(name)
+        .into_iter()
+        .filter(|op| matches!(*op, "rename_new" | "copy_new" | "remove_file" | "trash"))
+        .collect()
+}
+
+/// The last folder picker: its title and the folder it starts in.
+fn last_picker(h: &Harness) -> (String, Option<PathBuf>) {
+    match lock(&h.dialogs).shown.last() {
+        Some(pandite_app::platform::DialogKind::PickFolder { start_dir, title }) => {
+            (title.clone(), start_dir.clone())
+        }
+        other => panic!("expected a folder picker, got {other:?}"),
+    }
+}
+
+#[test]
+fn copy_selection_copies_exactly_selected() {
+    let names = ["a.png", "b.png", "c.png", "d.png", "e.png"];
+    let (dir, paths, out, mut h) = move_setup("cp-sel", &names, 0);
+    let bytes: Vec<Vec<u8>> = paths.iter().map(|p| std::fs::read(p).unwrap()).collect();
+    for i in [1, 3, 4] {
+        h.act(Action::ToggleSelect(i));
+    }
+    copy_to(&mut h, out.path());
+    // Exactly the selected files were copied, whole; no question was
+    // asked; no temporary file is left.
+    assert_eq!(listing(out.path()), ["b.png", "d.png", "e.png"]);
+    for i in [1, 3, 4] {
+        assert_eq!(std::fs::read(out.join(names[i])).unwrap(), bytes[i]);
+    }
+    // Every source is where it was, with the same bytes, and was only
+    // read: no rename or removal touched it.
+    assert_eq!(listing(dir.path()), names);
+    for (path, before) in paths.iter().zip(&bytes) {
+        assert_eq!(&std::fs::read(path).unwrap(), before);
+    }
+    for i in [1, 3, 4] {
+        assert_eq!(change_ops(&h, names[i]), ["copy_new"], "{}", names[i]);
+    }
+    assert_eq!(h.disk.removal_calls(), 0, "nothing was deleted");
+    assert_eq!(names_of(&h), names);
+    assert_eq!(selected(&mut h), ["b.png", "d.png", "e.png"]);
+    assert_eq!(h.app().ui().mode(), UiMode::Normal);
+    let folder_name = name(out.path());
+    assert!(has_text(
+        &h.frame(),
+        &format!("Copied 3 images to {folder_name}")
+    ));
+    assert!(h.app().notice().is_none());
+}
+
+#[test]
+fn copy_without_selection_copies_viewed_image() {
+    let (dir, paths, out, mut h) = move_setup("cp-one", &["a.png", "b.png", "c.png"], 1);
+    let bytes = std::fs::read(&paths[1]).unwrap();
+    copy_to(&mut h, out.path());
+    assert_eq!(listing(out.path()), ["b.png"]);
+    assert_eq!(std::fs::read(out.join("b.png")).unwrap(), bytes);
+    assert_eq!(std::fs::read(&paths[1]).unwrap(), bytes);
+    assert_eq!(listing(dir.path()), ["a.png", "b.png", "c.png"]);
+    // The image stays on screen at its place, and nothing is selected.
+    assert_eq!(names_of(&h), ["a.png", "b.png", "c.png"]);
+    assert_eq!(h.app().shown_path(), Some(paths[1].as_path()));
+    assert_eq!(h.app().index(), Some(1));
+    assert!(h.app().selection().is_empty());
+    // The picker named one image and started in the folder on screen.
+    let (title, start_dir) = last_picker(&h);
+    assert_eq!(title, "Copy 1 image to");
+    assert_eq!(start_dir.as_deref(), paths[0].parent());
+    let folder_name = name(out.path());
+    assert!(has_text(
+        &h.frame(),
+        &format!("Copied 1 image to {folder_name}")
+    ));
+    // With a selection the title gives the number.
+    h.act(Action::ToggleSelect(0));
+    h.act(Action::ToggleSelect(2));
+    h.answer_dialog(Vec::new());
+    h.key(Key::M, SHIFT);
+    h.pump();
+    assert_eq!(last_picker(&h).0, "Copy 2 images to");
+}
+
+#[test]
+fn copy_cancelled_picker_changes_nothing() {
+    let (dir, paths, out, mut h) = move_setup("cp-cancel", &["a.png", "b.png", "c.png"], 0);
+    h.act(Action::ToggleSelect(1));
+    // An empty answer is a cancel.
+    h.answer_dialog(Vec::new());
+    h.key(Key::M, SHIFT);
+    h.pump();
+    assert!(!h.app().copying_files());
+    assert_eq!(lock(&h.dialogs).shown.len(), 1, "the picker showed");
+    assert!(listing(out.path()).is_empty());
+    assert_eq!(listing(dir.path()), ["a.png", "b.png", "c.png"]);
+    assert_eq!(names_of(&h), ["a.png", "b.png", "c.png"]);
+    assert_eq!(h.app().selection(), [paths[1].clone()]);
+    assert_eq!(h.app().settings().last_move_dir, None);
+    assert!(change_ops(&h, "b.png").is_empty());
+    assert!(!h.app().exit_requested());
+}
+
+#[test]
+fn copy_never_overwrites_existing_name() {
+    let (dir, paths, out, mut h) = move_setup("cp-exists", &["a.png", "b.png", "c.png"], 0);
+    let c_bytes = std::fs::read(&paths[2]).unwrap();
+    std::fs::write(out.join("b.png"), b"already there").unwrap();
+    h.act(Action::ToggleSelect(1));
+    h.act(Action::ToggleSelect(2));
+    copy_to(&mut h, out.path());
+    // c was copied; b was not, and the file there is untouched.
+    assert_eq!(std::fs::read(out.join("b.png")).unwrap(), b"already there");
+    assert_eq!(std::fs::read(out.join("c.png")).unwrap(), c_bytes);
+    assert_eq!(listing(out.path()), ["b.png", "c.png"]);
+    assert_eq!(listing(dir.path()), ["a.png", "b.png", "c.png"]);
+    assert!(change_ops(&h, "b.png").is_empty(), "b was not even read");
+    assert_eq!(names_of(&h), ["a.png", "b.png", "c.png"]);
+    assert_eq!(selected(&mut h), ["b.png", "c.png"], "both stay selected");
+    let folder_name = name(out.path());
+    let notice = h.app().notice().expect("the report").to_string();
+    assert_eq!(
+        notice,
+        format!("Did not copy b.png: {folder_name} has a file of that name")
+    );
+    let list = h.frame();
+    assert!(has_text(&list, &format!("Copied 1 image to {folder_name}")));
+    // Two names taken: the first reason and how many more. The image on
+    // screen (a) is the last one tried.
+    std::fs::write(out.join("a.png"), b"taken too").unwrap();
+    h.act(Action::ToggleSelect(0));
+    h.act(Action::ToggleSelect(2));
+    copy_to(&mut h, out.path());
+    let notice = h.app().notice().expect("the report").to_string();
+    assert!(
+        notice.starts_with("Did not copy b.png") && notice.ends_with("1 more file was not copied."),
+        "{notice}"
+    );
+    assert_eq!(selected(&mut h), ["a.png", "b.png"]);
+    assert_eq!(std::fs::read(out.join("a.png")).unwrap(), b"taken too");
+    assert_eq!(std::fs::read(out.join("b.png")).unwrap(), b"already there");
+}
+
+#[test]
+fn copy_to_same_folder_is_refused() {
+    let (dir, paths, _out, mut h) = move_setup("cp-same", &["a.png", "b.png"], 0);
+    let bytes: Vec<Vec<u8>> = paths.iter().map(|p| std::fs::read(p).unwrap()).collect();
+    h.act(Action::ToggleSelect(0));
+    h.act(Action::ToggleSelect(1));
+    copy_to(&mut h, dir.path());
+    assert_eq!(listing(dir.path()), ["a.png", "b.png"]);
+    assert_eq!(names_of(&h), ["a.png", "b.png"]);
+    let ops: Vec<&str> = ["a.png", "b.png"]
+        .iter()
+        .flat_map(|n| change_ops(&h, n))
+        .collect();
+    assert!(ops.is_empty(), "{ops:?}");
+    assert_eq!(selected(&mut h), ["a.png", "b.png"]);
+    let folder_name = name(dir.path());
+    assert!(has_text(
+        &h.frame(),
+        &format!("The images are in {folder_name} already")
+    ));
+    for (path, before) in paths.iter().zip(&bytes) {
+        assert_eq!(&std::fs::read(path).unwrap(), before);
+    }
+    // One image: the message says so.
+    h.act(Action::ClearSelection);
+    copy_to(&mut h, dir.path());
+    assert!(has_text(
+        &h.frame(),
+        &format!("The image is in {folder_name} already")
+    ));
+    assert_eq!(listing(dir.path()), ["a.png", "b.png"]);
+}
+
+#[test]
+fn copy_failure_keeps_source_and_removes_partial() {
+    let (dir, paths, out, mut h) = move_setup("cp-fail", &["a.png", "b.png", "c.png"], 0);
+    let bytes = std::fs::read(&paths[1]).unwrap();
+    h.disk.fail_copy("b.png");
+    h.act(Action::ToggleSelect(1));
+    h.act(Action::ToggleSelect(2));
+    copy_to(&mut h, out.path());
+    // The half copy of b is gone, b stays whole and selected; c was copied.
+    assert_eq!(listing(out.path()), ["c.png"]);
+    assert_eq!(std::fs::read(&paths[1]).unwrap(), bytes);
+    assert_eq!(listing(dir.path()), ["a.png", "b.png", "c.png"]);
+    assert_eq!(change_ops(&h, "b.png"), ["copy_new"]);
+    // The only removal is of our own temporary file.
+    let removed: Vec<String> = h.disk.removals().into_iter().map(|(_, n)| n).collect();
+    assert_eq!(removed.len(), 1, "{removed:?}");
+    assert!(removed[0].ends_with(".pandite-tmp"), "{removed:?}");
+    assert_eq!(selected(&mut h), ["b.png", "c.png"]);
+    assert_eq!(names_of(&h), ["a.png", "b.png", "c.png"]);
+    let folder_name = name(out.path());
+    let notice = h.app().notice().expect("the report").to_string();
+    assert_eq!(
+        notice,
+        format!("Could not copy b.png to {folder_name}: the test disk stops the copy")
+    );
+    assert!(has_text(
+        &h.frame(),
+        &format!("Copied 1 image to {folder_name}")
+    ));
+}
+
+#[test]
+fn copy_keeps_view_list_and_selection() {
+    let names = ["a.png", "b.png", "c.png", "d.png", "e.png"];
+    // The image on screen and its next neighbor are copied: nothing on
+    // screen changes.
+    let (dir, paths, out, mut h) = move_setup("cp-view", &names, 1);
+    h.key(Key::Space, NONE);
+    h.act(Action::ToggleSelect(2));
+    copy_to(&mut h, out.path());
+    assert_eq!(listing(out.path()), ["b.png", "c.png"]);
+    assert_eq!(names_of(&h), names);
+    assert_eq!(h.app().count(), 5);
+    assert_eq!(h.app().shown_path(), Some(paths[1].as_path()));
+    assert_eq!(h.app().index(), Some(1));
+    assert_eq!(selected(&mut h), ["b.png", "c.png"]);
+    assert_eq!(selected_in_list(&mut h), ["b.png", "c.png"]);
+    let list = h.frame();
+    assert!(has_text(&list, "2 / 5") && has_text(&list, "2 selected"));
+    assert!(has_text(&list, "Marked"));
+    // Every image copied, to another folder: still nothing moves.
+    let out2 = TempDir::new("cp-view-to2");
+    for i in [0, 3, 4] {
+        h.act(Action::ToggleSelect(i));
+    }
+    copy_to(&mut h, out2.path());
+    assert_eq!(listing(out2.path()), names);
+    assert_eq!(listing(dir.path()), names);
+    assert_eq!(names_of(&h), names);
+    assert_eq!(h.app().shown_path(), Some(paths[1].as_path()));
+    assert_eq!(h.app().selection().len(), 5);
+    assert!(has_text(
+        &h.frame(),
+        &format!("Copied 5 images to {}", name(out2.path()))
+    ));
+    // The window still answers.
+    h.key(Key::Right, NONE);
+    assert!(h.wait_shown(&paths[2]));
+}
+
+#[test]
+fn copy_remembers_last_folder_shared_with_move() {
+    let dir = TempDir::new("cp-remember");
+    let settings_path = dir.join("settings.ini");
+    let (_src, paths) = folder("cp-remember-src", &["a.png", "b.png", "c.png"], 8, 8);
+    let out = TempDir::new("cp-remember-to");
+    let out2 = TempDir::new("cp-remember-to2");
+    let mut h = Harness::new(Config {
+        open: Some(paths[0].clone()),
+        settings_path: Some(settings_path.clone()),
+        ..Config::default()
+    });
+    h.start();
+    assert!(h.wait_shown(&paths[0]));
+    assert!(h.wait_until(|a| a.count() == 3));
+    copy_to(&mut h, out.path());
+    assert!(out.join("a.png").exists());
+    assert_eq!(
+        h.app().settings().last_move_dir.as_deref(),
+        Some(out.path())
+    );
+    // It is saved with the other settings and read back.
+    let saved = |p: &Path| {
+        std::fs::read_to_string(p)
+            .ok()
+            .and_then(|t| pandite_app::settings::Settings::parse(&t).ok())
+            .is_some_and(|s| s.last_move_dir.as_deref() == Some(out.path()))
+    };
+    for _ in 0..500 {
+        if saved(&settings_path) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(saved(&settings_path), "the settings were written");
+    // The next Copy to and the next Move to start there.
+    h.answer_dialog(Vec::new());
+    h.key(Key::M, SHIFT);
+    h.pump();
+    assert_eq!(last_picker(&h).1.as_deref(), Some(out.path()));
+    h.answer_dialog(Vec::new());
+    h.key(Key::M, NONE);
+    h.pump();
+    let (title, start_dir) = last_picker(&h);
+    assert_eq!(title, "Move 1 image to");
+    assert_eq!(start_dir.as_deref(), Some(out.path()));
+    // A move sets the folder for the next copy too.
+    h.act(Action::ToggleSelect(2));
+    move_to(&mut h, out2.path());
+    assert!(out2.join("c.png").exists());
+    h.answer_dialog(Vec::new());
+    h.key(Key::M, SHIFT);
+    h.pump();
+    let (title, start_dir) = last_picker(&h);
+    assert_eq!(title, "Copy 1 image to");
+    assert_eq!(start_dir.as_deref(), Some(out2.path()));
+}
+
+#[test]
+fn copy_runs_off_event_loop() {
+    let (_dir, paths, out, mut h) = move_setup("cp-thread", &["a.png", "b.png", "c.png"], 0);
+    // The copy of b blocks in the file system until released.
+    h.disk.stall_read("b.png");
+    h.act(Action::ToggleSelect(1));
+    h.answer_dialog(vec![out.path().to_path_buf()]);
+    let before = std::time::Instant::now();
+    h.key(Key::M, SHIFT);
+    h.pump();
+    assert!(before.elapsed() < std::time::Duration::from_secs(5));
+    assert!(h.disk.wait_call("copy_new", "b.png"));
+    assert!(h.app().copying_files());
+    assert!(!h.app().moving() && !h.app().deleting());
+    // The window still answers: keys, frames, the progress label.
+    let list = h.frame();
+    assert!(has_text(&list, "Copying 1 of 1 image"));
+    assert!(!has_text(&list, "Copying image"), "not the clipboard copy");
+    h.key(Key::I, NONE);
+    assert!(h.app().info_visible());
+    h.key(Key::G, NONE);
+    assert!(!h.app().settings().gallery_visible);
+    assert_eq!(h.app().shown_path(), Some(paths[0].as_path()));
+    // Another copy, a move or a delete waits for this copy to end: no
+    // second picker, no trash check, no removal.
+    h.key(Key::M, SHIFT);
+    assert!(has_text(&h.frame(), "Still copying files"));
+    assert!(!has_text(&h.frame(), "Still copying the image"));
+    h.key(Key::M, NONE);
+    h.key(Key::Delete, NONE);
+    h.pump();
+    assert_eq!(lock(&h.dialogs).shown.len(), 1, "no second picker");
+    assert_eq!(h.app().ui().mode(), UiMode::Normal, "no question");
+    assert!(!h.disk.calls().iter().any(|c| c.op == "has_trash"));
+    assert_eq!(h.disk.removal_calls(), 0);
+    // The file system call ran on a worker thread.
+    let main = std::thread::current().id();
+    let call = h
+        .disk
+        .calls()
+        .into_iter()
+        .find(|c| c.op == "copy_new")
+        .unwrap();
+    assert_ne!(call.thread, main);
+    h.disk.release_all();
+    assert!(h.wait_until(|a| !a.copying_files()));
+    assert_eq!(listing(out.path()), ["b.png"]);
+    assert!(paths[1].exists());
+    assert_eq!(names_of(&h), ["a.png", "b.png", "c.png"]);
+}
+
+#[test]
+fn copy_refused_while_a_move_runs() {
+    let (_dir, paths, out, mut h) = move_setup("cp-busy", &["a.png", "b.png", "c.png"], 0);
+    // The move of b blocks in the file system until released.
+    h.disk.stall_read("b.png");
+    h.act(Action::ToggleSelect(1));
+    h.answer_dialog(vec![out.path().to_path_buf()]);
+    h.key(Key::M, NONE);
+    h.pump();
+    assert!(h.disk.wait_call("rename_new", "b.png"));
+    assert!(h.app().moving());
+    h.key(Key::M, SHIFT);
+    assert!(has_text(&h.frame(), "Still moving"));
+    assert!(!h.app().copying_files());
+    assert_eq!(lock(&h.dialogs).shown.len(), 1, "no copy picker");
+    h.disk.release_all();
+    assert!(h.wait_until(|a| !a.moving()));
+    assert_eq!(listing(out.path()), ["b.png"]);
+    assert!(!paths[1].exists());
+    assert!(!h.disk.calls().iter().any(|c| c.op == "copy_new"));
+}
+
+#[test]
+fn copy_without_safe_rename_writes_a_new_name() {
+    let (dir, paths, out, mut h) = move_setup("cp-fat", &["a.png", "b.png", "c.png"], 0);
+    let bytes = std::fs::read(&paths[1]).unwrap();
+    // The target drive has no rename that cannot replace a file (FAT).
+    h.disk.no_safe_rename(&name(out.path()));
+    h.act(Action::ToggleSelect(1));
+    copy_to(&mut h, out.path());
+    // The file is written under its final name, created new; no temporary
+    // file is left; the source stays.
+    assert_eq!(listing(out.path()), ["b.png"]);
+    assert_eq!(std::fs::read(out.join("b.png")).unwrap(), bytes);
+    assert_eq!(std::fs::read(&paths[1]).unwrap(), bytes);
+    assert_eq!(listing(dir.path()), ["a.png", "b.png", "c.png"]);
+    assert_eq!(change_ops(&h, "b.png"), ["copy_new", "copy_new"]);
+    assert!(h.app().notice().is_none());
+    assert_eq!(h.app().selection(), [paths[1].clone()]);
+}
+
+#[test]
+fn copy_never_replaces_a_file_that_appears() {
+    // The copy is ready, but another program wrote the name meanwhile. The
+    // final rename refuses it.
+    let (dir, paths, out, mut h) = move_setup("cp-race", &["a.png", "b.png", "c.png"], 0);
+    let bytes = std::fs::read(&paths[1]).unwrap();
+    h.disk.appear_on_copy(&out.join("b.png"), b"theirs");
+    h.act(Action::ToggleSelect(1));
+    copy_to(&mut h, out.path());
+    assert_eq!(std::fs::read(out.join("b.png")).unwrap(), b"theirs");
+    assert_eq!(listing(out.path()), ["b.png"], "the copy went");
+    assert_eq!(std::fs::read(&paths[1]).unwrap(), bytes);
+    assert_eq!(listing(dir.path()), ["a.png", "b.png", "c.png"]);
+    assert_eq!(h.app().selection(), [paths[1].clone()]);
+    let folder_name = name(out.path());
+    assert_eq!(
+        h.app().notice(),
+        Some(format!("Did not copy b.png: {folder_name} has a file of that name").as_str())
+    );
+    assert!(!has_text(&h.frame(), "Copied"));
+
+    // On a drive without a safe rename: the copy to the final name, created
+    // new, refuses the name as well, and the file there is not removed.
+    let (dir, paths, out, mut h) = move_setup("cp-race-fat", &["a.png", "b.png"], 0);
+    let bytes = std::fs::read(&paths[1]).unwrap();
+    h.disk.no_safe_rename(&name(out.path()));
+    h.disk.appear_on_copy(&out.join("b.png"), b"theirs too");
+    h.act(Action::ToggleSelect(1));
+    copy_to(&mut h, out.path());
+    assert_eq!(std::fs::read(out.join("b.png")).unwrap(), b"theirs too");
+    assert_eq!(listing(out.path()), ["b.png"]);
+    assert_eq!(std::fs::read(&paths[1]).unwrap(), bytes);
+    assert_eq!(listing(dir.path()), ["a.png", "b.png"]);
+    assert_eq!(h.app().selection(), [paths[1].clone()]);
+    let folder_name = name(out.path());
+    assert_eq!(
+        h.app().notice(),
+        Some(format!("Did not copy b.png: {folder_name} has a file of that name").as_str())
+    );
 }

@@ -366,7 +366,8 @@ impl Ui {
             | Command::ToggleSelect
             | Command::SelectPrevious
             | Command::SelectNext
-            | Command::MoveTo => ctx.image.is_some() || ctx.count > 0,
+            | Command::MoveTo
+            | Command::CopyTo => ctx.image.is_some() || ctx.count > 0,
             Command::ClearSelection => !ctx.selected.is_empty(),
             Command::CropApply => self.crop.as_ref().is_some_and(|c| c.pixel_rect().is_some()),
             Command::CropSelectAll | Command::CropCancel => self.crop.is_some(),
@@ -1029,6 +1030,7 @@ impl Ui {
                 }
             }
             Command::MoveTo => out.push(Action::MoveTo),
+            Command::CopyTo => out.push(Action::CopyTo),
             Command::Undo => out.push(Action::Undo),
             Command::RotateLeft => out.push(Action::RotateLeft),
             Command::RotateRight => out.push(Action::RotateRight),
@@ -1253,7 +1255,7 @@ impl Ui {
 }
 
 /// The context menu in normal mode. `None` is a separator.
-const CONTEXT_MENU: [Option<Command>; 34] = [
+const CONTEXT_MENU: [Option<Command>; 35] = [
     Some(Command::Open),
     Some(Command::SaveAs),
     Some(Command::CopyImage),
@@ -1264,6 +1266,7 @@ const CONTEXT_MENU: [Option<Command>; 34] = [
     Some(Command::ToggleSelect),
     Some(Command::ClearSelection),
     Some(Command::MoveTo),
+    Some(Command::CopyTo),
     Some(Command::MoveToTrash),
     Some(Command::DeleteFile),
     None,

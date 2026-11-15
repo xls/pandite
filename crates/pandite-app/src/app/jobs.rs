@@ -1,6 +1,6 @@
 //! Background jobs of the application core: edits, Save As, image
 //! copies, size probes, folder resolution, bulk conversion, text
-//! recognition, file removal, file moves and settings writes.
+//! recognition, file removal, file moves, file copies and settings writes.
 //!
 //! Each job runs on its own thread, touches the disk only through
 //! [`Disk`], and reports with one [`Msg`] followed by a wake of the event
@@ -253,7 +253,7 @@ pub(crate) fn delete(out: Outbox, disk: Arc<dyn Disk>, job: DeleteJob) -> std::i
     })
 }
 
-/// What a file move needs.
+/// What a file move or a file copy needs.
 pub(crate) struct MoveJob {
     pub id: u64,
     pub path: PathBuf,
@@ -273,6 +273,21 @@ pub(crate) fn move_file(out: Outbox, disk: Arc<dyn Disk>, job: MoveJob) -> std::
         .unwrap_or_else(|_| Err(std::io::Error::other("the move stopped unexpectedly")))
         .map_err(|err| (err.kind(), err.to_string()));
         out.send(Msg::Moved { id, path, result });
+    })
+}
+
+/// Copy a file into another folder without replacing a file there (see
+/// [`crate::disk::copy_into`]). The file itself stays as it is. The event
+/// loop never waits for this thread.
+pub(crate) fn copy_file(out: Outbox, disk: Arc<dyn Disk>, job: MoveJob) -> std::io::Result<()> {
+    spawn("pandite-copy-file", move || {
+        let MoveJob { id, path, into } = job;
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            crate::disk::copy_into(&*disk, &path, &into).map(drop)
+        }))
+        .unwrap_or_else(|_| Err(std::io::Error::other("the copy stopped unexpectedly")))
+        .map_err(|err| (err.kind(), err.to_string()));
+        out.send(Msg::FileCopied { id, path, result });
     })
 }
 

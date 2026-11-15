@@ -544,8 +544,9 @@ impl Disk for TestDisk {
         r
     }
 
+    /// Stalls like a read when [`TestDisk::stall_read`] names the source.
     fn copy_new(&self, from: &Path, to: &Path) -> io::Result<u64> {
-        let name = self.enter("copy_new", from, false);
+        let name = self.enter("copy_new", from, true);
         let appear = lock(&self.state).appear.take();
         if let Some((path, bytes)) = appear {
             std::fs::write(path, bytes)?;

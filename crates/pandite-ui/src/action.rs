@@ -207,6 +207,11 @@ pub enum Action {
     /// nothing is selected, to a folder the user picks (M). The folder
     /// picker is the confirmation; there is no question.
     MoveTo,
+    /// Copy the selected files, or the file of the current image when
+    /// nothing is selected, to a folder the user picks (Shift+M). The files
+    /// stay where they are. The folder picker is the confirmation; there is
+    /// no question.
+    CopyTo,
     /// Put this text on the clipboard (Ctrl+C or Ctrl+X in a text field).
     CopyText(String),
     /// Read the clipboard and send its text back as
@@ -399,11 +404,13 @@ pub enum ActionKind {
     Select,
     /// [`Action::MoveTo`].
     MoveTo,
+    /// [`Action::CopyTo`].
+    CopyTo,
 }
 
 impl ActionKind {
     /// Every kind, in declaration order.
-    pub const ALL: [ActionKind; 43] = [
+    pub const ALL: [ActionKind; 44] = [
         ActionKind::Open,
         ActionKind::SaveAs,
         ActionKind::CopyPath,
@@ -447,6 +454,7 @@ impl ActionKind {
         ActionKind::ClearSelection,
         ActionKind::Select,
         ActionKind::MoveTo,
+        ActionKind::CopyTo,
     ];
 
     /// The position of this kind in [`ActionKind::ALL`]. The match is
@@ -496,6 +504,7 @@ impl ActionKind {
             ActionKind::ClearSelection => 40,
             ActionKind::Select => 41,
             ActionKind::MoveTo => 42,
+            ActionKind::CopyTo => 43,
         }
     }
 }
@@ -514,6 +523,7 @@ impl Action {
             Action::ClearSelection => ActionKind::ClearSelection,
             Action::Select(_) => ActionKind::Select,
             Action::MoveTo => ActionKind::MoveTo,
+            Action::CopyTo => ActionKind::CopyTo,
             Action::CopyText(_) => ActionKind::CopyText,
             Action::RequestPaste => ActionKind::RequestPaste,
             Action::RotateLeft => ActionKind::RotateLeft,

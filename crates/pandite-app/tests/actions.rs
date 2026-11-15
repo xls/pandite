@@ -75,6 +75,7 @@ fn sample(kind: ActionKind, dir: &std::path::Path) -> Action {
         ActionKind::ClearSelection => Action::ClearSelection,
         ActionKind::Select => Action::Select(1),
         ActionKind::MoveTo => Action::MoveTo,
+        ActionKind::CopyTo => Action::CopyTo,
     }
 }
 
@@ -125,6 +126,7 @@ fn kind_of(action: &Action) -> ActionKind {
         Action::ClearSelection => ActionKind::ClearSelection,
         Action::Select(_) => ActionKind::Select,
         Action::MoveTo => ActionKind::MoveTo,
+        Action::CopyTo => ActionKind::CopyTo,
     }
 }
 
@@ -192,6 +194,15 @@ fn every_action_has_a_handler() {
             ActionKind::Select => assert_eq!(h.app().selected_indices(), [1]),
             // The folder picker opens; the fake answers with a cancel.
             ActionKind::MoveTo => assert!(!h.app().moving()),
+            ActionKind::CopyTo => {
+                assert!(!h.app().copying_files());
+                match lock(&h.dialogs).shown.last() {
+                    Some(pandite_app::platform::DialogKind::PickFolder { title, .. }) => {
+                        assert_eq!(title, "Copy 1 image to")
+                    }
+                    other => panic!("expected a folder picker, got {other:?}"),
+                }
+            }
             _ => {}
         }
         assert!(
@@ -201,10 +212,10 @@ fn every_action_has_a_handler() {
         handled.push(kind);
         h.pump();
     }
-    assert_eq!(handled.len(), 43);
+    assert_eq!(handled.len(), 44);
     // The dialogs asked for: open, save, bulk files, bulk folder, bulk
-    // destination and the folder of a move.
-    assert_eq!(lock(&h.dialogs).shown.len(), 6);
+    // destination, the folder of a move and the folder of a copy.
+    assert_eq!(lock(&h.dialogs).shown.len(), 7);
     assert!(h.wait_until(|a| !a.bulk_running() && !a.is_busy()));
 }
 
