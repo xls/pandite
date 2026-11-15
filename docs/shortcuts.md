@@ -23,6 +23,7 @@ On macOS, Ctrl is the Command key and Alt is the Option key.
 | Select and previous image | Shift+Left |
 | Select and next image | Shift+Right |
 | Move to... | M |
+| Copy to... | Shift+M |
 | Move to Recycle Bin (Windows), Move to Trash (macOS, Linux) | Del |
 | Delete permanently... | Shift+Del |
 | Undo | Ctrl+Z |
@@ -149,9 +150,9 @@ See [Delete the selected images](#delete-the-selected-images).
 
 ## Select images
 
-Select images to delete, move or convert them together. The selection
-changes with the keyboard and the context menu only. The mouse does not
-change it.
+Select images to delete, move, copy or convert them together. The
+selection changes with the keyboard and the context menu only. The mouse
+does not change it.
 
 - Space selects the current image. When the current image is selected,
   Space clears its selection.
@@ -222,7 +223,8 @@ M moves the selected images to a folder that you choose. When no image is
 selected, M moves the current image.
 
 - M opens the folder picker. The picker starts in the folder of the last
-  move, or in the current folder. To move nothing, cancel the picker.
+  move or copy, or in the current folder. To move nothing, cancel the
+  picker.
 - There is no question. To undo the move, move the images back.
 - A file in the chosen folder is never replaced. When the chosen folder
   has a file with the same name, that image does not move and stays
@@ -241,6 +243,33 @@ selected, M moves the current image.
 - M does nothing in crop mode, while a dialog is open and in the keyboard
   shortcut overlay. In a text field, it types the letter. Without an
   image, Move to is not available.
+
+## Copy images
+
+Shift+M copies the selected images to a folder that you choose. When no
+image is selected, Shift+M copies the current image. The original files
+stay where they are.
+
+- Shift+M opens the folder picker. The picker starts in the folder of the
+  last move or copy, or in the current folder. To copy nothing, cancel the
+  picker.
+- There is no question.
+- pandite never replaces a file in the chosen folder. When the chosen
+  folder has a file with the same name, pandite does not copy that image.
+- When you choose the folder that has the images, pandite copies nothing
+  and a message says so.
+- When a copy fails, pandite removes the incomplete copy. The original
+  file does not change.
+- After the copy, the current image, the folder list and the selection do
+  not change.
+- A message gives the number of copied images. When an image is not
+  copied, the message gives the reason and the number of other images that
+  were not copied.
+- While a copy runs, pandite does not start a move, a copy or a delete. A
+  message says so.
+- Shift+M does nothing in crop mode, while a dialog is open and in the
+  keyboard shortcut overlay. In a text field, it types the capital letter.
+  Without an image, Copy to is not available.
 
 ## Copy the image
 

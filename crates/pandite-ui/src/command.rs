@@ -35,6 +35,9 @@ pub enum Command {
     /// Move the selected files, or the current file, to a folder the user
     /// picks.
     MoveTo,
+    /// Copy the selected files, or the current file, to a folder the user
+    /// picks. The files stay where they are.
+    CopyTo,
     /// Undo the last view edit.
     Undo,
     /// Rotate 90 degrees counterclockwise.
@@ -108,7 +111,7 @@ pub enum Command {
 
 impl Command {
     /// Every command, in the order the shortcut overlay lists them.
-    pub const ALL: [Command; 45] = [
+    pub const ALL: [Command; 46] = [
         Command::Open,
         Command::SaveAs,
         Command::CopyImage,
@@ -120,6 +123,7 @@ impl Command {
         Command::SelectPrevious,
         Command::SelectNext,
         Command::MoveTo,
+        Command::CopyTo,
         Command::MoveToTrash,
         Command::DeleteFile,
         Command::Undo,
@@ -171,6 +175,7 @@ impl Command {
             Command::SelectPrevious => "Select and previous image",
             Command::SelectNext => "Select and next image",
             Command::MoveTo => "Move to...",
+            Command::CopyTo => "Copy to...",
             Command::Undo => "Undo",
             Command::RotateLeft => "Rotate left",
             Command::RotateRight => "Rotate right",
@@ -414,6 +419,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
     Shortcut::new(Key::Left, SHIFT, Command::SelectPrevious),
     Shortcut::new(Key::Right, SHIFT, Command::SelectNext),
     Shortcut::new(Key::M, N, Command::MoveTo),
+    Shortcut::new(Key::M, SHIFT, Command::CopyTo),
     Shortcut::new(Key::Z, CTRL, Command::Undo),
     Shortcut::new(Key::R, SHIFT, Command::RotateLeft),
     Shortcut::new(Key::L, N, Command::RotateLeft),

@@ -88,7 +88,8 @@
 //! text field they edit the text. The bulk dialog opens with the selected
 //! images as its source ([`BulkSource::Selection`]). M emits
 //! [`Action::MoveTo`], which moves the selected files, or the file on
-//! screen, to a folder the application asks for.
+//! screen, to a folder the application asks for. Shift+M emits
+//! [`Action::CopyTo`], which copies them there and leaves them in place.
 //!
 //! # Escape
 //!

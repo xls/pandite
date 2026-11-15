@@ -150,8 +150,8 @@ pub struct Settings {
     /// The last start drew with a discrete GPU. The next start then waits
     /// a moment for it when the system leaves it out of the adapter list.
     pub gpu_discrete_seen: bool,
-    /// The folder chosen for the last Move to, where its folder picker
-    /// starts the next time.
+    /// The folder chosen for the last Move to or Copy to, where the folder
+    /// pickers of both start the next time.
     pub last_move_dir: Option<PathBuf>,
 }
 
@@ -251,7 +251,10 @@ impl Settings {
         // A path that cannot be one line of text is not kept.
         let dir = self.last_move_dir.as_ref().and_then(|d| d.to_str());
         if let Some(dir) = dir.filter(|d| !d.contains(['\n', '\r']) && d.trim() == *d) {
-            let _ = writeln!(s, "\n# Written by pandite: the folder of the last Move to.");
+            let _ = writeln!(
+                s,
+                "\n# Written by pandite: the folder of the last Move to or Copy to."
+            );
             let _ = writeln!(s, "last_move_dir = {dir}");
         }
         s

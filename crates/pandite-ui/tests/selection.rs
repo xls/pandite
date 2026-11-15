@@ -937,6 +937,129 @@ fn move_key_ignored_in_text_field_dialog_and_crop() {
 }
 
 #[test]
+fn copy_command_in_menu_and_shortcuts() {
+    let ctx = tall_image_ctx();
+    let theme = Theme::for_kind(ctx.theme);
+    let shift = Modifiers::SHIFT;
+    let mut ui = Ui::new();
+    // Shift+M asks to copy, with or without a selection; M alone still
+    // moves; a held key does not repeat it.
+    assert_eq!(key(&mut ui, &ctx, Key::M, shift), vec![Action::CopyTo]);
+    let mut selected = ctx;
+    selected.selected = &[1, 2];
+    assert_eq!(key(&mut ui, &selected, Key::M, shift), vec![Action::CopyTo]);
+    assert_eq!(press_key(&mut ui, &selected, Key::M), vec![Action::MoveTo]);
+    for mods in [Modifiers::CTRL, Modifiers::ALT, Modifiers::CTRL_SHIFT] {
+        assert!(key(&mut ui, &ctx, Key::M, mods).is_empty(), "{mods:?}");
+    }
+    let held = ui.handle_event(
+        InputEvent::KeyDown {
+            key: Key::M,
+            mods: shift,
+            repeat: true,
+        },
+        &ctx,
+    );
+    assert!(held.is_empty());
+    assert_eq!(Command::CopyTo.label(), "Copy to...");
+    assert_eq!(Command::CopyTo.shortcut_label().as_deref(), Some("Shift+M"));
+    assert_eq!(Command::CopyTo.tooltip(), "Copy to  (Shift+M)");
+    assert!(!Command::CopyTo.repeats() && !Command::CopyTo.allowed_in_crop());
+
+    // The context menu offers it directly after Move to, with its key.
+    right_click(&mut ui, &ctx, Point::new(500.0, 50.0));
+    let list = frame(&mut ui, &ctx);
+    let entry = text_rect_exact(&list, "Copy to...").expect("Copy to... offered");
+    let moves = text_rect_exact(&list, "Move to...").unwrap();
+    let trash = text_rect_exact(&list, Command::MoveToTrash.label()).unwrap();
+    assert!(
+        moves.y < entry.y && entry.y < trash.y,
+        "between Move to and the delete entries"
+    );
+    assert!(
+        ((entry.y - moves.y) - (trash.y - entry.y)).abs() < 0.5,
+        "no entry or separator between Move to and Copy to"
+    );
+    let keys = text_rect_exact(&list, "Shift+M").expect("the key shows");
+    assert!((keys.center().y - entry.center().y).abs() < 14.0);
+    assert_eq!(text_color(&list, "Copy to..."), Some(theme.text));
+    assert_eq!(
+        click_label(&mut ui, &ctx, "Copy to..."),
+        vec![Action::CopyTo]
+    );
+    assert_eq!(ui.mode(), UiMode::Normal);
+
+    // The shortcut overlay lists it directly after Move to.
+    let at = |cmd| Command::ALL.iter().position(|c| *c == cmd).unwrap();
+    assert_eq!(at(Command::CopyTo), at(Command::MoveTo) + 1);
+    press_key(&mut ui, &ctx, Key::F1);
+    let list = frame(&mut ui, &ctx);
+    let label = text_rect_exact(&list, "Copy to...").expect("listed in the overlay");
+    let keys = text_rect_exact(&list, "Shift+M").unwrap();
+    assert!((keys.center().y - label.center().y).abs() < 11.0 && keys.x < label.x);
+    let moves = text_rect_exact(&list, "Move to...").unwrap();
+    assert!(
+        (label.x - moves.x).abs() < 0.5 && label.y > moves.y,
+        "the next row of the same column"
+    );
+    press_key(&mut ui, &ctx, Key::Escape);
+
+    // Without an image it is grayed and does nothing.
+    let mut empty = base_ctx();
+    empty.count = 0;
+    let mut ui = Ui::new();
+    assert!(key(&mut ui, &empty, Key::M, shift).is_empty());
+    right_click(&mut ui, &empty, Point::new(500.0, 300.0));
+    let list = frame(&mut ui, &empty);
+    assert_eq!(text_color(&list, "Copy to..."), Some(theme.text_disabled));
+    assert!(click_label(&mut ui, &empty, "Copy to...").is_empty());
+    assert_eq!(ui.mode(), UiMode::Modal, "a disabled entry keeps the menu");
+}
+
+#[test]
+fn copy_key_ignored_in_text_field_dialog_and_crop() {
+    let mut ctx = image_ctx();
+    ctx.selected = &[3];
+    let shift = Modifiers::SHIFT;
+    let mut ui = Ui::new();
+    let copies = |out: &[Action]| kinds(out).contains(&ActionKind::CopyTo);
+
+    // A text field: Shift+M is a capital letter there.
+    key(&mut ui, &ctx, Key::R, Modifiers::CTRL);
+    assert!(ui.wants_text_input());
+    let mut out = key(&mut ui, &ctx, Key::M, shift);
+    out.extend(type_text(&mut ui, &ctx, "M"));
+    assert!(!copies(&out), "{out:?}");
+    assert_eq!(ui.mode(), UiMode::Modal);
+    press_key(&mut ui, &ctx, Key::Escape);
+
+    // A dialog without a focused field, a question, the overlay and an
+    // open menu: nothing is copied.
+    key(&mut ui, &ctx, Key::B, Modifiers::CTRL);
+    assert!(key(&mut ui, &ctx, Key::M, shift).is_empty());
+    assert_eq!(ui.mode(), UiMode::Modal);
+    press_key(&mut ui, &ctx, Key::Escape);
+    ui.show_confirm(ConfirmRequest::new(9, "Sure?", "Are you sure?"));
+    assert!(!copies(&key(&mut ui, &ctx, Key::M, shift)));
+    press_key(&mut ui, &ctx, Key::Escape);
+    press_key(&mut ui, &ctx, Key::F1);
+    assert!(key(&mut ui, &ctx, Key::M, shift).is_empty());
+    press_key(&mut ui, &ctx, Key::Escape);
+    press_key(&mut ui, &ctx, Key::ContextMenu);
+    assert!(key(&mut ui, &ctx, Key::M, shift).is_empty());
+    assert_eq!(ui.mode(), UiMode::Normal, "the key closed the menu only");
+
+    // Crop mode: nothing, and crop mode stays.
+    press_key(&mut ui, &ctx, Key::C);
+    assert!(key(&mut ui, &ctx, Key::M, shift).is_empty());
+    assert_eq!(ui.mode(), UiMode::Crop);
+    press_key(&mut ui, &ctx, Key::C);
+
+    // Viewing again: Shift+M copies.
+    assert_eq!(key(&mut ui, &ctx, Key::M, shift), vec![Action::CopyTo]);
+}
+
+#[test]
 fn selection_keys_show_the_toolbar() {
     let ctx = image_ctx();
     let shown =

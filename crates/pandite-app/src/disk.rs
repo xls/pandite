@@ -5,9 +5,9 @@
 //! head (to probe its size), small reads and atomic writes (settings, Save
 //! As), directory creation, the removal of a file (to the trash or for
 //! good), whether a file has a trash, and a rename and a copy that never
-//! replace a file (to move files into another folder). The application
-//! calls these only from worker threads; tests inject implementations that
-//! stall or record the calling thread.
+//! replace a file (to move or copy files into another folder). The
+//! application calls these only from worker threads; tests inject
+//! implementations that stall or record the calling thread.
 
 use pandite_core::Registry;
 use pandite_library::{natural_cmp, FileAccess, StdFiles};
@@ -216,15 +216,7 @@ pub fn copy_new(from: &Path, to: &Path) -> io::Result<u64> {
 /// fails, the copy goes and the source stays, and a file that is not ours
 /// is never removed.
 pub fn move_into(disk: &dyn Disk, from: &Path, dir: &Path) -> io::Result<PathBuf> {
-    let name = from
-        .file_name()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "the path has no file name"))?;
-    let to = dir.join(name);
-    // Only a quick answer for the common case; the steps below never
-    // replace a file on their own.
-    if disk.file_info(&to).is_ok() {
-        return Err(already_there());
-    }
+    let to = free_name_in(disk, from, dir)?;
     match disk.rename_new(from, &to) {
         Ok(()) => return Ok(to),
         Err(err)
@@ -238,9 +230,53 @@ pub fn move_into(disk: &dyn Disk, from: &Path, dir: &Path) -> io::Result<PathBuf
     Ok(to)
 }
 
+/// Copy the file `from` into the folder `dir` under its own name and
+/// return the new path. The source is never touched. A file of that name
+/// in `dir` is never replaced: the copy then fails with
+/// [`io::ErrorKind::AlreadyExists`] and nothing changes.
+///
+/// These are the copy steps of [`move_into`] across drives: a temporary
+/// name in `dir`, a flush, a check of the full size and the rename that
+/// never replaces a file. On a drive without that rename, the copy is
+/// written under the final name itself, created new. When a step fails,
+/// the partial copy goes, and a file that is not ours is never removed.
+pub fn copy_into(disk: &dyn Disk, from: &Path, dir: &Path) -> io::Result<PathBuf> {
+    let to = free_name_in(disk, from, dir)?;
+    copy_to_free_name(disk, from, &to)?;
+    Ok(to)
+}
+
+/// The name of `from` in the folder `dir`. Fails with
+/// [`io::ErrorKind::AlreadyExists`] when a file there has that name.
+fn free_name_in(disk: &dyn Disk, from: &Path, dir: &Path) -> io::Result<PathBuf> {
+    let name = from
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "the path has no file name"))?;
+    let to = dir.join(name);
+    // Only a quick answer for the common case; the steps that follow
+    // never replace a file on their own.
+    if disk.file_info(&to).is_ok() {
+        return Err(already_there());
+    }
+    Ok(to)
+}
+
 /// Copy `from` to the free name `to` without ever replacing a file there,
 /// then remove `from`. See [`move_into`].
 fn copy_then_remove(disk: &dyn Disk, from: &Path, to: &Path) -> io::Result<()> {
+    copy_to_free_name(disk, from, to)?;
+    if let Err(err) = disk.remove_file(from) {
+        // The source stays, so the copy goes: the file is in one place.
+        let _ = disk.remove_file(to);
+        return Err(err);
+    }
+    Ok(())
+}
+
+/// Copy `from` to the free name `to` without ever replacing a file there.
+/// `from` is only read. On failure no part of the copy is left. See
+/// [`copy_into`].
+fn copy_to_free_name(disk: &dyn Disk, from: &Path, to: &Path) -> io::Result<()> {
     let size = disk.file_info(from)?.stamp.len;
     let complete = |path: &Path, written: u64| -> io::Result<()> {
         let on_disk = disk.file_info(path)?.stamp.len;
@@ -283,11 +319,6 @@ fn copy_then_remove(disk: &dyn Disk, from: &Path, to: &Path) -> io::Result<()> {
             let _ = disk.remove_file(&temp);
             return Err(err);
         }
-    }
-    if let Err(err) = disk.remove_file(from) {
-        // The source stays, so the copy goes: the file is in one place.
-        let _ = disk.remove_file(to);
-        return Err(err);
     }
     Ok(())
 }
@@ -525,6 +556,31 @@ mod tests {
         rename_new(&src.join("x.png"), &src.join("z.png")).unwrap();
         assert!(!src.join("x.png").exists());
         assert_eq!(std::fs::read(src.join("z.png")).unwrap(), b"x");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn copies_keep_the_source_and_never_replace_a_file() {
+        let dir = temp_dir("copy");
+        let (src, dst) = (dir.join("src"), dir.join("dst"));
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&dst).unwrap();
+        std::fs::write(src.join("a.png"), b"new a").unwrap();
+        std::fs::write(src.join("b.png"), b"new b").unwrap();
+        std::fs::write(dst.join("b.png"), b"old b").unwrap();
+        // A free name: the copy is whole, the source stays, and no
+        // temporary file is left.
+        let copied = copy_into(&StdDisk, &src.join("a.png"), &dst).unwrap();
+        assert_eq!(copied, dst.join("a.png"));
+        assert_eq!(std::fs::read(&copied).unwrap(), b"new a");
+        assert_eq!(std::fs::read(src.join("a.png")).unwrap(), b"new a");
+        assert_eq!(std::fs::read_dir(&dst).unwrap().count(), 2);
+        // A taken name: nothing changes on either side.
+        let err = copy_into(&StdDisk, &src.join("b.png"), &dst).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(src.join("b.png")).unwrap(), b"new b");
+        assert_eq!(std::fs::read(dst.join("b.png")).unwrap(), b"old b");
+        assert_eq!(std::fs::read_dir(&dst).unwrap().count(), 2);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
