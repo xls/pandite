@@ -108,7 +108,7 @@ Writes PNG, JPEG, lossless WebP and BMP.
 - **Delete.** Del sends the file to the Recycle Bin or the Trash and
   shows the next image. Shift+Del asks first, then deletes the file for good.
 - **Select.** Space or Shift+arrows select images: a badge marks them in
-  the gallery strip, and a corner pill shows "Marked" and the count. Del,
+  the gallery strip, and the bottom right corner shows "Marked" and the count. Del,
   M (move to a folder), Shift+M (copy to a folder) and bulk convert then
   act on the selected images.
 - **Color.** Embedded ICC profiles convert to sRGB. HDR images are tone
