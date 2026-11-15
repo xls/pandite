@@ -216,12 +216,28 @@ impl Ui {
         alpha: f32,
         out: &mut DrawList,
     ) {
-        let area = self.toolbar.status;
+        let mut area = self.toolbar.status;
         if area.w < m.px(40.0) {
             return;
         }
         let font = m.text();
         let gap = m.px(14.0);
+        // A small note at the right end names the help keys. It shows only
+        // when the bar has room to spare, so it never pushes out the status.
+        let hint_font = m.text_small();
+        let hint_w = measure.measure(HELP_HINT, hint_font).w;
+        if area.w - hint_w - gap >= m.px(HELP_HINT_ROOM) {
+            let r = Rect::new(area.right() - hint_w, area.y, hint_w, area.h);
+            paint::text_left(
+                out,
+                measure,
+                r,
+                HELP_HINT,
+                hint_font,
+                fade(t.text_dim, alpha),
+            );
+            area.w -= hint_w + gap;
+        }
         let position = (ctx.count > 0)
             .then(|| format!("{} / {}", ctx.index.min(ctx.count - 1) + 1, ctx.count));
         // The number of selected images sits beside the position.
@@ -1257,6 +1273,13 @@ impl Ui {
 
 /// The label of the image on screen while it is selected.
 const MARKED: &str = "Marked";
+
+/// The note at the right end of the toolbar that names the help keys.
+const HELP_HINT: &str = "F1/? help";
+
+/// The status width, in unscaled pixels, that must stay free beside the
+/// help note. Below it the note is not shown.
+const HELP_HINT_ROOM: f32 = 360.0;
 
 /// Geometry of the information panel for one frame.
 struct InfoLayout {

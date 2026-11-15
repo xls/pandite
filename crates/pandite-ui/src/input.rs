@@ -208,6 +208,8 @@ pub enum Key {
     Minus,
     /// The equals sign (unshifted plus on many layouts).
     Equals,
+    /// The question mark, wherever the layout puts it.
+    Question,
     /// The context menu key.
     ContextMenu,
     /// Any key the interface has no use for.
@@ -265,6 +267,7 @@ impl Key {
             '+' => Some(Key::Plus),
             '-' => Some(Key::Minus),
             '=' => Some(Key::Equals),
+            '?' => Some(Key::Question),
             ' ' => Some(Key::Space),
             _ => None,
         }
@@ -278,6 +281,7 @@ impl Key {
             Key::Plus
                 | Key::Minus
                 | Key::Equals
+                | Key::Question
                 | Key::Digit0
                 | Key::Digit1
                 | Key::Digit2
@@ -360,6 +364,7 @@ impl Key {
             Key::Plus => "+",
             Key::Minus => "-",
             Key::Equals => "=",
+            Key::Question => "?",
             Key::ContextMenu => "Menu",
             Key::Other => "?",
         }
@@ -488,6 +493,7 @@ mod tests {
         assert_eq!(Key::from_char('+'), Some(Key::Plus));
         assert_eq!(Key::from_char('-'), Some(Key::Minus));
         assert_eq!(Key::from_char('='), Some(Key::Equals));
+        assert_eq!(Key::from_char('?'), Some(Key::Question));
         assert_eq!(Key::from_char('%'), None);
         assert!(Key::Plus.is_symbol());
         assert!(!Key::R.is_symbol());

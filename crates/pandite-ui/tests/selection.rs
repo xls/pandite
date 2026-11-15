@@ -642,6 +642,25 @@ fn selection_count_is_shown() {
 }
 
 #[test]
+fn toolbar_names_the_help_keys_when_there_is_room() {
+    let theme = Theme::for_kind(image_ctx().theme);
+    let mut ui = Ui::new();
+    let list = frame(&mut ui, &image_ctx());
+    let hint = text_rect_exact(&list, "F1/? help").expect("the help note shows");
+    let position = text_rect_exact(&list, "4 / 10").expect("the position shows");
+    // At the right end of the toolbar, right of the position.
+    assert!(hint.x > position.right(), "{hint:?} {position:?}");
+    assert!(hint.bottom() <= 40.0);
+    assert_eq!(text_color(&list, "F1/? help"), Some(theme.text_dim));
+
+    // A narrow window keeps its room for the status and drops the note.
+    let mut narrow = image_ctx();
+    narrow.window_size = Size::new(640.0, 600.0);
+    let list = frame(&mut Ui::new(), &narrow);
+    assert!(!has_text(&list, "F1/? help"));
+}
+
+#[test]
 fn context_menu_offers_select_and_clear() {
     let ctx = tall_image_ctx();
     let theme = Theme::for_kind(ctx.theme);

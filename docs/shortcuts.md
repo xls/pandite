@@ -54,7 +54,7 @@ On macOS, Ctrl is the Command key and Alt is the Option key.
 | Image information | I |
 | Full screen | F11, Alt+Enter |
 | Context menu | Menu, Shift+F10 |
-| Keyboard shortcuts | F1 |
+| Keyboard shortcuts | F1, ? |
 | Close dialog or quit | Esc |
 | Quit | Q, Ctrl+Q, Ctrl+W |
 

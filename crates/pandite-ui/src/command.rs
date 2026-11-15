@@ -468,6 +468,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
     Shortcut::new(Key::ContextMenu, N, Command::ContextMenu),
     Shortcut::new(Key::F10, SHIFT, Command::ContextMenu),
     Shortcut::new(Key::F1, N, Command::Help),
+    Shortcut::new(Key::Question, N, Command::Help),
     Shortcut::new(Key::Escape, N, Command::Cancel),
     Shortcut::new(Key::Q, N, Command::Quit),
     Shortcut::new(Key::Q, CTRL, Command::Quit),
@@ -505,6 +506,14 @@ mod tests {
         assert_eq!(
             command_for_key(Key::Plus, Modifiers::SHIFT, false),
             Some(Command::ZoomIn)
+        );
+        assert_eq!(
+            command_for_key(Key::Question, Modifiers::SHIFT, false),
+            Some(Command::Help)
+        );
+        assert_eq!(
+            command_for_key(Key::Question, Modifiers::NONE, false),
+            Some(Command::Help)
         );
         assert_eq!(
             command_for_key(Key::R, Modifiers::SHIFT, false),
