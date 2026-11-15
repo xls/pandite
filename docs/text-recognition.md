@@ -86,8 +86,9 @@ turned image replaces them. Then the selection clears.
   network connection.
 - The built-in recognizer reads the Latin script, also with accented
   letters, as in English, German, French, Spanish or Norwegian. It also
-  reads digits, punctuation and Chinese. It does not read Greek,
-  Cyrillic, Arabic, Hebrew or other scripts.
+  reads digits, punctuation and Chinese. It knows the plain Greek letters,
+  as in formulas, but not the accented letters of Greek text. It does not
+  read Cyrillic, Arabic, Hebrew or other scripts.
 - The built-in recognizer uses one processor core. On a desktop
   processor, it reads a screenshot of 900 x 420 pixels in about half a
   second. Large images and pages with many lines take longer, up to a few
