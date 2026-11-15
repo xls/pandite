@@ -161,7 +161,7 @@ is `pandite.desktop`.
    `~/.config/hypr/hyprland.lua`:
 
    ```lua
-   o.window("pandite", {tag = "+floating-window"})
+   o.window("pandite", { tag = "+floating-window" })
    ```
 
 The system can report a Sony ARW file as `image/tiff` and not as

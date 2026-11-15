@@ -296,7 +296,7 @@ function fakeSystem(platform, arch = 'x64', { glibc = platform === 'linux' ? '2.
   const calls = [];
   const out = [];
   const err = [];
-  const state = { setupExit: 0, uninstallerExit: 0, entryLingers: 0, lingering: null, setupFiles: [], sleeps: 0, xdgMimeExit: 0 };
+  const state = { setupExit: 0, uninstallerExit: 0, entryLingers: 0, lingering: null, setupFiles: [], sleeps: 0, xdgMimeExit: 0, defaults: new Map() };
 
   async function run(command, args, options = {}) {
     calls.push({ command, args: [...args], env: options.env, capture: Boolean(options.capture) });
@@ -362,6 +362,12 @@ function fakeSystem(platform, arch = 'x64', { glibc = platform === 'linux' ? '2.
     }
     if (command === XDG_MIME) {
       assert.equal(platform, 'linux');
+      if (args[0] === 'query') {
+        assert.deepEqual(args.slice(0, 2), ['query', 'default']);
+        const program = state.defaults.get(args[2]) ?? '';
+        return { code: 0, signal: null, stdout: program ? `${program}\n` : '', stderr: '' };
+      }
+      if (state.xdgMimeExit === 0) for (const type of args.slice(2)) state.defaults.set(type, args[1]);
       return { code: state.xdgMimeExit, signal: null, stdout: '', stderr: state.xdgMimeExit ? 'xdg-mime: no desktop\n' : '' };
     }
     if (command === HDIUTIL) {
@@ -748,7 +754,7 @@ test('Linux: the default viewer and the Hyprland floating window', async () => {
         return answers.shift() ?? '';
       };
     };
-    return { sys, hypr, asked, answer, mime: () => sys.calls.filter((c) => c.command === XDG_MIME) };
+    return { sys, hypr, asked, answer, mime: () => sys.calls.filter((c) => c.command === XDG_MIME && c.args[0] === 'default') };
   };
   const gh = () => fakeGitHub([rel('0.2.0')], { latest: '0.2.0' });
 
@@ -832,6 +838,41 @@ test('Linux: the default viewer and the Hyprland floating window', async () => {
   assert.ok(r.err.some((l) => l.includes('xdg-mime failed with exit code 3')), r.err.join('\n'));
   assert.ok(r.err.some((l) => l.includes('was not found; the floating window rule was not added')));
   assert.ok(existsSync(path.join(d.sys.home, '.local', 'bin', 'pandite')));
+
+  // The uninstall gives the formats back to the program from before and
+  // takes the rule out of the Hyprland file, and nothing else.
+  d = desktop('-- mine\n-- more\n');
+  d.sys.state.defaults.set('image/jpeg', 'imv.desktop');
+  d.sys.state.defaults.set('image/png', 'imv.desktop');
+  d.sys.state.defaults.set('image/tiff', 'gimp.desktop');
+  r = await install(d.sys, gh(), ['--default', '--float']);
+  assert.equal(r.code, 0, r.err.join('\n'));
+  for (const t of types) assert.equal(d.sys.state.defaults.get(t), DESKTOP_FILE);
+  // A second --default does not record Pandite as the program from before.
+  assert.equal((await install(d.sys, gh(), ['--default'])).code, 0);
+  // The user gives PNG to another program: the uninstall leaves it there.
+  d.sys.state.defaults.set('image/png', 'feh.desktop');
+  r = await install(d.sys, gh(), ['uninstall', '--dry-run']);
+  assert.ok(r.out.includes('Would give the image formats that open with Pandite back to the program from before'));
+  assert.ok(r.out.includes(`Would remove the floating window rule for Pandite from ${d.hypr}`));
+  assert.equal(d.sys.state.defaults.get('image/jpeg'), DESKTOP_FILE, 'the dry run changes nothing');
+  r = await install(d.sys, gh(), ['uninstall']);
+  assert.equal(r.code, 0, r.err.join('\n'));
+  assert.equal(d.sys.state.defaults.get('image/jpeg'), 'imv.desktop');
+  assert.equal(d.sys.state.defaults.get('image/tiff'), 'gimp.desktop');
+  assert.equal(d.sys.state.defaults.get('image/png'), 'feh.desktop');
+  assert.equal(d.sys.state.defaults.get('image/x-sony-arw'), DESKTOP_FILE, 'a format without an earlier program stays');
+  assert.equal(readFileSync(d.hypr, 'utf8'), '-- mine\n-- more\n');
+  assert.ok(r.out.includes('The default viewer of 2 image formats is the program from before Pandite again.'));
+  assert.ok(r.out.includes(`Removed the floating window rule for Pandite from ${d.hypr}.`));
+  assert.ok(!existsSync(d.sys.data), 'the record goes with the uninstall');
+  // An uninstall after a setup that changed nothing touches nothing.
+  d = desktop();
+  assert.equal((await install(d.sys, gh(), ['--no-default', '--no-float'])).code, 0);
+  r = await install(d.sys, gh(), ['uninstall']);
+  assert.equal(r.code, 0);
+  assert.deepEqual(d.mime(), []);
+  assert.equal(readFileSync(d.hypr, 'utf8'), 'local o = require("omarchy")\n');
 
   // The dry run names the questions and changes nothing.
   d = desktop();

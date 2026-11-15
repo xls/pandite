@@ -62,7 +62,7 @@ answer `y` or `yes` does the step. Any other answer changes nothing.
 | Question | Asked when | Step |
 |---|---|---|
 | Make Pandite the default viewer? | `xdg-mime` is in `PATH` | Runs `xdg-mime default pandite.desktop` with every MIME type of the desktop entry. |
-| Open Pandite as a floating window in Hyprland? | `~/.config/hypr/hyprland.lua` exists | Adds the line `o.window("pandite", {tag = "+floating-window"})` at the end of that file. The line is added one time only. |
+| Open Pandite as a floating window in Hyprland? | `~/.config/hypr/hyprland.lua` exists | Adds the line `o.window("pandite", { tag = "+floating-window" })` at the end of that file. The line is added one time only. |
 
 The installer asks nothing on an update and nothing without a terminal.
 
@@ -74,8 +74,12 @@ The installer asks nothing on an update and nothing without a terminal.
 | `--no-float` | Does not ask the second question. |
 
 To do a step for a Pandite that is installed, run `npx pandite --default`
-or `npx pandite --float`. `npx pandite uninstall` does not change the
-default viewer or the Hyprland file.
+or `npx pandite --float`.
+
+The installer keeps the earlier default program of each format.
+`npx pandite uninstall` gives each format that still opens with Pandite
+back to that program, and removes the line that it added to the Hyprland
+file. A format that you gave to another program stays with that program.
 
 The installer keeps the installed version in `installed.json` in its
 per-user folder:

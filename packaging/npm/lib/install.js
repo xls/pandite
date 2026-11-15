@@ -47,11 +47,12 @@ export const UNINSTALL_KEY = `Software\\Microsoft\\Windows\\CurrentVersion\\Unin
 export const SH = '/bin/sh';
 export const HDIUTIL = '/usr/bin/hdiutil';
 export const MARKER = 'installed.json';
+export const SETUP_RECORD = 'linux-setup.json';
 export const XDG_MIME = 'xdg-mime';
 export const DESKTOP_FILE = 'pandite.desktop';
 export const DEFAULT_QUESTION = 'Make Pandite the default viewer for the image formats that it opens? [y/N] ';
 export const FLOAT_QUESTION = 'Open Pandite as a floating window in Hyprland? [y/N] ';
-export const HYPRLAND_RULE = 'o.window("pandite", {tag = "+floating-window"})';
+export const HYPRLAND_RULE = 'o.window("pandite", { tag = "+floating-window" })';
 const REGISTRY_ROOTS = ['HKCU', 'HKLM'];
 const UNINSTALL_WAIT_MS = 60_000;
 const UNINSTALL_POLL_MS = 1_000;
@@ -341,12 +342,54 @@ function desktopMimeTypes(ctx) {
     : [];
 }
 
+/** What the Linux setup changed, kept outside the install marker: it stays through updates. */
+function setupFile(ctx) {
+  return path.join(dataDir(ctx), SETUP_RECORD);
+}
+
+function readSetup(ctx) {
+  try {
+    const record = JSON.parse(readFileSync(setupFile(ctx), 'utf8'));
+    return record && typeof record === 'object' ? record : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeSetup(ctx, record) {
+  try {
+    mkdirSync(dataDir(ctx), { recursive: true });
+    writeFileSync(setupFile(ctx), `${JSON.stringify(record, null, 2)}\n`);
+  } catch {
+    // Without the record, the uninstall leaves the defaults as they are.
+  }
+}
+
+/** The default program of a MIME type, or '' when none is set or xdg-mime fails. */
+async function defaultOf(ctx, type) {
+  try {
+    const r = await ctx.run(XDG_MIME, ['query', 'default', type], { env: ctx.env, capture: true });
+    return r.code === 0 ? r.stdout.trim() : '';
+  } catch {
+    return '';
+  }
+}
+
 /** Linux: make Pandite the default program of its MIME types. Never fails the install. */
 async function setDefaultViewer(ctx) {
   const types = desktopMimeTypes(ctx);
   if (types.length === 0) {
     ctx.info('the desktop entry of Pandite lists no MIME types; the default viewer was not changed');
     return false;
+  }
+  // Remember the program each type had before, for the uninstall. A type
+  // that is on record keeps its first answer.
+  const record = readSetup(ctx);
+  const previous = record.previous && typeof record.previous === 'object' ? record.previous : {};
+  for (const type of types) {
+    if (type in previous) continue;
+    const program = await defaultOf(ctx, type);
+    if (program !== DESKTOP_FILE) previous[type] = program;
   }
   let r;
   try {
@@ -359,6 +402,7 @@ async function setDefaultViewer(ctx) {
     ctx.info(`${XDG_MIME} failed with ${exitText(r)}: ${lastLine(r.stderr) || lastLine(r.stdout)}; the default viewer was not changed`);
     return false;
   }
+  writeSetup(ctx, { ...readSetup(ctx), previous });
   ctx.out(`Pandite is the default viewer for ${types.length} image formats.`);
   return true;
 }
@@ -395,6 +439,7 @@ function setFloating(ctx) {
     ctx.info(`cannot write ${file}: ${error?.message ?? error}; the floating window rule was not added`);
     return false;
   }
+  writeSetup(ctx, { ...readSetup(ctx), hyprland: true });
   ctx.out(`Added the floating window rule for Pandite to ${file}.`);
   return true;
 }
@@ -627,6 +672,46 @@ async function uninstallMac(ctx, opts) {
   return 0;
 }
 
+/**
+ * Linux, at uninstall: give every MIME type that still opens with Pandite
+ * back to the program it had before, and take the floating window rule out
+ * of the Hyprland configuration. Never fails the uninstall.
+ */
+async function undoLinuxSetup(ctx) {
+  const record = readSetup(ctx);
+  const previous = record.previous && typeof record.previous === 'object' ? record.previous : {};
+  const back = new Map();
+  for (const [type, program] of Object.entries(previous)) {
+    if (typeof program !== 'string' || program === '' || program === DESKTOP_FILE) continue;
+    // A type that the user gave to another program since stays there.
+    if ((await defaultOf(ctx, type)) !== DESKTOP_FILE) continue;
+    back.set(program, [...(back.get(program) ?? []), type]);
+  }
+  let restored = 0;
+  for (const [program, types] of back) {
+    try {
+      const r = await ctx.run(XDG_MIME, ['default', program, ...types], { env: ctx.env, capture: true });
+      if (r.code === 0) restored += types.length;
+    } catch {
+      // xdg-mime is gone: nothing to restore with.
+    }
+  }
+  if (restored > 0) ctx.out(`The default viewer of ${restored} image formats is the program from before Pandite again.`);
+  if (record.hyprland) {
+    const file = hyprlandFile(ctx);
+    try {
+      const text = readFileSync(file, 'utf8');
+      const kept = text.split('\n').filter((line) => line.trim() !== HYPRLAND_RULE);
+      if (kept.length !== text.split('\n').length) {
+        writeFileSync(file, kept.join('\n'));
+        ctx.out(`Removed the floating window rule for Pandite from ${file}.`);
+      }
+    } catch {
+      // The file is gone or cannot be written: leave it.
+    }
+  }
+}
+
 async function uninstallLinux(ctx, opts) {
   const marker = readMarker(ctx);
   const script = path.join(linuxKeep(ctx), 'install.sh');
@@ -636,12 +721,18 @@ async function uninstallLinux(ctx, opts) {
   }
   if (opts.dryRun) {
     ctx.out(`Would run: PREFIX=${prefix} ${SH} ${script} --uninstall`);
+    const record = readSetup(ctx);
+    if (record.previous && Object.keys(record.previous).length > 0) {
+      ctx.out('Would give the image formats that open with Pandite back to the program from before');
+    }
+    if (record.hyprland) ctx.out(`Would remove the floating window rule for Pandite from ${hyprlandFile(ctx)}`);
     return dryRunEnd(ctx);
   }
   const r = await run(ctx, SH, [script, '--uninstall'], { env: { ...ctx.env, PREFIX: prefix }, capture: true });
   if (r.code !== 0) {
     throw new InstallerError(`install.sh --uninstall failed with ${exitText(r)}: ${lastLine(r.stderr) || lastLine(r.stdout)}`);
   }
+  await undoLinuxSetup(ctx);
   forget(ctx);
   ctx.out(`Pandite removed from ${prefix}.`);
   return 0;
