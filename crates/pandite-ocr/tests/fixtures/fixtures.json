@@ -1,0 +1,515 @@
+{
+ "page_light": {
+  "file": "page_light.png",
+  "size": [
+   900,
+   420
+  ],
+  "truth": [
+   {
+    "text": "Pandite reads text",
+    "box": [
+     40,
+     43,
+     380,
+     73
+    ],
+    "font_px": 40
+   },
+   {
+    "text": "The quick brown fox jumps over the lazy dog.",
+    "box": [
+     40,
+     118,
+     506,
+     139
+    ],
+    "font_px": 22
+   },
+   {
+    "text": "Invoice 2024-11: total 1,284.50 USD",
+    "box": [
+     40,
+     157,
+     403,
+     178
+    ],
+    "font_px": 22
+   },
+   {
+    "text": "Small print: valid until 31 December 2026, terms apply.",
+    "box": [
+     40,
+     216,
+     449,
+     232
+    ],
+    "font_px": 16
+   },
+   {
+    "text": "Bl\u00e5b\u00e6rsyltet\u00f8y p\u00e5 br\u00f8d",
+    "box": [
+     40,
+     267,
+     346,
+     297
+    ],
+    "font_px": 28
+   },
+   {
+    "text": "Stra\u00dfe, \u00c4rger, \u00dcbung",
+    "box": [
+     40,
+     325,
+     316,
+     357
+    ],
+    "font_px": 28
+   }
+  ],
+  "rapidocr_tiny": [
+   {
+    "text": "Pandite reads text",
+    "score": 0.9743,
+    "quad": [
+     [
+      37.0,
+      38.0
+     ],
+     [
+      385.0,
+      39.0
+     ],
+     [
+      384.0,
+      81.0
+     ],
+     [
+      37.0,
+      79.0
+     ]
+    ]
+   },
+   {
+    "text": "The quick brown fox jumps over the lazy dog.",
+    "score": 0.9779,
+    "quad": [
+     [
+      37.0,
+      111.0
+     ],
+     [
+      505.0,
+      114.0
+     ],
+     [
+      504.0,
+      142.0
+     ],
+     [
+      37.0,
+      140.0
+     ]
+    ]
+   },
+   {
+    "text": "Invoice 2024-11: total 1,284.50 USD",
+    "score": 0.966,
+    "quad": [
+     [
+      38.0,
+      153.0
+     ],
+     [
+      404.0,
+      153.0
+     ],
+     [
+      404.0,
+      179.0
+     ],
+     [
+      38.0,
+      179.0
+     ]
+    ]
+   },
+   {
+    "text": "Small print: valid until 31 December 2026, terms apply.",
+    "score": 0.9789,
+    "quad": [
+     [
+      37.0,
+      209.0
+     ],
+     [
+      450.0,
+      211.0
+     ],
+     [
+      450.0,
+      235.0
+     ],
+     [
+      37.0,
+      233.0
+     ]
+    ]
+   },
+   {
+    "text": "Bl\u00e5b\u00e6rsyltet\u00f8y p\u00e5 br\u00f8d",
+    "score": 0.9548,
+    "quad": [
+     [
+      37.0,
+      262.0
+     ],
+     [
+      347.0,
+      264.0
+     ],
+     [
+      347.0,
+      300.0
+     ],
+     [
+      37.0,
+      298.0
+     ]
+    ]
+   },
+   {
+    "text": "Stra\u00dfe, \u00c4rger, \u00dcbung",
+    "score": 0.9709,
+    "quad": [
+     [
+      36.0,
+      323.0
+     ],
+     [
+      320.0,
+      323.0
+     ],
+     [
+      320.0,
+      361.0
+     ],
+     [
+      36.0,
+      361.0
+     ]
+    ]
+   }
+  ]
+ },
+ "panel_dark": {
+  "file": "panel_dark.png",
+  "size": [
+   720,
+   300
+  ],
+  "truth": [
+   {
+    "text": "Settings",
+    "box": [
+     30,
+     34,
+     144,
+     64
+    ],
+    "font_px": 30
+   },
+   {
+    "text": "Display scale 150 percent",
+    "box": [
+     30,
+     96,
+     244,
+     114
+    ],
+    "font_px": 18
+   },
+   {
+    "text": "Open with Pandite",
+    "box": [
+     30,
+     136,
+     187,
+     154
+    ],
+    "font_px": 18
+   },
+   {
+    "text": "Ctrl+Shift+C",
+    "box": [
+     400,
+     136,
+     500,
+     150
+    ],
+    "font_px": 18
+   },
+   {
+    "text": "Version 0.2.3 for Linux x86_64",
+    "box": [
+     30,
+     194,
+     226,
+     208
+    ],
+    "font_px": 14
+   },
+   {
+    "text": "\u00bfD\u00f3nde est\u00e1 el ni\u00f1o?",
+    "box": [
+     30,
+     247,
+     264,
+     271
+    ],
+    "font_px": 24
+   }
+  ],
+  "rapidocr_tiny": [
+   {
+    "text": "Settings",
+    "score": 0.9999,
+    "quad": [
+     [
+      27.0,
+      28.0
+     ],
+     [
+      148.0,
+      30.0
+     ],
+     [
+      147.0,
+      67.0
+     ],
+     [
+      26.0,
+      65.0
+     ]
+    ]
+   },
+   {
+    "text": "Display scale 150 percent",
+    "score": 0.9905,
+    "quad": [
+     [
+      27.0,
+      90.0
+     ],
+     [
+      247.0,
+      91.0
+     ],
+     [
+      247.0,
+      118.0
+     ],
+     [
+      27.0,
+      117.0
+     ]
+    ]
+   },
+   {
+    "text": "Open with Pandite",
+    "score": 0.9906,
+    "quad": [
+     [
+      28.0,
+      133.0
+     ],
+     [
+      189.0,
+      132.0
+     ],
+     [
+      189.0,
+      155.0
+     ],
+     [
+      28.0,
+      156.0
+     ]
+    ]
+   },
+   {
+    "text": "Ctrl+Shift+C",
+    "score": 0.996,
+    "quad": [
+     [
+      399.0,
+      132.0
+     ],
+     [
+      501.0,
+      132.0
+     ],
+     [
+      501.0,
+      153.0
+     ],
+     [
+      399.0,
+      153.0
+     ]
+    ]
+   },
+   {
+    "text": "Version 0.2.3 for Linux x86_64",
+    "score": 0.9773,
+    "quad": [
+     [
+      28.0,
+      190.0
+     ],
+     [
+      228.0,
+      190.0
+     ],
+     [
+      228.0,
+      209.0
+     ],
+     [
+      28.0,
+      209.0
+     ]
+    ]
+   },
+   {
+    "text": "\u00bfD\u00f3nde est\u00e1 el ni\u00f1o?",
+    "score": 0.998,
+    "quad": [
+     [
+      28.0,
+      243.0
+     ],
+     [
+      266.0,
+      242.0
+     ],
+     [
+      266.0,
+      272.0
+     ],
+     [
+      28.0,
+      273.0
+     ]
+    ]
+   }
+  ]
+ },
+ "sign_color": {
+  "file": "sign_color.png",
+  "size": [
+   640,
+   360
+  ],
+  "truth": [
+   {
+    "text": "STOP",
+    "box": [
+     60,
+     75,
+     238,
+     128
+    ],
+    "font_px": 72
+   },
+   {
+    "text": "Road closed ahead",
+    "box": [
+     60,
+     181,
+     361,
+     207
+    ],
+    "font_px": 34
+   },
+   {
+    "text": "Detour via Main Street 2 km",
+    "box": [
+     60,
+     247,
+     322,
+     262
+    ],
+    "font_px": 20
+   }
+  ],
+  "rapidocr_tiny": [
+   {
+    "text": "STOP",
+    "score": 0.9955,
+    "quad": [
+     [
+      54.0,
+      64.0
+     ],
+     [
+      242.0,
+      64.0
+     ],
+     [
+      242.0,
+      139.0
+     ],
+     [
+      54.0,
+      139.0
+     ]
+    ]
+   },
+   {
+    "text": "Road closed ahead",
+    "score": 0.9788,
+    "quad": [
+     [
+      57.0,
+      175.0
+     ],
+     [
+      363.0,
+      174.0
+     ],
+     [
+      363.0,
+      214.0
+     ],
+     [
+      57.0,
+      215.0
+     ]
+    ]
+   },
+   {
+    "text": "Detour via Main Street 2 km",
+    "score": 0.9833,
+    "quad": [
+     [
+      60.0,
+      243.0
+     ],
+     [
+      323.0,
+      243.0
+     ],
+     [
+      323.0,
+      267.0
+     ],
+     [
+      60.0,
+      267.0
+     ]
+    ]
+   }
+  ]
+ }
+}

@@ -145,6 +145,25 @@ pub fn engine(test: &str) -> Option<Arc<dyn TextProvider>> {
     found
 }
 
+/// True when the recognizer gives each word the full height of its line
+/// box, as the built-in PP-OCRv6 models do. Windows OCR boxes hug the ink.
+pub fn line_high(ocr: &dyn TextProvider) -> bool {
+    ocr.id() == "pp-ocr"
+}
+
+/// True when `found` is the box of the word whose ink is `ink`: an
+/// intersection over union of at least 0.6 for boxes that hug the ink.
+/// Line-high boxes are compared by their horizontal extents only, and
+/// must be less than four times as high as the ink.
+pub fn on_ink(ink: Rect, found: Rect, line_high: bool) -> bool {
+    if !line_high {
+        return iou(ink, found) >= 0.6;
+    }
+    let inter = (ink.right().min(found.right()) - ink.x.max(found.x)).max(0.0);
+    let union = ink.right().max(found.right()) - ink.x.min(found.x);
+    union > 0.0 && inter / union >= 0.8 && found.h < 4.0 * ink.h
+}
+
 /// Intersection over union of two rectangles.
 pub fn iou(a: Rect, b: Rect) -> f32 {
     let inter = a.intersect(b).map_or(0.0, |r| r.w * r.h);

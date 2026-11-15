@@ -6,7 +6,7 @@
 
 mod common;
 
-use common::{covered, engine, iou, match_words, render, Line};
+use common::{covered, engine, line_high, match_words, on_ink, render, Line};
 use pandite_core::{CancelToken, Error, ImageBuf, Rect, Registry, TextProvider};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -92,23 +92,46 @@ fn word_boxes_cover_the_text() {
         "not found: {missing:?} in {:?}",
         layout.text()
     );
+    let tall = line_high(ocr.as_ref());
     for (text, ink, found) in &pairs {
         // The reported box holds the word's ink and is not much larger.
-        let grown = Rect::new(found.x - 2.0, found.y - 2.0, found.w + 4.0, found.h + 4.0);
+        // The built-in models place word edges to one time step of their
+        // recognizer: 8 of its 48 input pixels, a sixth of the box height.
+        let mx = if tall { found.h / 6.0 } else { 2.0 };
+        let grown = Rect::new(
+            found.x - mx,
+            found.y - 2.0,
+            found.w + 2.0 * mx,
+            found.h + 4.0,
+        );
         assert!(
             covered(*ink, grown) >= 0.97,
             "{text}: box {found:?} misses ink {ink:?}"
         );
         assert!(
-            iou(*ink, *found) >= 0.6,
+            on_ink(*ink, *found, tall),
             "{text}: box {found:?} far from ink {ink:?}"
         );
     }
-    // Upright text gives upright boxes.
+    // Upright text gives upright boxes. The built-in models fit a turned
+    // rectangle around each line and round its corners to whole pixels,
+    // as their reference does, so an edge may lean by about a degree.
     for (_, word) in layout.words() {
         let q = word.quad;
-        assert!((q.points[0].y - q.points[1].y).abs() < 0.5, "{q:?}");
-        assert!((q.points[0].x - q.points[3].x).abs() < 0.5, "{q:?}");
+        if tall {
+            let [a, b, _, d] = q.points;
+            assert!(
+                (b.y - a.y).atan2(b.x - a.x).to_degrees().abs() < 1.5,
+                "{q:?}"
+            );
+            assert!(
+                (d.x - a.x).atan2(d.y - a.y).to_degrees().abs() < 1.5,
+                "{q:?}"
+            );
+        } else {
+            assert!((q.points[0].y - q.points[1].y).abs() < 0.5, "{q:?}");
+            assert!((q.points[0].x - q.points[3].x).abs() < 0.5, "{q:?}");
+        }
     }
 }
 
@@ -156,15 +179,24 @@ fn large_image_is_scaled_and_boxes_map_back() {
         "not found: {missing:?} in {:?}",
         layout.text()
     );
+    let tall = line_high(ocr.as_ref());
     for (text, ink, found) in &pairs {
-        // One recognized pixel is two image pixels here.
-        let grown = Rect::new(found.x - 6.0, found.y - 6.0, found.w + 12.0, found.h + 12.0);
+        // One recognized pixel is two image pixels here (six for the
+        // built-in models, which read at most 2000 pixels and place word
+        // edges to one time step, a sixth of the box height).
+        let mx = if tall { found.h / 6.0 } else { 6.0 };
+        let grown = Rect::new(
+            found.x - mx,
+            found.y - 6.0,
+            found.w + 2.0 * mx,
+            found.h + 12.0,
+        );
         assert!(
             covered(*ink, grown) >= 0.97,
             "{text}: box {found:?} misses ink {ink:?}"
         );
         assert!(
-            iou(*ink, *found) >= 0.6,
+            on_ink(*ink, *found, tall),
             "{text}: box {found:?} far from ink {ink:?}"
         );
     }
@@ -333,12 +365,20 @@ fn missing_engine_reports_unavailable() {
     }
     #[cfg(not(windows))]
     {
-        // No recognizer on this platform: the registry stays empty, so the
-        // viewer shows no text features.
-        assert!(pandite_ocr::text_providers().is_empty());
+        // The built-in recognizer: compiled in, nothing to install, so it
+        // is always available.
         let mut registry = Registry::new();
         pandite_ocr::register_text_providers(&mut registry);
-        assert!(registry.text_providers().is_empty());
-        let _ = image;
+        let ids: Vec<&str> = registry.text_providers().iter().map(|p| p.id()).collect();
+        assert_eq!(ids, ["pp-ocr"]);
+        let ocr = &registry.text_providers()[0];
+        assert!(ocr.available());
+        // Cancellation wins before any work.
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        assert!(matches!(
+            ocr.recognize(&image, &cancel),
+            Err(Error::Cancelled)
+        ));
     }
 }

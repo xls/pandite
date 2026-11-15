@@ -89,9 +89,10 @@ On macOS, Ctrl is the Command key and Alt is the Option key.
   Otherwise, Ctrl+C copies the image. See [Copy the image](#copy-the-image).
 - Ctrl+Shift+C copies the full path of the file. The copy path button on
   the toolbar does the same.
-- Ctrl+A and Copy selected text work only on Windows, when pandite has read
-  the text of the image. See [text-recognition.md](text-recognition.md).
-  On other systems, the shortcut overlay does not show them.
+- Ctrl+A and Copy selected text work when pandite has read the text of the
+  image. See [text-recognition.md](text-recognition.md). When text
+  recognition is off, or Windows has no OCR language, the shortcut overlay
+  does not show them.
 - Esc closes the topmost menu, dialog, question or the shortcut overlay.
   When none of these is open, Esc closes pandite. This is also true in full
   screen, in crop mode, while text is selected, while the image information
@@ -311,9 +312,8 @@ editor, a document or a chat.
 | Click a thumbnail | Show that image (the selection does not change) |
 | Drag the gallery strip | Scroll the strip |
 
-The text actions work only where pandite read text in the image (on
-Windows). Over a word, the pointer is a text cursor. The middle button
-pans also over text.
+The text actions work only where pandite read text in the image. Over a
+word, the pointer is a text cursor. The middle button pans also over text.
 
 ### In crop mode
 

@@ -561,8 +561,8 @@ impl Shell {
             )),
             _ => None,
         };
-        // Decoders, encoders and the platform text recognizer (none on
-        // macOS and Linux yet).
+        // Decoders, encoders and the platform text recognizer (Windows OCR,
+        // or the built-in models on macOS and Linux).
         let registry = match &self.registry {
             Some(registry) => Arc::clone(registry),
             None => {

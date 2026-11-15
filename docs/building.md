@@ -7,7 +7,8 @@ release packages on your computer. The GitHub workflows in
 ## Prerequisites on all systems
 
 1. Install Rust with rustup from https://rustup.rs. pandite needs Rust 1.87
-   or later.
+   or later on Windows. On macOS and Linux, it needs Rust 1.91 or later for
+   the text recognition engine.
 2. Install Git.
 3. If you make packages, install Node.js 18 or later. The packaging scripts
    use only the Node.js standard library.
@@ -332,15 +333,28 @@ The GPU tests need a GPU adapter. When the computer has no adapter, these
 tests print a notice and pass. To make a missing adapter fail the tests,
 set `PANDITE_REQUIRE_GPU=1`.
 
-The text recognition tests in `crates/pandite-ocr` need the Windows OCR
-engine and an OCR language. Without them, these tests print a notice and
-pass. To make a missing engine fail the tests, set `PANDITE_REQUIRE_OCR=1`.
-The GitHub runners can have no OCR language, so the CI does not set it.
+On Windows, the text recognition tests in `crates/pandite-ocr/tests` need
+the Windows OCR engine and an OCR language. Without them, these tests print
+a notice and pass. To make a missing engine fail the tests, set
+`PANDITE_REQUIRE_OCR=1`. The GitHub runners can have no OCR language, so
+the CI does not set it. On macOS and Linux, these tests use the built-in
+recognizer and always run.
 
-To measure recognition time against the size limit for large images, run:
+The unit tests of the built-in recognizer run on every system, also on
+Windows. They compare its results with the results of its reference
+implementation, in `crates/pandite-ocr/tests/fixtures`.
+
+To measure Windows OCR time against the size limit for large images, run:
 
 ```sh
 cargo run --release -p pandite-ocr --example ocr_bench
+```
+
+To read image files with the recognizer of the system and print the text
+and the time for each file, run:
+
+```sh
+cargo run --release -p pandite-ocr --example ocr_file -- <image file>...
 ```
 
 The GitHub runners have no GPU. The CI runs the unit tests only. It sets

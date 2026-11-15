@@ -373,7 +373,7 @@ fn shows_text_commands(h: &mut Harness) -> bool {
 
 #[test]
 fn no_provider_hides_text_features() {
-    // No recognizer registered (macOS and Linux today).
+    // No recognizer registered (the test registry has none).
     let (_dir, paths) = folder("ocr-none", &["page.png", "other.png"], 600, 300);
     let mut h = Harness::new(Config {
         open: Some(paths[0].clone()),
