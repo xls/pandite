@@ -40,7 +40,19 @@
 //! - Thumbnails use [`thumbnail_texture_id`]`(index)` =
 //!   `THUMBNAIL_TEXTURE_BASE + index`. The application uploads each
 //!   thumbnail under that id and marks it [`ThumbState::Ready`] in
-//!   [`UiContext::thumbnails`]; the interface draws only visible ones.
+//!   [`UiContext::thumbnails`]; the interface draws only visible ones. A
+//!   square thumbnail of [`Ui::thumbnail_px`] fills its cell pixel for
+//!   pixel.
+//!
+//! # Gallery size
+//!
+//! The strip has three cell sizes ([`GallerySize`], in
+//! [`UiContext::gallery_size`]). Ctrl+Plus emits
+//! [`Action::LargerThumbnails`] and Ctrl+Minus
+//! [`Action::SmallerThumbnails`]; the context menu has both. Each is
+//! unavailable at its end of the range and while the strip is hidden.
+//! When the size or the scale factor changes, make the thumbnails again
+//! at the new [`Ui::thumbnail_px`].
 //!
 //! # Coordinates
 //!
@@ -130,6 +142,7 @@ pub use confirm::ConfirmRequest;
 pub use context::{
     EncoderInfo, ImageInfo, InfoRow, Loading, Progress, TextView, ThumbState, UiContext,
 };
+pub use gallery::GallerySize;
 pub use icon::{Icon, ICON_TEXTURE_BASE};
 pub use input::{CursorShape, InputEvent, Key, Modifiers, PointerButton, WheelDelta};
 pub use text_field::{CharFilter, FieldResponse, TextField};

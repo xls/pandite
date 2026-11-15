@@ -12,6 +12,9 @@ use std::ops::Range;
 pub(crate) struct Thumbs {
     states: Vec<ThumbState>,
     uploaded: BTreeSet<usize>,
+    /// Uploaded indexes whose thumbnail was made again (at a new size):
+    /// the next sync uploads the new one over the old one.
+    refresh: BTreeSet<usize>,
     remove: Vec<usize>,
     visible: Range<usize>,
     reported: bool,
@@ -27,6 +30,7 @@ impl Thumbs {
     /// The folder list was replaced: every index is stale.
     pub fn reset(&mut self, len: usize) {
         self.remove.extend(std::mem::take(&mut self.uploaded));
+        self.refresh.clear();
         self.states = vec![ThumbState::Pending; len];
         self.reported = false;
         self.visible = 0..0;
@@ -36,6 +40,7 @@ impl Thumbs {
     /// Forget every upload (the GPU device was replaced).
     pub fn invalidate(&mut self) {
         self.uploaded.clear();
+        self.refresh.clear();
         self.remove.clear();
         for s in &mut self.states {
             if matches!(s, ThumbState::Ready { .. }) {
@@ -46,8 +51,13 @@ impl Thumbs {
     }
 
     /// A thumbnail finished; upload it if it is near the visible range.
+    /// One that replaces an uploaded thumbnail (made again at a new size)
+    /// is uploaded over it.
     pub fn ready(&mut self, index: usize) {
-        if index < self.states.len() {
+        if let Some(state) = self.states.get(index) {
+            if matches!(state, ThumbState::Ready { .. }) {
+                self.refresh.insert(index);
+            }
             self.dirty = true;
         }
     }
@@ -102,17 +112,21 @@ impl Thumbs {
         for index in far {
             sink.remove(thumbnail_texture_id(index));
             self.uploaded.remove(&index);
+            self.refresh.remove(&index);
             if let Some(s) = self.states.get_mut(index) {
                 *s = ThumbState::Pending;
             }
             changed = true;
         }
         for index in keep {
-            if matches!(self.states[index], ThumbState::Ready { .. }) {
+            let shown = matches!(self.states[index], ThumbState::Ready { .. });
+            if shown && !self.refresh.remove(&index) {
                 continue;
             }
             match library.thumbnail(index) {
                 Fetch::Ready(image) => {
+                    // Under the same id, a new upload replaces the old
+                    // texture, also at another size.
                     sink.upload(thumbnail_texture_id(index), &image, false);
                     self.states[index] = ThumbState::Ready {
                         width: image.width(),
@@ -121,6 +135,8 @@ impl Thumbs {
                     self.uploaded.insert(index);
                     changed = true;
                 }
+                // The uploaded thumbnail stays.
+                _ if shown => {}
                 Fetch::NotLocal => self.states[index] = ThumbState::NotDownloaded,
                 Fetch::Failed(_) => self.states[index] = ThumbState::Failed,
                 Fetch::Pending | Fetch::Downloading | Fetch::Cancelled => {}

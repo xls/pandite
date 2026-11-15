@@ -15,6 +15,7 @@
 use crate::disk::Disk;
 use pandite_core::geom::initial_window_rect;
 use pandite_core::{Rect, Size};
+pub use pandite_ui::GallerySize;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -86,6 +87,24 @@ impl TextRecognition {
     }
 }
 
+/// The text form of a gallery size in the settings file.
+fn gallery_size_str(size: GallerySize) -> &'static str {
+    match size {
+        GallerySize::Small => "small",
+        GallerySize::Medium => "medium",
+        GallerySize::Large => "large",
+    }
+}
+
+fn parse_gallery_size(text: &str) -> Option<GallerySize> {
+    match text.to_ascii_lowercase().as_str() {
+        "small" => Some(GallerySize::Small),
+        "medium" => Some(GallerySize::Medium),
+        "large" => Some(GallerySize::Large),
+        _ => None,
+    }
+}
+
 /// Where the window was, in physical pixels of the virtual desktop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct WindowPlacement {
@@ -122,6 +141,9 @@ pub struct Settings {
     pub window: Option<WindowPlacement>,
     /// Show the gallery strip.
     pub gallery_visible: bool,
+    /// The size of the gallery thumbnails
+    /// (`gallery_size = small | medium | large`).
+    pub gallery_size: GallerySize,
     /// Show the information panel (`info_panel = on | off`).
     pub info_panel: bool,
     /// Interface colors.
@@ -160,6 +182,7 @@ impl Default for Settings {
         Self {
             window: None,
             gallery_visible: true,
+            gallery_size: GallerySize::Medium,
             info_panel: false,
             theme: ThemeChoice::System,
             first_open_fraction: 0.8,
@@ -205,6 +228,11 @@ impl Settings {
         }
         let _ = writeln!(s, "\n# Interface.");
         let _ = writeln!(s, "gallery_visible = {}", self.gallery_visible);
+        let _ = writeln!(
+            s,
+            "# Gallery thumbnails (Ctrl+Plus, Ctrl+Minus): small, medium or large."
+        );
+        let _ = writeln!(s, "gallery_size = {}", gallery_size_str(self.gallery_size));
         let _ = writeln!(s, "# The information panel (key I): on or off.");
         let _ = writeln!(
             s,
@@ -263,7 +291,10 @@ impl Settings {
     /// Parse the file text. Unknown keys are ignored and missing keys keep
     /// their defaults, so files from older and newer versions load. A line
     /// that is not `key = value`, a repeated key or a value that does not
-    /// fit its key makes the whole file invalid.
+    /// fit its key makes the whole file invalid. The one exception is an
+    /// unknown gallery size: it gives the default size and the rest of the
+    /// file loads, so a size that a newer version adds costs no other
+    /// setting.
     pub fn parse(text: &str) -> Result<Settings, String> {
         let mut s = Settings::default();
         let mut window = [None::<i64>; 4];
@@ -291,6 +322,9 @@ impl Settings {
                 "window_maximized" => maximized = parse_bool(value).ok_or_else(bad)?,
                 "window_fullscreen" => fullscreen = parse_bool(value).ok_or_else(bad)?,
                 "gallery_visible" => s.gallery_visible = parse_bool(value).ok_or_else(bad)?,
+                "gallery_size" => {
+                    s.gallery_size = parse_gallery_size(value).unwrap_or_default();
+                }
                 "info_panel" => s.info_panel = parse_bool(value).ok_or_else(bad)?,
                 "theme" => s.theme = ThemeChoice::parse(value).ok_or_else(bad)?,
                 "first_open_fraction" => {
@@ -550,6 +584,7 @@ mod tests {
                 fullscreen: false,
             }),
             gallery_visible: false,
+            gallery_size: GallerySize::Large,
             info_panel: true,
             theme: ThemeChoice::Light,
             first_open_fraction: 0.65,
@@ -592,6 +627,40 @@ mod tests {
         );
         assert_eq!(Settings::parse("").unwrap().ocr, TextRecognition::Auto);
         assert!(Settings::parse("ocr = maybe").is_err());
+    }
+
+    #[test]
+    fn gallery_size_parses_and_survives_a_bad_value() {
+        for (text, size) in [
+            ("small", GallerySize::Small),
+            ("medium", GallerySize::Medium),
+            ("LARGE", GallerySize::Large),
+        ] {
+            let s = Settings::parse(&format!("gallery_size = {text}")).unwrap();
+            assert_eq!(s.gallery_size, size, "{text}");
+            let back = Settings {
+                gallery_size: size,
+                ..Settings::default()
+            };
+            assert!(back
+                .to_text()
+                .contains(&format!("gallery_size = {}", text.to_ascii_lowercase())));
+        }
+        assert_eq!(Settings::default().gallery_size, GallerySize::Medium);
+        assert_eq!(
+            Settings::parse("").unwrap().gallery_size,
+            GallerySize::Medium
+        );
+        // An unknown size gives the default; the other keys still load.
+        let s = Settings::parse("gallery_size = huge\ntheme = light\nread_ahead = 5").unwrap();
+        assert_eq!(s.gallery_size, GallerySize::Medium);
+        assert_eq!((s.theme, s.read_ahead), (ThemeChoice::Light, 5));
+        assert_eq!(
+            Settings::parse("gallery_size =").unwrap().gallery_size,
+            GallerySize::Medium
+        );
+        // The key may still appear once only.
+        assert!(Settings::parse("gallery_size = small\ngallery_size = large").is_err());
     }
 
     #[test]

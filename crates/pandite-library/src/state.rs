@@ -78,10 +78,12 @@ pub(crate) enum Work {
     },
     /// Decode a read-ahead neighbor to cover `target` (screen size).
     Screen { path: PathBuf, target: (u32, u32) },
-    /// Make a thumbnail, from a cached full decode when `from` is set.
+    /// Make a thumbnail for `side`, from cached pixels of the file when
+    /// `from` is set.
     Thumb {
         path: PathBuf,
         from: Option<(Arc<Content>, Option<Stamp>)>,
+        side: u32,
     },
     /// List the folder of `target`.
     List { gen: u64, target: PathBuf },
@@ -111,6 +113,13 @@ pub(crate) enum Staged {
     Full(Content),
 }
 
+/// A cached thumbnail and the thumbnail size it was made for.
+#[derive(Clone)]
+pub(crate) struct Thumb {
+    pub image: ImageBuf,
+    pub side: u32,
+}
+
 /// A job in flight.
 struct Running {
     id: u64,
@@ -118,6 +127,8 @@ struct Running {
     cancel: CancelToken,
     plan_gen: u64,
     plan_pos: Option<usize>,
+    /// The thumbnail size a thumbnail job makes (0 for other jobs).
+    side: u32,
     downloading: bool,
     /// The file is local and being read (or was read): a full job of the
     /// current image in this state holds other jobs back.
@@ -240,7 +251,9 @@ pub(crate) struct State {
     full: Cache<Arc<Content>>,
     /// Screen-resolution images (read-ahead and quick first stages).
     screen: Cache<Reduced>,
-    thumbs: Cache<ImageBuf>,
+    /// Thumbnails. One made for another size than the current one is
+    /// stale: it shows until its new thumbnail replaces it.
+    thumbs: Cache<Thumb>,
     /// Thumbnails kept from an earlier library, waiting for the folder
     /// listing to check their files.
     kept: Option<KeptThumbnails>,
@@ -346,6 +359,52 @@ impl State {
         if self.cfg.screen.is_some() {
             self.cfg.screen = Some((size.0.max(1), size.1.max(1)));
         }
+    }
+
+    pub fn thumb_size(&self) -> u32 {
+        self.cfg.thumb_size
+    }
+
+    /// Make thumbnails for `side` from now on. Cached thumbnails of another
+    /// size become stale and are made again in plan order; kept thumbnails
+    /// of another size are dropped.
+    pub fn set_thumb_size(&mut self, side: u32) {
+        let side = side.max(1);
+        if side == self.cfg.thumb_size {
+            return;
+        }
+        self.cfg.thumb_size = side;
+        if self.kept.as_ref().is_some_and(|k| k.thumb_size != side) {
+            self.kept = None;
+        }
+        self.replan();
+    }
+
+    /// True when the cached thumbnail of `path` has the current size.
+    fn thumb_fresh(&self, path: &Path) -> bool {
+        self.thumbs
+            .get(path)
+            .is_some_and(|e| e.value.side == self.cfg.thumb_size)
+    }
+
+    /// The screen image of `path` when a thumbnail can be made from it: its
+    /// short side reaches the thumbnail size. A screen image of a panorama
+    /// can be too low for that.
+    fn screen_source(&self, path: &Path) -> Option<&Entry<Reduced>> {
+        let e = self.screen.get(path)?;
+        let image = &e.value.image;
+        (image.width().min(image.height()) >= self.cfg.thumb_size).then_some(e)
+    }
+
+    /// The stale thumbnail of `path` when the new one can be made from it:
+    /// the new size is not larger, or the old thumbnail holds its whole
+    /// source (it is smaller than the size it was made for).
+    fn stale_source(&self, path: &Path) -> Option<&ImageBuf> {
+        let e = self.thumbs.get(path)?;
+        let old = &e.value;
+        let whole = old.image.width().max(old.image.height()) < old.side;
+        (old.side != self.cfg.thumb_size && (self.cfg.thumb_size <= old.side || whole))
+            .then_some(&old.image)
     }
 
     fn thumb_wanted(&self, index: usize) -> bool {
@@ -520,7 +579,7 @@ impl State {
             return out_of_range(index);
         };
         if let Some(entry) = self.thumbs.get(path) {
-            return Fetch::Ready(entry.value.clone());
+            return Fetch::Ready(entry.value.image.clone());
         }
         if let Some(err) = self.thumb_errors.get(path) {
             return Fetch::Failed(Arc::clone(&err.error));
@@ -667,8 +726,12 @@ impl State {
                 .collect();
         }
         let (dir, paths, info) = list.into_parts();
-        // Kept thumbnails of another folder are dropped here.
-        let kept = self.kept.take().filter(|k| k.folder == dir);
+        // Kept thumbnails of another folder or size are dropped here.
+        let side = self.cfg.thumb_size;
+        let kept = self
+            .kept
+            .take()
+            .filter(|k| k.folder == dir && k.thumb_size == side);
         self.last_dir = Some(dir);
         self.replace_items(paths, new_current, true);
         let seeded = kept.map(|k| self.seed_thumbnails(k, &info));
@@ -699,6 +762,7 @@ impl State {
         info: &[FileInfo],
     ) -> Vec<(usize, PathBuf)> {
         let ranker = self.thumb_ranker();
+        let side = kept.thumb_size;
         let mut fresh: Vec<(Rank, usize, PathBuf, KeptThumbnail)> = kept
             .entries
             .into_iter()
@@ -716,7 +780,10 @@ impl State {
         for (rank, index, path, entry) in fresh {
             let cached = Entry {
                 bytes: entry.image.byte_size(),
-                value: entry.image,
+                value: Thumb {
+                    image: entry.image,
+                    side,
+                },
                 index,
                 stamp: Some(entry.stamp),
             };
@@ -732,7 +799,8 @@ impl State {
 
     /// The thumbnails of the folder for the next library, best ranked
     /// first (visible range, then nearest the current image) within the
-    /// thumbnail budget. Kept thumbnails not used yet come last.
+    /// thumbnail budget. Stale thumbnails are left out. Kept thumbnails not
+    /// used yet come last.
     pub fn export_thumbnails(&self) -> Option<KeptThumbnails> {
         let folder = self
             .last_dir
@@ -741,18 +809,23 @@ impl State {
         let thumbs = self.thumb_ranker();
         let full = self.full_ranker();
         let worst = ((usize::MAX, true), (usize::MAX, true));
+        let side = self.cfg.thumb_size;
         let mut candidates: Vec<((Rank, Rank), &Path, KeptThumbnail)> = self
             .thumbs
             .iter()
-            .filter(|(path, _)| path.parent() == Some(folder.as_path()))
+            .filter(|(path, e)| path.parent() == Some(folder.as_path()) && e.value.side == side)
             .filter_map(|(path, e)| {
                 let stamp = e.stamp.filter(|s| s.modified.is_some())?;
                 let key = (thumbs.rank(e.index), full.rank(e.index));
-                let image = e.value.clone();
+                let image = e.value.image.clone();
                 Some((key, path, KeptThumbnail { stamp, image }))
             })
             .collect();
-        if let Some(kept) = self.kept.as_ref().filter(|k| k.folder == folder) {
+        if let Some(kept) = self
+            .kept
+            .as_ref()
+            .filter(|k| k.folder == folder && k.thumb_size == side)
+        {
             candidates.extend(
                 kept.entries
                     .iter()

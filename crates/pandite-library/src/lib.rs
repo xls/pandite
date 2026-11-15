@@ -20,7 +20,10 @@
 //!   that are not stored locally (cloud placeholders) are read only when
 //!   the user opens them.
 //! - [`box_downscale`] is the built-in thumbnail filter; the application
-//!   may inject a better one through [`LibraryConfig::downscale`].
+//!   may inject a better one through [`LibraryConfig::downscale`], and its
+//!   own thumbnail shape through [`LibraryConfig::make_thumbnail`].
+//!   [`Library::set_thumbnail_size`] changes the thumbnail size while the
+//!   library runs; the old thumbnails stay until the new ones are made.
 //! - [`Library::export_thumbnails`] hands the thumbnails of the folder to
 //!   the next library ([`LibraryConfig::kept_thumbnails`]), which uses each
 //!   one whose file did not change instead of decoding it again.
@@ -52,5 +55,6 @@ pub use fs::{
 };
 pub use kept::{KeptThumbnail, KeptThumbnails};
 pub use library::{
-    DownscaleFn, Event, Fetch, Library, LibraryConfig, LoadTimings, Reduced, Stats, WakeFn,
+    DownscaleFn, Event, Fetch, Library, LibraryConfig, LoadTimings, Reduced, Stats, ThumbnailFn,
+    WakeFn,
 };

@@ -6,7 +6,7 @@
 //!
 //! - [`resize`]: size rules ([`ResizeSpec`]), the high-quality separable
 //!   resampler ([`resize()`], [`resize_with`]) and fast thumbnails
-//!   ([`thumbnail`]).
+//!   ([`thumbnail`], and [`cover_thumbnail`] for square gallery cells).
 //! - [`filter`]: the resampling filters ([`Filter`]).
 //! - [`transform`]: quarter-turn rotation, mirroring and cropping.
 //! - [`convert`]: pixel format conversion and the sRGB transfer curve.
@@ -29,7 +29,8 @@ pub use bulk::{
 pub use convert::{convert, linear_to_srgb, srgb_to_linear, to_rgba8};
 pub use filter::Filter;
 pub use resize::{
-    resize, resize_to_spec, resize_with, thumbnail, thumbnail_size, ResizeOptions, ResizeSpec,
+    cover_thumbnail, cover_thumbnail_size, resize, resize_to_spec, resize_with, thumbnail,
+    thumbnail_size, ResizeOptions, ResizeSpec,
 };
 pub use transform::{
     crop, flip_horizontal, flip_vertical, rotate, rotate180, rotate270, rotate90, PixelRect,

@@ -755,16 +755,19 @@ impl TextMeasure for Measure {
     }
 }
 
-/// Records texture uploads and removals.
+/// Records texture uploads with their pixel size, and removals.
 #[derive(Default)]
 pub struct Sink {
     pub uploads: Vec<TextureId>,
     pub removes: Vec<TextureId>,
+    /// The pixel size of each upload, in order.
+    pub sizes: Vec<(TextureId, (u32, u32))>,
 }
 
 impl TextureSink for Sink {
-    fn upload(&mut self, id: TextureId, _image: &ImageBuf, _alpha_mask: bool) {
+    fn upload(&mut self, id: TextureId, image: &ImageBuf, _alpha_mask: bool) {
         self.uploads.push(id);
+        self.sizes.push((id, (image.width(), image.height())));
     }
     fn remove(&mut self, id: TextureId) {
         self.removes.push(id);
@@ -843,6 +846,11 @@ pub struct Harness {
     pub auto_present: bool,
     /// The newest full-resolution content generation taken.
     last_full: Option<u64>,
+    /// The textures the renderer would hold after the frames so far, with
+    /// their pixel size.
+    pub textures: HashMap<TextureId, (u32, u32)>,
+    /// Every texture upload of the frames so far, in order.
+    pub uploads: Vec<(TextureId, (u32, u32))>,
     wake_rx: Receiver<()>,
 }
 
@@ -895,6 +903,8 @@ impl Harness {
             updates: Vec::new(),
             auto_present: true,
             last_full: None,
+            textures: HashMap::new(),
+            uploads: Vec::new(),
             wake_rx,
         }
     }
@@ -919,8 +929,15 @@ impl Harness {
     pub fn frame(&mut self) -> DrawList {
         let now = self.now;
         let mut sink = Sink::default();
+        self.app().sync_textures(now, &mut sink);
+        for id in &sink.removes {
+            self.textures.remove(id);
+        }
+        for (id, dims) in &sink.sizes {
+            self.textures.insert(*id, *dims);
+        }
+        self.uploads.extend(sink.sizes);
         let app = self.app();
-        app.sync_textures(now, &mut sink);
         let mut list = DrawList::new();
         app.frame(now, &Measure, &mut list);
         let mut taken = Vec::new();
@@ -1010,6 +1027,30 @@ impl Harness {
             self.pump();
             self.frame();
             if self.app.as_ref().unwrap().uploaded_thumbnails() >= n {
+                return true;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            match self.wake_rx.recv_timeout(deadline - now) {
+                Ok(()) | Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return false,
+            }
+        }
+    }
+
+    /// Draw frames until `pred` holds for [`Harness::textures`], sleeping
+    /// on the wake channel in between.
+    pub fn wait_textures(
+        &mut self,
+        mut pred: impl FnMut(&HashMap<TextureId, (u32, u32)>) -> bool,
+    ) -> bool {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            self.pump();
+            self.frame();
+            if pred(&self.textures) {
                 return true;
             }
             let now = Instant::now();
@@ -1328,8 +1369,9 @@ struct GateState {
     targets: Vec<(String, Option<(u32, u32)>)>,
 }
 
-/// The longest thumbnail side the core asks the library for.
-pub const THUMB_SIDE: u32 = 256;
+/// The thumbnail side the core asks the library for with the default
+/// settings at scale 1: a medium gallery cell.
+pub const THUMB_SIDE: u32 = 96;
 
 /// Decodes "STAGED <w> <h>" files (extension `stg`): a cheap reduced
 /// decode for a target size and a full decode of [`staged_pattern`], each
@@ -1416,12 +1458,27 @@ impl GatedDecoder {
     /// Names of the thumbnail decodes (target [`THUMB_SIDE`] square) so
     /// far, in start order.
     pub fn thumbnail_decodes(&self) -> Vec<String> {
+        self.thumbnail_decodes_at(THUMB_SIDE)
+    }
+
+    /// Names of the thumbnail decodes for a `side` square so far, in start
+    /// order.
+    pub fn thumbnail_decodes_at(&self, side: u32) -> Vec<String> {
         lock(&self.state)
             .targets
             .iter()
-            .filter(|(_, t)| *t == Some((THUMB_SIDE, THUMB_SIDE)))
+            .filter(|(_, t)| *t == Some((side, side)))
             .map(|(n, _)| n.clone())
             .collect()
+    }
+
+    /// Wait until a decode of `name` for a `side` square started.
+    pub fn wait_thumbnail_decode(&self, name: &str, side: u32) -> bool {
+        self.wait(|s| {
+            s.targets
+                .iter()
+                .any(|(n, t)| n == name && *t == Some((side, side)))
+        })
     }
 
     /// Full decodes of `name` that finished with an image.

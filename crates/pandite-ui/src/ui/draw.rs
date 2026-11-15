@@ -19,7 +19,7 @@ impl Ui {
     /// Call [`Ui::sync_textures`] first so icon textures exist.
     pub fn build(&mut self, ctx: &UiContext<'_>, measure: &dyn TextMeasure, out: &mut DrawList) {
         self.update(ctx);
-        let m = Metrics::new(ctx.scale_factor);
+        let m = Metrics::of(ctx);
         let theme = Theme::for_kind(ctx.theme);
         let content = self.content_rect(ctx);
         let loading = ctx.loading.filter(|l| l.elapsed >= metrics::LOADING_DELAY);
@@ -304,7 +304,10 @@ impl Ui {
             out.rect(cell, t.placeholder, radius);
             match ctx.thumbnail(i) {
                 ThumbState::Ready { width, height } if width > 0 && height > 0 => {
-                    // Cover the square cell, cropping the longer side.
+                    // Cover the square cell, cropping the longer side. A
+                    // square texture takes the whole cell: one of the cell
+                    // size (cells sit on whole pixels) maps 1:1, a smaller
+                    // one from a small image is scaled up.
                     let (w, h) = (width as f32, height as f32);
                     let uv = if w > h {
                         let u = h / w;

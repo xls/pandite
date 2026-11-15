@@ -3,7 +3,10 @@
 mod support;
 
 use pandite_core::{DrawCmd, Point, Rect};
-use pandite_ui::{Action, ActionKind, Icon, PointerButton, Theme, ThumbState, Ui, UiContext};
+use pandite_ui::{
+    Action, ActionKind, Command, GallerySize, Icon, Key, Modifiers, PointerButton, Theme,
+    ThumbState, Ui, UiContext, UiMode,
+};
 use support::*;
 
 fn gallery_ctx(count: usize, index: usize, thumbs: &'static [ThumbState]) -> UiContext<'static> {
@@ -127,17 +130,255 @@ fn gallery_draws_only_visible_items() {
         .iter()
         .any(|c| matches!(c, DrawCmd::Clip(Some(r)) if *r == strip)));
     // At twice the scale factor the strip and its cells are twice as big,
-    // and fewer items fit.
+    // and fewer items fit. The default cells are the medium ones.
     let mut hi = ctx;
     hi.scale_factor = 2.0;
     let mut ui2 = Ui::new();
     let list2 = frame(&mut ui2, &hi);
     let strip2 = panel(&ui2, &hi);
-    assert_eq!((strip.h, strip2.h), (84.0, 168.0));
+    assert_eq!(ctx.gallery_size, GallerySize::Medium);
+    assert_eq!((strip.h, strip2.h), (126.0, 252.0));
     let cell = |l: &pandite_core::DrawList| thumbnail_draws(l)[0].1.w;
-    assert_eq!((cell(&list), cell(&list2)), (64.0, 128.0));
-    assert_eq!((Ui::thumbnail_px(&ctx), Ui::thumbnail_px(&hi)), (64, 128));
+    assert_eq!((cell(&list), cell(&list2)), (96.0, 192.0));
+    assert_eq!((Ui::thumbnail_px(&ctx), Ui::thumbnail_px(&hi)), (96, 192));
     assert!(thumbnail_draws(&list2).len() < draws.len());
+}
+
+/// A wide, tall window so the strip shows at every size and scale.
+fn sized_ctx(size: GallerySize, scale: f32, thumbs: &'static [ThumbState]) -> UiContext<'static> {
+    let mut ctx = gallery_ctx(40, 5, thumbs);
+    ctx.window_size = pandite_core::Size::new(3000.0, 1800.0);
+    ctx.gallery_size = size;
+    ctx.scale_factor = scale;
+    ctx
+}
+
+#[test]
+fn gallery_sizes_set_cells_gaps_and_strip() {
+    // (size, scale, cell, gap, strip) in physical pixels: 64, 96 and 128
+    // logical pixel cells, the gap and the padding growing with the cell,
+    // each length rounded to whole pixels.
+    let table: [(GallerySize, f32, f32, f32, f32); 12] = [
+        (GallerySize::Small, 1.0, 64.0, 6.0, 84.0),
+        (GallerySize::Small, 1.25, 80.0, 8.0, 105.0),
+        (GallerySize::Small, 1.5, 96.0, 9.0, 126.0),
+        (GallerySize::Small, 2.0, 128.0, 12.0, 168.0),
+        (GallerySize::Medium, 1.0, 96.0, 9.0, 126.0),
+        (GallerySize::Medium, 1.25, 120.0, 11.0, 158.0),
+        (GallerySize::Medium, 1.5, 144.0, 14.0, 189.0),
+        (GallerySize::Medium, 2.0, 192.0, 18.0, 252.0),
+        (GallerySize::Large, 1.0, 128.0, 12.0, 168.0),
+        (GallerySize::Large, 1.25, 160.0, 15.0, 210.0),
+        (GallerySize::Large, 1.5, 192.0, 18.0, 252.0),
+        (GallerySize::Large, 2.0, 256.0, 24.0, 336.0),
+    ];
+    let theme = Theme::for_kind(image_ctx().theme);
+    for (size, scale, cell, gap, strip_h) in table {
+        let why = format!("{size:?} at {scale}");
+        let side = size.cell_px(scale);
+        assert_eq!(side as f32, cell, "{why}");
+        // Thumbnails made at the cell size: drawn pixel for pixel.
+        let thumbs = leak(vec![
+            ThumbState::Ready {
+                width: side,
+                height: side,
+            };
+            40
+        ]);
+        let ctx = sized_ctx(size, scale, thumbs);
+        assert_eq!(Ui::thumbnail_px(&ctx), side, "{why}");
+        let mut ui = Ui::new();
+        let list = frame(&mut ui, &ctx);
+        let strip = panel(&ui, &ctx);
+        assert_eq!(strip.h, strip_h, "{why}");
+        let draws = thumbnail_draws(&list);
+        assert!(draws.len() >= 3, "{why}");
+        for pair in draws.windows(2) {
+            let (a, b) = (pair[0].1, pair[1].1);
+            assert_eq!((a.w, a.h), (cell, cell), "{why}");
+            assert_eq!(b.x - a.right(), gap, "{why}");
+            // Whole pixels, so a texture of the cell size maps 1:1.
+            assert_eq!((a.x.fract(), a.y.fract()), (0.0, 0.0), "{why}");
+        }
+        // The cells sit in the middle of the strip: the padding above and
+        // below differs by at most a pixel.
+        let c = draws[0].1;
+        let (above, below) = (c.y - strip.y, strip.bottom() - c.bottom());
+        assert!((above - below).abs() <= 1.0, "{why}: {above} {below}");
+        // The whole texture covers the whole cell.
+        for cmd in &list.cmds {
+            if let DrawCmd::Image {
+                rect, texture, uv, ..
+            } = cmd
+            {
+                if pandite_ui::thumbnail_index(*texture).is_some() {
+                    assert_eq!(*uv, Rect::new(0.0, 0.0, 1.0, 1.0), "{why}");
+                    assert_eq!((rect.w, rect.h), (side as f32, side as f32), "{why}");
+                }
+            }
+        }
+        // The ring of the current image lies 2 logical pixels around its
+        // cell, inside the strip and clear of the next cell.
+        let current = draws.iter().find(|d| d.0 == 5).expect("current drawn").1;
+        let next = draws.iter().find(|d| d.0 == 6).expect("next drawn").1;
+        let ring = list
+            .cmds
+            .iter()
+            .find_map(|cmd| match cmd {
+                DrawCmd::Border { rect, color, .. }
+                    if *color == theme.accent && rect.contains(current.center()) =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .expect("the ring");
+        let out = (2.0 * scale).round();
+        assert_eq!(
+            ring,
+            Rect::new(
+                current.x - out,
+                current.y - out,
+                current.w + 2.0 * out,
+                current.h + 2.0 * out
+            ),
+            "{why}"
+        );
+        assert!(
+            ring.y >= strip.y && ring.bottom() <= strip.bottom(),
+            "{why}"
+        );
+        assert!(ring.right() < next.x, "{why}");
+    }
+}
+
+#[test]
+fn gallery_size_change_keeps_current_in_view() {
+    let thumbs = ready(300);
+    let mut ctx = gallery_ctx(300, 150, thumbs);
+    ctx.gallery_size = GallerySize::Small;
+    let mut ui = Ui::new();
+    frame(&mut ui, &ctx);
+    for (t, size) in [
+        (1000, GallerySize::Large),
+        (2000, GallerySize::Medium),
+        (3000, GallerySize::Small),
+    ] {
+        let mut c = at(ctx, ms(t));
+        c.gallery_size = size;
+        let list = frame(&mut ui, &c);
+        let strip = panel(&ui, &c);
+        let (_, r) = thumbnail_draws(&list)
+            .into_iter()
+            .find(|d| d.0 == 150)
+            .unwrap_or_else(|| panic!("current item not drawn at {size:?}"));
+        assert_eq!(r.w, size.cell(), "{size:?}");
+        assert!(
+            r.x >= strip.x && r.right() <= strip.right(),
+            "current item out of view at {size:?}: {r:?}"
+        );
+        assert!(ui.gallery_visible_range(&c).contains(&150));
+    }
+}
+
+#[test]
+fn thumbnail_size_commands() {
+    let theme = Theme::for_kind(image_ctx().theme);
+    // A window tall enough for the whole context menu below the pointer.
+    let tall = |size: GallerySize, visible: bool| {
+        let mut ctx = with_image(
+            UiContext {
+                window_size: pandite_core::Size::new(1280.0, 1000.0),
+                ..base_ctx()
+            },
+            4000,
+            3000,
+        );
+        ctx.gallery_size = size;
+        ctx.gallery_visible = visible;
+        ctx
+    };
+    let p = Point::new(500.0, 50.0);
+    let open_menu = |ui: &mut Ui, ctx: &UiContext<'_>| {
+        move_to(ui, ctx, p);
+        press(ui, ctx, p, PointerButton::Right);
+        release(ui, ctx, p, PointerButton::Right);
+        frame(ui, ctx)
+    };
+    let ctrl = Modifiers::CTRL;
+    for (size, larger, smaller) in [
+        (GallerySize::Small, true, false),
+        (GallerySize::Medium, true, true),
+        (GallerySize::Large, false, true),
+    ] {
+        for visible in [true, false] {
+            let ctx = tall(size, visible);
+            let (larger, smaller) = (larger && visible, smaller && visible);
+            let mut ui = Ui::new();
+            frame(&mut ui, &ctx);
+            let want = |on: bool, action: Action| if on { vec![action] } else { vec![] };
+            for k in [Key::Plus, Key::Equals] {
+                assert_eq!(
+                    key(&mut ui, &ctx, k, ctrl),
+                    want(larger, Action::LargerThumbnails),
+                    "Ctrl+{k:?} at {size:?}, visible {visible}"
+                );
+            }
+            assert_eq!(
+                key(&mut ui, &ctx, Key::Minus, ctrl),
+                want(smaller, Action::SmallerThumbnails),
+                "Ctrl+Minus at {size:?}, visible {visible}"
+            );
+            assert_eq!(ui.command_enabled(Command::LargerThumbnails, &ctx), larger);
+            assert_eq!(
+                ui.command_enabled(Command::SmallerThumbnails, &ctx),
+                smaller
+            );
+            // The menu shows both, grayed where they do nothing.
+            let list = open_menu(&mut ui, &ctx);
+            let color = |on: bool| Some(if on { theme.text } else { theme.text_disabled });
+            assert_eq!(text_color(&list, "Larger thumbnails"), color(larger));
+            assert_eq!(text_color(&list, "Smaller thumbnails"), color(smaller));
+            let picked = click_label(&mut ui, &ctx, "Larger thumbnails");
+            assert_eq!(picked, want(larger, Action::LargerThumbnails), "{size:?}");
+            if !larger {
+                assert_eq!(ui.mode(), UiMode::Modal, "a disabled entry keeps the menu");
+                press_key(&mut ui, &ctx, Key::Escape);
+            }
+            open_menu(&mut ui, &ctx);
+            let picked = click_label(&mut ui, &ctx, "Smaller thumbnails");
+            assert_eq!(picked, want(smaller, Action::SmallerThumbnails), "{size:?}");
+        }
+    }
+
+    // The entries follow the gallery strip entry, with no separator.
+    let ctx = tall(GallerySize::Medium, true);
+    let mut ui = Ui::new();
+    let list = open_menu(&mut ui, &ctx);
+    let y = |label: &str| {
+        text_rect_exact(&list, label)
+            .unwrap_or_else(|| panic!("{label} missing from the menu"))
+            .y
+    };
+    let rows = [
+        y("Gallery strip"),
+        y("Larger thumbnails"),
+        y("Smaller thumbnails"),
+        y("Full screen"),
+    ];
+    for pair in rows.windows(2) {
+        assert_eq!(pair[1] - pair[0], 28.0, "{rows:?}");
+    }
+    for keys in ["Ctrl++", "Ctrl+-"] {
+        assert!(text_rect_exact(&list, keys).is_some(), "{keys} shown");
+    }
+    press_key(&mut ui, &ctx, Key::Escape);
+    // The shortcut overlay lists both keys of the larger size.
+    press_key(&mut ui, &ctx, Key::F1);
+    let list = frame(&mut ui, &ctx);
+    assert!(text_rect_exact(&list, "Ctrl++ / Ctrl+=").is_some());
+    assert!(text_rect_exact(&list, "Larger thumbnails").is_some());
+    assert!(text_rect_exact(&list, "Smaller thumbnails").is_some());
 }
 
 #[test]
@@ -256,7 +497,8 @@ fn gallery_placeholder_for_missing_thumbnail() {
     });
     assert_eq!(uv, Some(Rect::new(0.25, 0.0, 0.5, 1.0)));
     let cell0 = draws[0].1;
-    let pitch = 64.0 + 6.0;
+    // Medium cells, the default: 96 pixels with 9 between them.
+    let pitch = 96.0 + 9.0;
     let cell = |i: usize| Rect::new(cell0.x + pitch * i as f32, cell0.y, cell0.w, cell0.h);
     let inside = |icon: Icon, i: usize| {
         icon_draws(&list, icon)

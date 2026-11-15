@@ -5,9 +5,9 @@ mod support;
 
 use pandite_core::{DisplayMode, DrawCmd, Point, Rect, Size};
 use pandite_ui::{
-    contrast, Action, ActionKind, Command, ConfirmRequest, CursorShape, Icon, InputEvent, Key,
-    Modifiers, PointerButton, Progress, Theme, ThemeKind, Ui, UiContext, UiMode, WheelDelta,
-    SHORTCUTS, ZOOM_STEP,
+    contrast, Action, ActionKind, Command, ConfirmRequest, CursorShape, GallerySize, Icon,
+    InputEvent, Key, Modifiers, PointerButton, Progress, Theme, ThemeKind, Ui, UiContext, UiMode,
+    WheelDelta, SHORTCUTS, ZOOM_STEP,
 };
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -191,13 +191,21 @@ fn f11_maps_to_fullscreen() {
     assert!(held.is_empty());
 
     // The other keys the gate names. Page Down and Page Up move by the
-    // thumbnails that fit whole in the 1280 pixel strip: 10 pixels of
-    // padding on each side, 64 pixel cells 70 pixels apart, so
-    // (1280 - 20 - 64) / 70 + 1 = 18.
-    assert_eq!(Ui::gallery_page(&ctx), 18);
+    // thumbnails that fit whole in the 1280 pixel strip. The default
+    // medium cells have 15 pixels of padding on each side and are 96
+    // pixels wide and 105 pixels apart, so (1280 - 30 - 96) / 105 + 1 = 11.
+    assert_eq!(Ui::gallery_page(&ctx), 11);
     let mut hidden = ctx;
     hidden.gallery_visible = false;
-    assert_eq!(Ui::gallery_page(&hidden), 18, "the hidden strip counts too");
+    assert_eq!(Ui::gallery_page(&hidden), 11, "the hidden strip counts too");
+    // Small cells: 10 pixels of padding, 64 pixel cells 70 pixels apart,
+    // (1280 - 20 - 64) / 70 + 1 = 18. Large cells: 20 pixels of padding,
+    // 128 pixel cells 140 pixels apart, (1280 - 40 - 128) / 140 + 1 = 8.
+    for (size, page) in [(GallerySize::Small, 18), (GallerySize::Large, 8)] {
+        let mut sized = ctx;
+        sized.gallery_size = size;
+        assert_eq!(Ui::gallery_page(&sized), page, "{size:?}");
+    }
     let mut narrow = ctx;
     narrow.window_size = Size::new(60.0, 800.0);
     assert_eq!(Ui::gallery_page(&narrow), 1, "never less than one image");
@@ -206,9 +214,9 @@ fn f11_maps_to_fullscreen() {
     let table: [(Key, Modifiers, Action); 11] = [
         (Key::Right, Modifiers::NONE, Action::Next),
         (Key::Space, Modifiers::NONE, Action::ToggleSelect(3)),
-        (Key::PageDown, Modifiers::NONE, Action::StepBy(18)),
+        (Key::PageDown, Modifiers::NONE, Action::StepBy(11)),
         (Key::Left, Modifiers::NONE, Action::Previous),
-        (Key::PageUp, Modifiers::NONE, Action::StepBy(-18)),
+        (Key::PageUp, Modifiers::NONE, Action::StepBy(-11)),
         (Key::Plus, Modifiers::SHIFT, Action::ZoomIn),
         (Key::Equals, Modifiers::NONE, Action::ZoomIn),
         (Key::Minus, Modifiers::NONE, Action::ZoomOut),
@@ -315,10 +323,11 @@ fn layout_scales_with_dpi() {
     };
     assert_eq!(size(&l1), Some(13.0));
     assert_eq!(size(&l2), Some(26.0));
-    // The gallery strip doubles in height and cell size.
+    // The gallery strip doubles in height and cell size (the default
+    // medium cells).
     let strip1 = 800.0 - ui1.content_rect(&ctx1).h;
     let strip2 = 1600.0 - ui2.content_rect(&ctx2).h;
-    assert_eq!((strip1, strip2), (84.0, 168.0));
+    assert_eq!((strip1, strip2), (126.0, 252.0));
     let cell = |list: &pandite_core::DrawList| {
         icon_draws(list, Icon::Picture)
             .first()
@@ -354,7 +363,7 @@ fn context_menu_lists_commands() {
     // A window tall enough for the whole menu below the pointer.
     let ctx = with_image(
         UiContext {
-            window_size: Size::new(1280.0, 960.0),
+            window_size: Size::new(1280.0, 1000.0),
             ..base_ctx()
         },
         4000,
@@ -393,6 +402,8 @@ fn context_menu_lists_commands() {
         Command::Previous,
         Command::Next,
         Command::ToggleGallery,
+        Command::LargerThumbnails,
+        Command::SmallerThumbnails,
         Command::Fullscreen,
         Command::Help,
         Command::Quit,
@@ -413,12 +424,16 @@ fn context_menu_lists_commands() {
         "Shift+M",
         "Del",
         "Shift+Del",
+        "Ctrl++",
+        "Ctrl+-",
     ] {
         assert!(
             text_rect_exact(&list, keys).is_some(),
             "shortcut {keys} shown"
         );
     }
+    // The whole menu fits below the pointer: the last entry shows.
+    assert!(text_rect_exact(&list, "Quit").is_some_and(|r| r.bottom() <= 1000.0));
     // The menu sits at the pointer.
     let open = text_rect_exact(&list, "Open...").unwrap();
     assert!(open.x > p.x && open.y > p.y && open.y < p.y + 40.0);

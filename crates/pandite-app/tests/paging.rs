@@ -1,8 +1,8 @@
 //! Page Down and Page Up move by one page of the gallery strip: the number
 //! of thumbnails that fit whole in the strip at the window width. At scale
-//! 1 the strip has 10 pixels of padding on each side and 64 pixel cells 70
-//! pixels apart, so a window `w` pixels wide holds
-//! `(w - 20 - 64) / 70 + 1` whole thumbnails (rounded down).
+//! 1 the default medium strip has 15 pixels of padding on each side and 96
+//! pixel cells 105 pixels apart, so a window `w` pixels wide holds
+//! `(w - 30 - 96) / 105 + 1` whole thumbnails (rounded down).
 
 mod support;
 
@@ -15,8 +15,8 @@ use support::*;
 const NONE: Modifiers = Modifiers::NONE;
 /// Images in the test folder.
 const COUNT: usize = 40;
-/// The page of the 1000 pixel wide test window: (1000 - 84) / 70 + 1.
-const PAGE_1000: usize = 14;
+/// The page of the 1000 pixel wide test window: (1000 - 126) / 105 + 1.
+const PAGE_1000: usize = 9;
 
 /// A folder of [`COUNT`] small images and a core on image `start`, with
 /// the folder listed.
@@ -128,7 +128,7 @@ fn page_up_moves_one_strip_page() {
 #[test]
 fn page_keys_clamp_at_ends() {
     // Without wrapping, a page past an end stops there, and there it stays.
-    let (_dir, paths, mut h) = open_at("page-clamp", 30, no_wrap());
+    let (_dir, paths, mut h) = open_at("page-clamp", 33, no_wrap());
     press_to(&mut h, &paths, Key::PageDown, COUNT - 1);
     h.key(Key::PageDown, NONE);
     assert_eq!(h.app().index(), Some(COUNT - 1));
@@ -140,7 +140,7 @@ fn page_keys_clamp_at_ends() {
 
     // With wrapping (the default), a page first stops at the end; from the
     // end it wraps to the other end, as a single step does.
-    let (_dir, paths, mut h) = open_at("page-wrap", 30, Settings::default());
+    let (_dir, paths, mut h) = open_at("page-wrap", 33, Settings::default());
     assert!(Settings::default().wrap_around);
     press_to(&mut h, &paths, Key::PageDown, COUNT - 1);
     press_to(&mut h, &paths, Key::PageDown, 0);
@@ -151,20 +151,27 @@ fn page_keys_clamp_at_ends() {
 #[test]
 fn page_size_follows_window_width() {
     let (_dir, paths, mut h) = open_at("page-width", 0, no_wrap());
-    // 500 pixels: (500 - 84) / 70 + 1 = 6.
+    // 500 pixels: (500 - 126) / 105 + 1 = 4.
     h.app().resized(500, 800, false);
-    press_to(&mut h, &paths, Key::PageDown, 6);
-    // 1400 pixels: (1400 - 84) / 70 + 1 = 19.
+    press_to(&mut h, &paths, Key::PageDown, 4);
+    // 1400 pixels: (1400 - 126) / 105 + 1 = 13.
     h.app().resized(1400, 800, false);
-    press_to(&mut h, &paths, Key::PageDown, 6 + 19);
-    press_to(&mut h, &paths, Key::PageUp, 6);
-    // At scale 2 every length doubles: (1400 - 168) / 140 + 1 = 9.
+    press_to(&mut h, &paths, Key::PageDown, 4 + 13);
+    press_to(&mut h, &paths, Key::PageUp, 4);
+    // At scale 2 every length doubles: (1400 - 252) / 210 + 1 = 6.
     h.app().scale_changed(2.0);
-    press_to(&mut h, &paths, Key::PageDown, 6 + 9);
+    press_to(&mut h, &paths, Key::PageDown, 4 + 6);
+    // Small cells: (1400 - 168) / 140 + 1 = 9. Large cells:
+    // (1400 - 336) / 280 + 1 = 4.
+    h.act(pandite_ui::Action::SmallerThumbnails);
+    press_to(&mut h, &paths, Key::PageDown, 4 + 6 + 9);
+    h.act(pandite_ui::Action::LargerThumbnails);
+    h.act(pandite_ui::Action::LargerThumbnails);
+    press_to(&mut h, &paths, Key::PageUp, 4 + 6 + 9 - 4);
     // A window narrower than one thumbnail still moves by one image.
     h.app().scale_changed(1.0);
     h.app().resized(40, 800, false);
-    press_to(&mut h, &paths, Key::PageDown, 6 + 9 + 1);
+    press_to(&mut h, &paths, Key::PageDown, 4 + 6 + 9 - 4 + 1);
 }
 
 #[test]
