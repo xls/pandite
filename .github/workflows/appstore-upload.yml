@@ -1,0 +1,71 @@
+# Uploads the Mac App Store package to App Store Connect.
+#
+# Runs after each successful Release run, and by hand with a Release run id.
+# The Release workflow builds the signed package as the artifact
+# "appstore-macos" (dist-appstore/pandite-<version>-macos-appstore.pkg).
+# The build then appears in App Store Connect, where the owner submits it.
+#
+# Secrets: PANDITE_APPLE_ID and PANDITE_APPLE_APP_PASSWORD (an app-specific
+# password). Without them, or without the artifact, the upload is skipped.
+
+name: App Store upload
+
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Release run id that holds the appstore-macos artifact"
+        required: true
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  upload:
+    name: Upload to App Store Connect
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.run_id || github.event.workflow_run.id }}
+      HAS_APPLE_ID: ${{ secrets.PANDITE_APPLE_ID != '' && secrets.PANDITE_APPLE_APP_PASSWORD != '' }}
+    steps:
+      - name: Find the App Store package artifact
+        id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          count=$(gh api "repos/${{ github.repository }}/actions/runs/$RUN_ID/artifacts" --jq '[.artifacts[] | select(.name == "appstore-macos" and .expired == false)] | length')
+          echo "appstore-macos artifacts in run $RUN_ID: $count"
+          echo "found=$([ "$count" -gt 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        if: steps.find.outputs.found == 'true' && env.HAS_APPLE_ID == 'true'
+        with:
+          name: appstore-macos
+          path: appstore
+          run-id: ${{ env.RUN_ID }}
+          github-token: ${{ github.token }}
+
+      - name: Upload with altool
+        if: steps.find.outputs.found == 'true' && env.HAS_APPLE_ID == 'true'
+        env:
+          APPLE_ID: ${{ secrets.PANDITE_APPLE_ID }}
+          APP_PASSWORD: ${{ secrets.PANDITE_APPLE_APP_PASSWORD }}
+        run: |
+          pkg=$(ls appstore/*.pkg | head -n 1)
+          [ -n "$pkg" ] || { echo "the artifact holds no .pkg file" >&2; exit 1; }
+          echo "package: $pkg"
+          xattr -cr "$pkg"
+          # The platform value is "macos" in current altool and "osx" in older versions.
+          if xcrun altool --help 2>&1 | grep -q 'macos'; then platform=macos; else platform=osx; fi
+          echo "platform: $platform"
+          xcrun altool --upload-app -f "$pkg" -t "$platform" -u "$APPLE_ID" -p "$APP_PASSWORD"
+
+      - name: Report a skipped upload
+        if: steps.find.outputs.found != 'true' || env.HAS_APPLE_ID != 'true'
+        run: echo "Upload skipped. Artifact found - ${{ steps.find.outputs.found }}, Apple ID secrets set - ${{ env.HAS_APPLE_ID }}."
