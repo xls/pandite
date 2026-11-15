@@ -7,7 +7,7 @@
 #   <cargo_target_dir>/aarch64-apple-darwin/release/pandite
 #   <cargo_target_dir>/x86_64-apple-darwin/release/pandite
 # Writes <out_dir>/pandite-<version>-universal-macos.dmg.
-# PANDITE_BUNDLE_ID overrides the placeholder bundle identifier.
+# PANDITE_BUNDLE_ID overrides the bundle identifier of Info.plist.
 #
 # Signature:
 #   PANDITE_MACOS_SIGN_IDENTITY  a "Developer ID Application: ..." identity in

@@ -174,7 +174,7 @@ The Release workflow does the same when these repository secrets exist:
 | `PANDITE_APPLE_APP_PASSWORD` | An app-specific password of the Apple ID |
 
 To change the
-placeholder bundle identifier, set `PANDITE_BUNDLE_ID` before you run the
+bundle identifier, set `PANDITE_BUNDLE_ID` before you run the
 script.
 
 ## Linux

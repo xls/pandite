@@ -4,9 +4,8 @@
   Info.plist of Pandite.app. packaging/macos/build-app.sh sets the two
   version keys from the release version and can override the bundle id.
 
-  PLACEHOLDER: net.rizos.pandite is a placeholder bundle identifier. Replace
-  it with a reverse-DNS identifier you own before you sign or notarize with
-  an Apple Developer ID (or set PANDITE_BUNDLE_ID for build-app.sh).
+  The bundle identifier net.darklabs.pandite is the App ID registered in the
+  Apple developer account. PANDITE_BUNDLE_ID for build-app.sh overrides it.
 
   The document types list every extension in packaging/extensions.txt.
   node packaging/check.mjs verifies this.
@@ -22,7 +21,7 @@
   <key>CFBundleIconFile</key>
   <string>pandite</string>
   <key>CFBundleIdentifier</key>
-  <string>net.rizos.pandite</string>
+  <string>net.darklabs.pandite</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
