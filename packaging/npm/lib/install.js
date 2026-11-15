@@ -11,6 +11,7 @@
 //   out(line), info(line)  result lines (stdout) and progress lines (stderr)
 
 import {
+  appendFileSync,
   chmodSync,
   cpSync,
   existsSync,
@@ -46,6 +47,11 @@ export const UNINSTALL_KEY = `Software\\Microsoft\\Windows\\CurrentVersion\\Unin
 export const SH = '/bin/sh';
 export const HDIUTIL = '/usr/bin/hdiutil';
 export const MARKER = 'installed.json';
+export const XDG_MIME = 'xdg-mime';
+export const DESKTOP_FILE = 'pandite.desktop';
+export const DEFAULT_QUESTION = 'Make Pandite the default viewer for the image formats that it opens? [y/N] ';
+export const FLOAT_QUESTION = 'Open Pandite as a floating window in Hyprland? [y/N] ';
+export const HYPRLAND_RULE = 'o.window("pandite", {tag = "+floating-window"})';
 const REGISTRY_ROOTS = ['HKCU', 'HKLM'];
 const UNINSTALL_WAIT_MS = 60_000;
 const UNINSTALL_POLL_MS = 1_000;
@@ -317,6 +323,129 @@ async function installTarball(ctx, { file, work, release }) {
   };
 }
 
+/** The MIME types of the desktop entry that the last install kept. */
+function desktopMimeTypes(ctx) {
+  const file = path.join(linuxKeep(ctx), 'share', 'applications', DESKTOP_FILE);
+  let text;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch {
+    return [];
+  }
+  const line = /^MimeType=(.*)$/m.exec(text);
+  return line
+    ? line[1]
+        .split(';')
+        .map((t) => t.trim())
+        .filter(Boolean)
+    : [];
+}
+
+/** Linux: make Pandite the default program of its MIME types. Never fails the install. */
+async function setDefaultViewer(ctx) {
+  const types = desktopMimeTypes(ctx);
+  if (types.length === 0) {
+    ctx.info('the desktop entry of Pandite lists no MIME types; the default viewer was not changed');
+    return false;
+  }
+  let r;
+  try {
+    r = await ctx.run(XDG_MIME, ['default', DESKTOP_FILE, ...types], { env: ctx.env, capture: true });
+  } catch (error) {
+    ctx.info(`cannot start ${XDG_MIME} (${error?.message ?? error}); the default viewer was not changed. Install xdg-utils and run: npx pandite --default`);
+    return false;
+  }
+  if (r.code !== 0) {
+    ctx.info(`${XDG_MIME} failed with ${exitText(r)}: ${lastLine(r.stderr) || lastLine(r.stdout)}; the default viewer was not changed`);
+    return false;
+  }
+  ctx.out(`Pandite is the default viewer for ${types.length} image formats.`);
+  return true;
+}
+
+/** True when xdg-mime is a program in PATH: the system uses the XDG defaults. */
+function hasXdgMime(ctx) {
+  return String(ctx.env.PATH ?? '')
+    .split(path.delimiter)
+    .some((dir) => dir !== '' && existsSync(path.join(dir, XDG_MIME)));
+}
+
+/** The Hyprland configuration that takes the floating window rule. */
+export function hyprlandFile(ctx) {
+  return path.join(ctx.home, '.config', 'hypr', 'hyprland.lua');
+}
+
+/** Linux with Hyprland: add the floating window rule once. Never fails the install. */
+function setFloating(ctx) {
+  const file = hyprlandFile(ctx);
+  let text;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch {
+    ctx.info(`${file} was not found; the floating window rule was not added`);
+    return false;
+  }
+  if (/^\s*o\.window\(\s*["']pandite["']/m.test(text)) {
+    ctx.out(`${file} has a window rule for Pandite already; it was not changed.`);
+    return true;
+  }
+  try {
+    appendFileSync(file, `${text === '' || text.endsWith('\n') ? '' : '\n'}${HYPRLAND_RULE}\n`);
+  } catch (error) {
+    ctx.info(`cannot write ${file}: ${error?.message ?? error}; the floating window rule was not added`);
+    return false;
+  }
+  ctx.out(`Added the floating window rule for Pandite to ${file}.`);
+  return true;
+}
+
+const yes = (answer) => /^y(es)?$/i.test(String(answer ?? '').trim());
+
+/**
+ * Linux, after an install: do what --default and --float name, ask on a
+ * first install when someone can answer, and ask nothing with --no-default
+ * and --no-float. The default viewer question comes only when the system
+ * has xdg-mime, the floating window question only when the Hyprland
+ * configuration exists.
+ */
+async function offerLinuxSetup(ctx, opts, fresh) {
+  if (ctx.platform !== 'linux') return;
+  const canAsk = fresh && Boolean(ctx.ask);
+  if (opts.makeDefault) await setDefaultViewer(ctx);
+  else if (!opts.noDefault && fresh && hasXdgMime(ctx)) {
+    if (!ctx.ask) ctx.info('to make Pandite the default image viewer, run: npx pandite --default');
+    else if (yes(await ctx.ask(DEFAULT_QUESTION))) await setDefaultViewer(ctx);
+  }
+  if (opts.float) setFloating(ctx);
+  else if (!opts.noFloat && canAsk && existsSync(hyprlandFile(ctx))) {
+    if (yes(await ctx.ask(FLOAT_QUESTION))) setFloating(ctx);
+  }
+}
+
+/** The lines of --dry-run for the Linux setup. */
+function linuxSetupPlan(ctx, opts, fresh) {
+  if (ctx.platform !== 'linux') return [];
+  const lines = [];
+  const canAsk = fresh && Boolean(ctx.ask);
+  if (opts.makeDefault) lines.push(`Would run ${XDG_MIME} default ${DESKTOP_FILE} with the MIME types of the desktop entry`);
+  else if (!opts.noDefault && canAsk && hasXdgMime(ctx)) lines.push('Would ask whether Pandite becomes the default image viewer');
+  if (opts.float) lines.push(`Would add the floating window rule for Pandite to ${hyprlandFile(ctx)}`);
+  else if (!opts.noFloat && canAsk && existsSync(hyprlandFile(ctx))) {
+    lines.push('Would ask whether Pandite opens as a floating window in Hyprland');
+  }
+  return lines;
+}
+
+/** --default or --float with nothing to install: set up the installed Pandite. */
+async function setupOfInstalled(ctx, opts) {
+  if (ctx.platform !== 'linux' || !(opts.makeDefault || opts.float)) return;
+  if (opts.dryRun) {
+    for (const line of linuxSetupPlan(ctx, opts, false)) ctx.out(line);
+    return;
+  }
+  await offerLinuxSetup(ctx, opts, false);
+}
+
 const INSTALL = { setup: installSetup, 'app-zip': installAppZip, dmg: installDmg, tarball: installTarball };
 
 /** The steps of each kind of release file, for --dry-run. */
@@ -359,6 +488,7 @@ async function deliver(ctx, release, opts, installed) {
     ctx.out(`Would download ${sums.url} and check the SHA-256 of ${pick.name} against it`);
     for (const line of plan(ctx, pick.kind, { file, temp, release, system })) ctx.out(line);
     ctx.out(`Would write the version to ${markerFile(ctx)}`);
+    for (const line of linuxSetupPlan(ctx, opts, !installed)) ctx.out(line);
     ctx.out('Dry run: nothing was downloaded, installed or changed.');
     return 0;
   }
@@ -386,6 +516,7 @@ async function deliver(ctx, release, opts, installed) {
     const done = await INSTALL[pick.kind](ctx, { file, work, release, system });
     writeMarker(ctx, { version: release.version, asset: pick.name, sha256, ...done.marker });
     ctx.out(done.message);
+    await offerLinuxSetup(ctx, opts, !installed);
     return 0;
   } finally {
     cleanup(work);
@@ -401,6 +532,7 @@ export async function installCommand(ctx, opts) {
   const installed = await installedState(ctx);
   if (opts.version && installed && !opts.force && compareInstalled(installed.version, opts.version) === 0) {
     ctx.out(alreadyInstalled(installed));
+    await setupOfInstalled(ctx, opts);
     return 0;
   }
   const release = await getRelease(opts.version, ctx.net);
@@ -408,6 +540,7 @@ export async function installCommand(ctx, opts) {
     const order = compareInstalled(installed.version, release.version);
     if (order === 0) {
       ctx.out(alreadyInstalled(installed));
+      await setupOfInstalled(ctx, opts);
       return 0;
     }
     if (order > 0) {
@@ -427,6 +560,7 @@ export async function updateCommand(ctx, opts) {
   const release = await getRelease(null, ctx.net);
   if (installed && !opts.force && compareInstalled(installed.version, release.version) >= 0) {
     ctx.out(`Pandite ${installed.version} is already up to date (latest release: ${release.version}).`);
+    await setupOfInstalled(ctx, opts);
     return 0;
   }
   if (installed) ctx.info(`updating Pandite ${installed.version ?? '(unknown version)'} to ${release.version}`);

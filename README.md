@@ -136,8 +136,11 @@ Extensions" from the Microsoft Store.
 
 ### Omarchy
 
-Do these steps after you install Pandite, for example with `npx pandite`.
-The desktop entry of Pandite is `pandite.desktop`.
+`npx pandite` asks about both steps on a first install and does them for
+you. For a Pandite that is installed, run `npx pandite --default --float`.
+
+To do the steps by hand, use these commands. The desktop entry of Pandite
+is `pandite.desktop`.
 
 1. Make Pandite the default viewer for every format that it opens:
 

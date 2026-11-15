@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import os from 'node:os';
 import process from 'node:process';
+import { createInterface } from 'node:readline';
 import { InstallerError, usageError } from './errors.js';
 import { installCommand, listCommand, uninstallCommand, updateCommand } from './install.js';
 import { checkSupported, detectGlibc } from './platform.js';
@@ -18,6 +19,7 @@ Installs Pandite, the fast offline image viewer, from its GitHub releases.
 
 Usage:
   npx pandite [install] [-v <version>] [--force] [--system] [--dry-run]
+              [--default | --no-default] [--float | --no-float]
   npx pandite update [--force] [--dry-run]
   npx pandite uninstall [--dry-run]
   npx pandite --list
@@ -37,6 +39,13 @@ Options:
                           change nothing
   --force                 install again when the same version is installed
   --system                macOS: install in /Applications, not ~/Applications
+  --default               Linux: make Pandite the default viewer for the image
+                          formats that it opens (xdg-mime), without a question
+  --no-default            Linux: do not ask about the default viewer
+  --float                 Linux with Hyprland: open Pandite as a floating
+                          window (adds one line to ~/.config/hypr/hyprland.lua),
+                          without a question
+  --no-float              Linux: do not ask about the floating window
   --installer-version     print the version of this installer
   -h, --help              print this help
 
@@ -48,6 +57,10 @@ const FLAGS = {
   '--dry-run': 'dryRun',
   '--force': 'force',
   '--system': 'system',
+  '--default': 'makeDefault',
+  '--no-default': 'noDefault',
+  '--float': 'float',
+  '--no-float': 'noFloat',
   '--installer-version': 'installerVersion',
   '-h': 'help',
   '--help': 'help',
@@ -62,6 +75,10 @@ export function parseArgs(argv) {
     dryRun: false,
     force: false,
     system: false,
+    makeDefault: false,
+    noDefault: false,
+    float: false,
+    noFloat: false,
     installerVersion: false,
     help: false,
   };
@@ -96,6 +113,11 @@ export function parseArgs(argv) {
       throw usageError(`unknown command "${arg}". This is the Pandite installer; it opens no images`);
     }
   }
+  if (opts.makeDefault && opts.noDefault) throw usageError('choose one of --default and --no-default');
+  if (opts.float && opts.noFloat) throw usageError('choose one of --float and --no-float');
+  if ((opts.makeDefault || opts.noDefault || opts.float || opts.noFloat) && opts.command === 'uninstall') {
+    throw usageError('uninstall takes no --default, --no-default, --float or --no-float');
+  }
   if (opts.version && (opts.command === 'update' || opts.command === 'uninstall')) {
     throw usageError(`${opts.command} takes no version. To install a named version, run: npx pandite install -v ${opts.version}`);
   }
@@ -118,6 +140,18 @@ export function runProcess(command, args, { env, capture = false } = {}) {
   });
 }
 
+/** Print `question` on the terminal and resolve the line the user types. */
+function askTerminal(question) {
+  return new Promise((resolve) => {
+    const rl = createInterface({ input: process.stdin, output: process.stderr });
+    rl.once('close', () => resolve(''));
+    rl.question(question, (answer) => {
+      resolve(answer);
+      rl.close();
+    });
+  });
+}
+
 /** The real system. Tests replace every key. */
 export function defaultDeps() {
   return {
@@ -131,6 +165,8 @@ export function defaultDeps() {
     fetch: globalThis.fetch,
     run: runProcess,
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    // A question to the user, or null when no one can answer (a pipe, CI).
+    ask: process.stdin.isTTY && process.stderr.isTTY ? askTerminal : null,
     now: () => Date.now(),
     out: (line) => process.stdout.write(`${line}\n`),
     err: (line) => process.stderr.write(`${line}\n`),
@@ -150,6 +186,7 @@ function makeContext(deps) {
     systemApplications: d.systemApplications,
     run: d.run,
     sleep: d.sleep,
+    ask: d.ask,
     net: { fetch: d.fetch, userAgent: `pandite-installer/${INSTALLER_VERSION}`, now: d.now },
     out: d.out,
     info: (line) => d.err(`pandite-installer: ${line}`),
@@ -174,6 +211,9 @@ export async function main(argv, deps = {}) {
     if (opts.list) return await listCommand(ctx);
     checkSupported(ctx);
     if (opts.system && ctx.platform !== 'darwin') throw usageError('--system works on macOS only');
+    if ((opts.makeDefault || opts.noDefault || opts.float || opts.noFloat) && ctx.platform !== 'linux') {
+      throw usageError('--default, --no-default, --float and --no-float work on Linux only');
+    }
     if (opts.command === 'update') return await updateCommand(ctx, opts);
     if (opts.command === 'uninstall') return await uninstallCommand(ctx, opts);
     return await installCommand(ctx, opts);

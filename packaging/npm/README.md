@@ -54,6 +54,29 @@ token. The installer sends no other data.
 
 Other systems get a "not supported" message.
 
+## Linux: default viewer and Hyprland
+
+On a first install in a terminal, the installer asks two questions. The
+answer `y` or `yes` does the step. Any other answer changes nothing.
+
+| Question | Asked when | Step |
+|---|---|---|
+| Make Pandite the default viewer? | `xdg-mime` is in `PATH` | Runs `xdg-mime default pandite.desktop` with every MIME type of the desktop entry. |
+| Open Pandite as a floating window in Hyprland? | `~/.config/hypr/hyprland.lua` exists | Adds the line `o.window("pandite", {tag = "+floating-window"})` at the end of that file. The line is added one time only. |
+
+The installer asks nothing on an update and nothing without a terminal.
+
+| Option | Effect |
+|---|---|
+| `--default` | Does the first step without a question. |
+| `--no-default` | Does not ask the first question. |
+| `--float` | Does the second step without a question. |
+| `--no-float` | Does not ask the second question. |
+
+To do a step for a Pandite that is installed, run `npx pandite --default`
+or `npx pandite --float`. `npx pandite uninstall` does not change the
+default viewer or the Hyprland file.
+
 The installer keeps the installed version in `installed.json` in its
 per-user folder:
 

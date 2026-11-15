@@ -21,7 +21,21 @@ import { untar, unzip } from './lib/archive.js';
 import { INSTALLER_VERSION, defaultDeps, main, parseArgs } from './lib/cli.js';
 import { InstallerError } from './lib/errors.js';
 import { parseSums } from './lib/github.js';
-import { HDIUTIL, MARKER, SETUP_ARGS, SH, UNINSTALL_ARGS, UNINSTALL_KEY, parseRegFile, regExe } from './lib/install.js';
+import {
+  DEFAULT_QUESTION,
+  DESKTOP_FILE,
+  FLOAT_QUESTION,
+  HDIUTIL,
+  HYPRLAND_RULE,
+  MARKER,
+  SETUP_ARGS,
+  SH,
+  UNINSTALL_ARGS,
+  UNINSTALL_KEY,
+  XDG_MIME,
+  parseRegFile,
+  regExe,
+} from './lib/install.js';
 import { download } from './lib/net.js';
 import { PLATFORMS, chooseAsset, dataDir } from './lib/platform.js';
 import { compareVersions, normalizeVersion } from './lib/version.js';
@@ -154,7 +168,7 @@ function linuxTarball(version) {
     { name: `${top}/` },
     { name: `${top}/pandite`, data: Buffer.from(`pandite ${version} linux`), mode: 0o755 },
     { name: `${top}/install.sh`, data: Buffer.from('#!/bin/sh\necho fake\n'), mode: 0o755 },
-    { name: `${top}/share/applications/pandite.desktop`, data: Buffer.from('[Desktop Entry]\n') },
+    { name: `${top}/share/applications/pandite.desktop`, data: Buffer.from('[Desktop Entry]\nName=Pandite\nMimeType=image/jpeg;image/png;image/tiff;image/x-sony-arw;\n') },
     { name: `${top}/share/icons/hicolor/48x48/apps/pandite.png`, data: Buffer.from('png48') },
     { name: `${top}/share/icons/hicolor/256x256/apps/pandite.png`, data: Buffer.from('png256') },
   ]);
@@ -282,7 +296,7 @@ function fakeSystem(platform, arch = 'x64', { glibc = platform === 'linux' ? '2.
   const calls = [];
   const out = [];
   const err = [];
-  const state = { setupExit: 0, uninstallerExit: 0, entryLingers: 0, lingering: null, setupFiles: [], sleeps: 0 };
+  const state = { setupExit: 0, uninstallerExit: 0, entryLingers: 0, lingering: null, setupFiles: [], sleeps: 0, xdgMimeExit: 0 };
 
   async function run(command, args, options = {}) {
     calls.push({ command, args: [...args], env: options.env, capture: Boolean(options.capture) });
@@ -346,6 +360,10 @@ function fakeSystem(platform, arch = 'x64', { glibc = platform === 'linux' ? '2.
       writeFileSync(bin, readFileSync(path.join(path.dirname(script), 'pandite')));
       return ok(`pandite installed in ${bin}\n`);
     }
+    if (command === XDG_MIME) {
+      assert.equal(platform, 'linux');
+      return { code: state.xdgMimeExit, signal: null, stdout: '', stderr: state.xdgMimeExit ? 'xdg-mime: no desktop\n' : '' };
+    }
     if (command === HDIUTIL) {
       assert.equal(platform, 'darwin');
       if (args[0] === 'attach') {
@@ -376,6 +394,8 @@ function fakeSystem(platform, arch = 'x64', { glibc = platform === 'linux' ? '2.
     sleep: async () => {
       state.sleeps += 1;
     },
+    // No one answers questions, as in a pipe. A test sets its own answers.
+    ask: null,
     now: () => NOW,
     out: (line) => out.push(line),
     err: (line) => err.push(line),
@@ -706,6 +726,137 @@ test('update: newer installs, same downloads nothing, not installed installs', a
   assert.equal(compareVersions('1.0.0+build.5', '1.0.0'), 0, 'build metadata does not count');
 });
 
+test('Linux: the default viewer and the Hyprland floating window', async () => {
+  const types = ['image/jpeg', 'image/png', 'image/tiff', 'image/x-sony-arw'];
+  const rule = `${HYPRLAND_RULE}\n`;
+  // A system with xdg-mime in PATH and a Hyprland configuration.
+  const desktop = (hyprland = 'local o = require("omarchy")\n') => {
+    const sys = fakeSystem('linux');
+    const bin = path.join(sys.home, 'bin');
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(path.join(bin, XDG_MIME), '');
+    sys.env.PATH = bin;
+    const hypr = path.join(sys.home, '.config', 'hypr', 'hyprland.lua');
+    if (hyprland !== null) {
+      mkdirSync(path.dirname(hypr), { recursive: true });
+      writeFileSync(hypr, hyprland);
+    }
+    const asked = [];
+    const answer = (answers) => {
+      sys.deps.ask = async (question) => {
+        asked.push(question);
+        return answers.shift() ?? '';
+      };
+    };
+    return { sys, hypr, asked, answer, mime: () => sys.calls.filter((c) => c.command === XDG_MIME) };
+  };
+  const gh = () => fakeGitHub([rel('0.2.0')], { latest: '0.2.0' });
+
+  // A first install asks both questions. Yes to both: xdg-mime gets every
+  // MIME type of the desktop entry, and the rule goes to the end of the file.
+  let d = desktop();
+  d.answer(['y', 'Yes']);
+  let r = await install(d.sys, gh(), []);
+  assert.equal(r.code, 0, r.err.join('\n'));
+  assert.deepEqual(d.asked, [DEFAULT_QUESTION, FLOAT_QUESTION]);
+  assert.deepEqual(d.mime().map((c) => c.args), [['default', DESKTOP_FILE, ...types]]);
+  assert.equal(readFileSync(d.hypr, 'utf8'), `local o = require("omarchy")\n${rule}`);
+  assert.ok(r.out.includes('Pandite is the default viewer for 4 image formats.'));
+  assert.ok(r.out.includes(`Added the floating window rule for Pandite to ${d.hypr}.`));
+
+  // No, an empty line and anything else leave the system as it was.
+  for (const answers of [['n', 'no'], ['', ''], ['maybe', 'x']]) {
+    d = desktop();
+    d.answer(answers);
+    assert.equal((await install(d.sys, gh(), [])).code, 0);
+    assert.equal(d.asked.length, 2);
+    assert.deepEqual(d.mime(), []);
+    assert.equal(readFileSync(d.hypr, 'utf8'), 'local o = require("omarchy")\n');
+  }
+
+  // Without Hyprland there is no floating window question; without
+  // xdg-mime there is no default viewer question.
+  d = desktop(null);
+  d.answer(['y']);
+  assert.equal((await install(d.sys, gh(), [])).code, 0);
+  assert.deepEqual(d.asked, [DEFAULT_QUESTION]);
+  assert.ok(!existsSync(d.hypr), 'no Hyprland file is made');
+  d = desktop();
+  d.sys.env.PATH = path.join(d.sys.home, 'empty');
+  d.answer(['y']);
+  assert.equal((await install(d.sys, gh(), [])).code, 0);
+  assert.deepEqual(d.asked, [FLOAT_QUESTION]);
+  assert.deepEqual(d.mime(), []);
+
+  // No terminal: no question and no change, and one line names --default.
+  d = desktop();
+  r = await install(d.sys, gh(), []);
+  assert.equal(r.code, 0);
+  assert.deepEqual(d.mime(), []);
+  assert.equal(readFileSync(d.hypr, 'utf8'), 'local o = require("omarchy")\n');
+  assert.ok(r.err.some((l) => l.includes('npx pandite --default')));
+
+  // --no-default and --no-float ask nothing.
+  d = desktop();
+  d.answer(['y', 'y']);
+  assert.equal((await install(d.sys, gh(), ['--no-default', '--no-float'])).code, 0);
+  assert.deepEqual(d.asked, []);
+  assert.deepEqual(d.mime(), []);
+
+  // --default and --float act without a question, also without a terminal.
+  d = desktop('-- mine');
+  r = await install(d.sys, gh(), ['--default', '--float']);
+  assert.equal(r.code, 0, r.err.join('\n'));
+  assert.deepEqual(d.mime().map((c) => c.args), [['default', DESKTOP_FILE, ...types]]);
+  assert.equal(readFileSync(d.hypr, 'utf8'), `-- mine\n${rule}`, 'a missing final newline is added');
+  // A second run with Pandite installed sets them again and adds no second rule.
+  d.answer(['y', 'y']);
+  r = await install(d.sys, gh(), ['--default', '--float']);
+  assert.equal(r.code, 0);
+  assert.deepEqual(d.asked, []);
+  assert.equal(d.mime().length, 2);
+  assert.equal(readFileSync(d.hypr, 'utf8'), `-- mine\n${rule}`);
+  assert.ok(r.out.some((l) => l.includes('has a window rule for Pandite already')));
+  // An update of an installed Pandite asks nothing.
+  const newer = fakeGitHub([rel('0.3.0'), rel('0.2.0')], { latest: '0.3.0' });
+  r = await install(d.sys, newer, ['update']);
+  assert.equal(r.code, 0, r.err.join('\n'));
+  assert.deepEqual(d.asked, []);
+  assert.equal(d.mime().length, 2);
+
+  // --float without the Hyprland file, and a failing xdg-mime, do not fail the install.
+  d = desktop(null);
+  d.sys.state.xdgMimeExit = 3;
+  r = await install(d.sys, gh(), ['--default', '--float']);
+  assert.equal(r.code, 0);
+  assert.ok(r.err.some((l) => l.includes('xdg-mime failed with exit code 3')), r.err.join('\n'));
+  assert.ok(r.err.some((l) => l.includes('was not found; the floating window rule was not added')));
+  assert.ok(existsSync(path.join(d.sys.home, '.local', 'bin', 'pandite')));
+
+  // The dry run names the questions and changes nothing.
+  d = desktop();
+  d.answer(['y', 'y']);
+  r = await install(d.sys, gh(), ['--dry-run']);
+  assert.ok(r.out.includes('Would ask whether Pandite becomes the default image viewer'));
+  assert.ok(r.out.includes('Would ask whether Pandite opens as a floating window in Hyprland'));
+  assert.deepEqual(d.asked, []);
+  r = await install(d.sys, gh(), ['--dry-run', '--default', '--float']);
+  assert.ok(r.out.includes(`Would run ${XDG_MIME} default ${DESKTOP_FILE} with the MIME types of the desktop entry`));
+  assert.ok(r.out.includes(`Would add the floating window rule for Pandite to ${d.hypr}`));
+  assert.deepEqual(d.mime(), []);
+  assert.equal(readFileSync(d.hypr, 'utf8'), 'local o = require("omarchy")\n');
+
+  // The options are for Linux, and each pair excludes itself.
+  for (const p of ['win32', 'darwin']) {
+    r = await install(fakeSystem(p), gh(), ['--default']);
+    assert.equal(r.code, 2);
+    assert.ok(r.err.join('\n').includes('work on Linux only'));
+  }
+  assert.throws(() => parseArgs(['--default', '--no-default']), /choose one of --default and --no-default/);
+  assert.throws(() => parseArgs(['--float', '--no-float']), /choose one of --float and --no-float/);
+  assert.throws(() => parseArgs(['uninstall', '--default']), /uninstall takes no --default/);
+});
+
 test('--dry-run prints the plan and downloads, installs and changes nothing', async () => {
   for (const p of PLATFORMS) {
     const gh = fakeGitHub([rel('0.2.0')], { latest: '0.2.0' });
@@ -948,7 +1099,7 @@ test('the command line', async () => {
     assert.ok(r.err[0].endsWith('Run "npx pandite --help" for the options.'));
   }
   assert.equal(gh.calls.length, 0);
-  assert.deepEqual(parseArgs([]), { command: null, version: null, list: false, dryRun: false, force: false, system: false, installerVersion: false, help: false });
+  assert.deepEqual(parseArgs([]), { command: null, version: null, list: false, dryRun: false, force: false, system: false, makeDefault: false, noDefault: false, float: false, noFloat: false, installerVersion: false, help: false });
   assert.equal(parseArgs(['--uninstall']).command, 'uninstall');
   assert.equal(parseArgs(['uninstall', '--uninstall']).command, 'uninstall');
   assert.equal(parseArgs(['-v', 'v0.1.0', '--force', '--system', '--dry-run']).version, '0.1.0');
