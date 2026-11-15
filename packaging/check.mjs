@@ -10,6 +10,10 @@
 //    logo it names exists with all scale-* (and targetsize-*) variants at
 //    the right pixel sizes
 //  - packaging/macos/Info.plist lists exactly the same extensions
+//  - packaging/macos/pandite.entitlements is plist text that turns on the
+//    App Sandbox with exactly the file and bookmark entitlements the code
+//    needs (no network), and build-app.sh signs with it only in its store
+//    and sandbox test modes, keeping the default Developer ID signature
 //  - packaging/linux/pandite.desktop covers the same extensions through its
 //    MIME types, minus the formats Linux cannot decode
 //  - every packaging script the workflows call exists, and every action is
@@ -179,6 +183,46 @@ for (const key of ['CFBundleExecutable', 'CFBundleIdentifier', 'CFBundleIconFile
 }
 if (!existsSync(join(ROOT, 'packaging/macos/pandite.icns'))) err('packaging/macos/pandite.icns is missing');
 else if (readFileSync(join(ROOT, 'packaging/macos/pandite.icns')).toString('latin1', 0, 4) !== 'icns') err('pandite.icns is not an icns file');
+
+// The App Sandbox entitlements of the store and sandbox test builds.
+const entRel = 'packaging/macos/pandite.entitlements';
+const ENTITLEMENTS = [
+  'com.apple.security.app-sandbox',
+  'com.apple.security.files.user-selected.read-write',
+  'com.apple.security.files.bookmarks.app-scope',
+];
+if (!existsSync(join(ROOT, entRel))) err(`${entRel} is missing`);
+else {
+  const ent = read(entRel).replace(/<!--[\s\S]*?-->/g, '');
+  const head = /^<\?xml version="1\.0" encoding="UTF-8"\?>\s*<!DOCTYPE plist PUBLIC "-\/\/Apple\/\/DTD PLIST 1\.0\/\/EN" "http:\/\/www\.apple\.com\/DTDs\/PropertyList-1\.0\.dtd">\s*/.exec(ent);
+  const body = head ? ent.slice(head[0].length) : '';
+  const dict = /^<plist version="1\.0">\s*<dict>((?:\s*<key>[^<]+<\/key>\s*(?:<true\/>|<false\/>))*)\s*<\/dict>\s*<\/plist>\s*$/.exec(body);
+  if (!dict) err(`${entRel} is not a plist of keys with true or false values`);
+  else {
+    const entries = [...dict[1].matchAll(/<key>([^<]+)<\/key>\s*<(true|false)\/>/g)].map((m) => [m[1], m[2]]);
+    const keys = new Set(entries.map(([k]) => k));
+    if (keys.size !== entries.length) err(`${entRel} names a key twice`);
+    if (!setEq(keys, new Set(ENTITLEMENTS))) err(`${entRel} must hold exactly [${ENTITLEMENTS}], found [${[...keys]}]`);
+    for (const [k, v] of entries) if (v !== 'true') err(`${entRel}: ${k} must be true`);
+    if (!entries.some(([k, v]) => k === 'com.apple.security.app-sandbox' && v === 'true')) err(`${entRel} does not turn on the App Sandbox`);
+    if ([...keys].some((k) => /network/.test(k))) err(`${entRel} has a network entitlement`);
+  }
+}
+const buildApp = read('packaging/macos/build-app.sh');
+for (const [what, line] of [
+  ['the entitlements file', 'ENTITLEMENTS="$HERE/pandite.entitlements"'],
+  ['the store mode only with PANDITE_MACOS_STORE=1', 'if [ "${PANDITE_MACOS_STORE:-}" = 1 ]; then'],
+  ['the sandbox test mode only with PANDITE_MACOS_SANDBOX_TEST=1', 'if [ "${PANDITE_MACOS_SANDBOX_TEST:-}" = 1 ]; then'],
+  ['the Developer ID signature without entitlements', 'codesign --force --options runtime --timestamp --sign "$IDENTITY" ${KEYCHAIN_ARGS[@]+"${KEYCHAIN_ARGS[@]}"} "$APP"'],
+  ['the ad hoc signature without entitlements', 'codesign --force --sign - --timestamp=none "$APP"'],
+  ['the provisioning profile in the store app', 'cp "$PROFILE" "$APP/Contents/embedded.provisionprofile"'],
+  ['the store package', 'productbuild --component "$APP" /Applications --sign "$INSTALLER_IDENTITY"'],
+  ['the store package name', 'PKG="$OUT/pandite-$VERSION-macos-appstore.pkg"'],
+]) {
+  if (!buildApp.includes(line)) err(`build-app.sh lacks ${what}: ${line}`);
+}
+const entitled = buildApp.split(/\r?\n/).filter((l) => /^\s*codesign\b.*--entitlements/.test(l));
+if (entitled.length !== 3) err(`build-app.sh signs with entitlements on ${entitled.length} lines, want 3 (store, sandbox test with and without an identity)`);
 
 // --------------------------------------------------------------------- Linux
 
@@ -550,7 +594,7 @@ if (/build-setup|pandite\.iss|ISCC|build-deb|build-rpm|rpmbuild|dpkg-deb|lintian
 
 // --------------------------------------------------------------------- ASCII
 
-const TEXT_EXT = /\.(mjs|js|sh|ps1|xml|plist|desktop|txt|md|yml|yaml|iss|spec|json)$/i;
+const TEXT_EXT = /\.(mjs|js|sh|ps1|xml|plist|entitlements|desktop|txt|md|yml|yaml|iss|spec|json)$/i;
 const isText = (f) => TEXT_EXT.test(f) || f.replace(/\\/g, '/').startsWith('packaging/linux/debian/');
 function walk(rel) {
   const abs = join(ROOT, rel);

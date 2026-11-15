@@ -1,8 +1,8 @@
 //! Frame building: turns the interface state into draw commands.
 
-use super::{Capture, CropButton, Target, Ui};
+use super::{Capture, CropButton, PromptPart, PromptRects, Target, Ui};
 use crate::command::{Command, SHORTCUTS};
-use crate::context::{Loading, ThumbState, UiContext};
+use crate::context::{Loading, Prompt, ThumbState, UiContext};
 use crate::crop::Handle;
 use crate::form::{self, FormPaint};
 use crate::icon::Icon;
@@ -759,10 +759,10 @@ impl Ui {
         out.clip(None);
     }
 
-    /// Toasts, the notice, and background progress, along the bottom of
-    /// the content area.
+    /// Toasts, the prompt, the notice, and background progress, along the
+    /// bottom of the content area.
     fn draw_bottom(
-        &self,
+        &mut self,
         ctx: &UiContext<'_>,
         measure: &dyn TextMeasure,
         m: &Metrics,
@@ -810,6 +810,12 @@ impl Ui {
                 y += line_h;
             }
             bottom = r.y - m.px(8.0);
+        }
+        self.prompt_rects = None;
+        if let Some(prompt) = ctx.prompt.filter(|_| self.prompt_wanted(ctx)) {
+            let rects = self.draw_prompt(&prompt, measure, m, t, content, bottom, out);
+            self.prompt_rects = Some(rects);
+            bottom = rects.panel.y - m.px(8.0);
         }
         for toast in self.toasts.iter().rev() {
             let age = self.now.saturating_sub(toast.start);
@@ -882,6 +888,85 @@ impl Ui {
                     out.rect(bar, t.accent, 0.0);
                 }
             }
+        }
+    }
+
+    /// The prompt: a folder mark, the message, the button and a close mark
+    /// on one line, centered above `bottom`. Returns where it went.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_prompt(
+        &self,
+        prompt: &Prompt<'_>,
+        measure: &dyn TextMeasure,
+        m: &Metrics,
+        t: &Theme,
+        content: Rect,
+        bottom: f32,
+        out: &mut DrawList,
+    ) -> PromptRects {
+        let font = m.text();
+        let h = m.px(40.0);
+        let pad = m.px(8.0);
+        let gap = m.px(10.0);
+        let ch = m.control_h();
+        let max_w = (content.w - 2.0 * m.margin()).max(m.px(40.0));
+        let button_w = (measure.measure(prompt.button, font).w + m.px(24.0)).ceil();
+        let chrome = pad + m.icon() + gap + gap + button_w + m.px(4.0) + ch + pad;
+        let text_w = measure
+            .measure(prompt.message, font)
+            .w
+            .min((max_w - chrome).max(0.0));
+        let w = (chrome + text_w).min(max_w).round();
+        let panel = Rect::new(
+            (content.x + (content.w - w) * 0.5).round(),
+            (bottom - h).round(),
+            w,
+            h,
+        );
+        let y = panel.y + ((h - ch) * 0.5).round();
+        let close = Rect::new(panel.right() - pad - ch, y, ch, ch);
+        let button = Rect::new(close.x - m.px(4.0) - button_w, y, button_w, ch);
+        paint::panel(
+            out,
+            panel,
+            t.panel,
+            t.border,
+            t.shadow,
+            m.radius(),
+            m.hairline(),
+        );
+        let ir = Rect::new(panel.x + pad, panel.y, m.icon(), h);
+        paint::icon(out, ir, Icon::Open, m.icon(), t.icon);
+        let tr = Rect::new(
+            ir.right() + gap,
+            panel.y,
+            (button.x - gap - ir.right() - gap).max(0.0),
+            h,
+        );
+        let shown = paint::elide_end(measure, prompt.message, font, tr.w);
+        paint::text_left(out, measure, tr, &shown, font, t.text);
+        let pressed = |part: PromptPart| {
+            self.hover == Target::Prompt(part)
+                && matches!(self.capture, Some((Capture::Prompt(p), _)) if p == part)
+        };
+        out.rect(button, t.accent, m.radius_small());
+        if pressed(PromptPart::Button) {
+            out.rect(button, t.pressed, m.radius_small());
+        } else if self.hover == Target::Prompt(PromptPart::Button) {
+            out.rect(button, t.hover, m.radius_small());
+        }
+        let label = paint::elide_end(measure, prompt.button, font, button.w - m.px(8.0));
+        paint::text_center(out, measure, button, &label, font, t.accent_text);
+        if pressed(PromptPart::Close) {
+            out.rect(close, t.pressed, m.radius_small());
+        } else if self.hover == Target::Prompt(PromptPart::Close) {
+            out.rect(close, t.hover, m.radius_small());
+        }
+        paint::icon(out, close, Icon::Close, m.icon(), t.icon);
+        PromptRects {
+            panel,
+            button,
+            close,
         }
     }
 

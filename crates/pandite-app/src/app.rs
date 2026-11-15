@@ -20,6 +20,7 @@ use crate::disk::Disk;
 use crate::edit::{self, Edit, EditStack, Undo};
 use crate::info::{self, FileReport};
 use crate::platform::{Clipboard, DialogKind, Dialogs, Filter, Waker, WindowControl};
+use crate::sandbox::{self, Refused, Session, Store};
 use crate::settings::{self, Settings, TextRecognition, ThemeChoice, WindowPlacement};
 use crate::trash::{TRASH_NAME, TRASH_TITLE};
 use jobs::{Copied, CopyJob, DeleteJob, MoveJob, Outbox, Removal, RemoveMode};
@@ -32,7 +33,7 @@ use pandite_library::{
 };
 use pandite_ui::{
     Action, BulkJob, BulkSource, ConfirmRequest, CursorShape, EncoderInfo, GallerySize, ImageInfo,
-    InfoRow, InputEvent, Loading, Progress, TextView, ThemeKind, ThumbState, Ui, UiContext,
+    InfoRow, InputEvent, Loading, Progress, Prompt, TextView, ThemeKind, ThumbState, Ui, UiContext,
     ZOOM_STEP,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -116,6 +117,13 @@ pub(crate) enum Msg {
         id: u64,
         files: Vec<(PathBuf, bool)>,
     },
+    /// The grants were checked for the refused folder `dir`.
+    AccessChecked { dir: PathBuf, covered: bool },
+    /// The grant for the folder `dir` was kept, or why not.
+    Granted {
+        dir: PathBuf,
+        result: Result<(), String>,
+    },
 }
 
 /// What the shell must put on screen as content.
@@ -188,6 +196,10 @@ pub struct Platform {
     pub window: Box<dyn WindowControl>,
     /// Wakes the event loop from any thread.
     pub waker: Waker,
+    /// The folder grants of the macOS App Sandbox ([`sandbox::active`]).
+    /// `None` outside the sandbox: then no folder is asked for and no
+    /// grant is kept.
+    pub sandbox: Option<Arc<Store>>,
 }
 
 /// How the core starts.
@@ -358,6 +370,8 @@ enum DialogPurpose {
     MoveTo(Vec<PathBuf>),
     /// The folder for these files to be copied into.
     CopyTo(Vec<PathBuf>),
+    /// A folder that holds this refused image folder, to allow it.
+    Allow(PathBuf),
 }
 
 /// A save waiting for its confirmation or for running edits.
@@ -511,6 +525,14 @@ enum AutoSize {
     Done,
 }
 
+/// Folder access in the macOS App Sandbox.
+struct Access {
+    /// The grants, shared with the jobs that use them.
+    store: Arc<Store>,
+    /// The folder question of this session.
+    session: Session,
+}
+
 /// Everything except the interface, so a [`UiContext`] can borrow it while
 /// the [`Ui`] is borrowed mutably.
 struct State {
@@ -585,6 +607,8 @@ struct State {
     /// Folder indices of the selected files, ascending: what the interface
     /// shows.
     selected: Vec<usize>,
+    /// Folder access in the macOS App Sandbox; `None` outside it.
+    access: Option<Access>,
     bulk: Option<BulkRun>,
     /// The image copy on a worker.
     copying: Option<CopyRun>,
@@ -767,6 +791,10 @@ impl App {
             trash_check: None,
             selection: Vec::new(),
             selected: Vec::new(),
+            access: platform.sandbox.map(|store| Access {
+                store,
+                session: Session::default(),
+            }),
             bulk: None,
             copying: None,
             copy_wanted: None,
@@ -980,6 +1008,12 @@ impl App {
     /// The persistent message, when one shows.
     pub fn notice(&self) -> Option<&str> {
         self.st.notice.as_deref()
+    }
+
+    /// In the macOS App Sandbox: the folder the prompt asks the user to
+    /// allow, while it shows. Always `None` outside the sandbox.
+    pub fn access_prompt(&self) -> Option<&Path> {
+        self.st.access_prompt().map(|(_, dir)| dir)
     }
 
     /// Gallery thumbnail states.
@@ -1265,6 +1299,7 @@ impl App {
                 }
                 None => Handled::Ignored,
             },
+            Action::PromptResult { id, accepted } => st.prompt_answered(id, accepted),
             Action::Quit => {
                 st.exit = true;
                 Handled::Done
@@ -1533,6 +1568,9 @@ impl App {
                     DialogPurpose::CopyTo(files) => {
                         st.move_target_chosen(files, paths[0].clone(), true, &mut self.ui, now);
                     }
+                    DialogPurpose::Allow(dir) => {
+                        st.allow_chosen(dir, paths[0].clone(), &mut self.ui, now)
+                    }
                 }
             }
             Msg::EditDone {
@@ -1640,6 +1678,18 @@ impl App {
             Msg::FileCopied { id, path, result } => {
                 st.moved(id, &path, true, result, &mut self.ui, now)
             }
+            Msg::AccessChecked { dir, covered } => st.access_checked(dir, covered),
+            Msg::Granted { dir, result } => {
+                if let Err(why) = result {
+                    self.ui.toast(
+                        format!(
+                            "Pandite cannot keep access to {} for the next start: {why}",
+                            file_name(&dir)
+                        ),
+                        now,
+                    );
+                }
+            }
         }
     }
 }
@@ -1696,6 +1746,11 @@ fn context<'a>(st: &'a State, ui: &Ui, now: Duration) -> UiContext<'a> {
             over_image: st.shown.is_some(),
         }),
         notice: st.notice.as_deref(),
+        prompt: st.access_prompt().map(|(id, _)| Prompt {
+            id,
+            message: sandbox::ALLOW_MESSAGE,
+            button: sandbox::ALLOW_BUTTON,
+        }),
         encoders: &st.encoders,
         text_enabled: st.text.active(),
         text: None,
@@ -1965,6 +2020,9 @@ impl State {
             index: 0,
         });
         self.folder = path.parent().map(Path::to_path_buf);
+        if let (Some(access), Some(dir)) = (&mut self.access, &self.folder) {
+            access.session.entered(dir);
+        }
         // Another folder starts with nothing selected; a file of the same
         // folder keeps the selection.
         let same_folder = match (
@@ -2263,6 +2321,7 @@ impl State {
                         }
                     }
                 }
+                self.check_access();
             }
             Event::Reduced { path, .. } => {
                 let Some(target) = self.target.clone() else {
@@ -3481,6 +3540,130 @@ impl State {
         }
     }
 
+    // ----- folder access in the App Sandbox ------------------------------------
+
+    /// The prompt on screen: its id and the folder it asks for. It shows
+    /// while that folder is the folder on screen.
+    fn access_prompt(&self) -> Option<(u64, &Path)> {
+        let (id, dir) = self.access.as_ref()?.session.asking()?;
+        self.folder
+            .as_deref()
+            .is_some_and(|f| same_path(f, dir))
+            .then_some((id, dir))
+    }
+
+    /// After a folder listing: a refused folder is checked against the
+    /// grants on a worker (they may still be loading), and a listed one
+    /// ends the question.
+    fn check_access(&mut self) {
+        let Some(access) = &mut self.access else {
+            return;
+        };
+        let Some(dir) = self.folder.clone() else {
+            return;
+        };
+        if self.library.listing_error() != Some(std::io::ErrorKind::PermissionDenied) {
+            access.session.listed(&dir);
+            return;
+        }
+        let store = Arc::clone(&access.store);
+        let out = self.out.clone();
+        let _ = jobs::spawn("pandite-access", move || {
+            let covered = store.with(|g| g.covers(&dir));
+            out.send(Msg::AccessChecked { dir, covered });
+        });
+    }
+
+    /// The grants were checked for the refused folder `dir`: list it again
+    /// when a grant covers it, or else ask the user. Nothing happens when
+    /// another folder is on screen now or the folder listed meanwhile.
+    fn access_checked(&mut self, dir: PathBuf, covered: bool) {
+        let Some(access) = &mut self.access else {
+            return;
+        };
+        let current = self.folder.as_deref().is_some_and(|f| same_path(f, &dir));
+        let refused = self.library.listing_error() == Some(std::io::ErrorKind::PermissionDenied);
+        if !current || !refused {
+            return;
+        }
+        if access.session.refused(&dir, covered) == Refused::ListAgain {
+            self.library.refresh();
+        }
+    }
+
+    /// The prompt was answered: the button opens the folder picker at the
+    /// image folder; the close mark and Escape dismiss the question for
+    /// that folder for this session.
+    fn prompt_answered(&mut self, id: u64, accepted: bool) -> Handled {
+        let Some(access) = &mut self.access else {
+            return Handled::Ignored;
+        };
+        if !accepted {
+            return match access.session.dismiss(id) {
+                Some(_) => Handled::Done,
+                None => Handled::Ignored,
+            };
+        }
+        let Some(dir) = access.session.folder_of(id).map(Path::to_path_buf) else {
+            return Handled::Ignored;
+        };
+        let kind = DialogKind::PickFolder {
+            start_dir: Some(dir.clone()),
+            title: sandbox::ALLOW_TITLE.into(),
+        };
+        self.open_dialog(DialogPurpose::Allow(dir), kind);
+        Handled::Done
+    }
+
+    /// The user chose `chosen` in the folder picker of the prompt for the
+    /// image folder `dir`. A folder that holds `dir` is kept as a grant on
+    /// a worker, and `dir` is listed again at once: the system panel gave
+    /// access for this session. Another folder changes nothing.
+    fn allow_chosen(&mut self, dir: PathBuf, chosen: PathBuf, ui: &mut Ui, now: Duration) {
+        let Some(access) = &self.access else {
+            return;
+        };
+        if !sandbox::contains(&chosen, &dir) {
+            ui.toast(
+                "Choose the folder of the image, or a folder that holds it",
+                now,
+            );
+            return;
+        }
+        let store = Arc::clone(&access.store);
+        let disk = Arc::clone(&self.disk);
+        let out = self.out.clone();
+        let _ = jobs::spawn("pandite-access", move || {
+            let result = store.with(|g| g.add(&chosen, &*disk));
+            out.send(Msg::Granted {
+                dir: chosen,
+                result,
+            });
+        });
+        if self.folder.as_deref().is_some_and(|f| same_path(f, &dir)) {
+            self.library.refresh();
+        }
+    }
+
+    /// Keep a grant for the folder of a move or a copy, chosen in the
+    /// system panel, so later sessions may use it too. Nothing when a
+    /// grant covers it already.
+    fn keep_access(&self, dir: &Path) {
+        let Some(access) = &self.access else {
+            return;
+        };
+        let store = Arc::clone(&access.store);
+        let disk = Arc::clone(&self.disk);
+        let out = self.out.clone();
+        let dir = dir.to_path_buf();
+        let _ = jobs::spawn("pandite-access", move || {
+            let added = store.with(|g| (!g.covers(&dir)).then(|| g.add(&dir, &*disk)));
+            if let Some(result) = added {
+                out.send(Msg::Granted { dir, result });
+            }
+        });
+    }
+
     // ----- moving and copying files ------------------------------------------
 
     /// Move to, or with `copy` Copy to: ask for a folder for the selected
@@ -3536,6 +3719,7 @@ impl State {
     ) {
         self.settings.last_move_dir = Some(into.clone());
         self.save_settings_soon();
+        self.keep_access(&into);
         let home = |f: &PathBuf| f.parent().is_some_and(|p| same_path(p, &into));
         if files.iter().all(home) {
             let who = if files.len() == 1 {

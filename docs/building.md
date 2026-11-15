@@ -157,6 +157,9 @@ accepts. For the Store identity values and for signing, see
 Without more settings, the script signs the app ad hoc and does not notarize
 it. macOS then warns the user before the first start.
 
+For the Mac App Store package and the App Sandbox test build, see
+[mac-app-store.md](mac-app-store.md).
+
 To sign with a Developer ID, set `PANDITE_MACOS_SIGN_IDENTITY` to the name of
 a "Developer ID Application" identity in your keychain. To notarize also, set
 `PANDITE_APPLE_ID`, `PANDITE_APPLE_TEAM_ID` and `PANDITE_APPLE_APP_PASSWORD`
@@ -174,7 +177,7 @@ The Release workflow does the same when these repository secrets exist:
 | `PANDITE_APPLE_APP_PASSWORD` | An app-specific password of the Apple ID |
 
 To change the
-placeholder bundle identifier, set `PANDITE_BUNDLE_ID` before you run the
+bundle identifier, set `PANDITE_BUNDLE_ID` before you run the
 script.
 
 ## Linux

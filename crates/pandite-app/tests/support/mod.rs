@@ -13,6 +13,7 @@ use pandite_app::disk::{Disk, StdDisk};
 use pandite_app::platform::{
     Clipboard, DialogKind, DialogReply, Dialogs, ImageWriter, WindowControl,
 };
+use pandite_app::sandbox::Store;
 use pandite_app::settings::Settings;
 use pandite_core::{
     CancelToken, Content, ContentKind, DecodeOptions, DecoderProvider, DrawCmd, DrawList,
@@ -197,6 +198,9 @@ struct DiskState {
     /// A file another program writes at the start of the next copy: its
     /// path and its bytes.
     appear: Option<(PathBuf, Vec<u8>)>,
+    /// Folders, by name, whose listing is refused as the App Sandbox
+    /// refuses a folder the user did not allow.
+    refuse_listing: HashSet<String>,
 }
 
 /// The folder the fake trash of [`TestDisk`] moves a file into: a hidden
@@ -308,6 +312,17 @@ impl TestDisk {
     /// Another program writes `bytes` at `path` as the next copy starts.
     pub fn appear_on_copy(&self, path: &Path, bytes: &[u8]) {
         lock(&self.state).appear = Some((path.to_path_buf(), bytes.to_vec()));
+    }
+
+    /// Listing the folder `name` fails with
+    /// [`io::ErrorKind::PermissionDenied`], until
+    /// [`TestDisk::allow_listing`].
+    pub fn refuse_listing(&self, folder: &str) {
+        lock(&self.state).refuse_listing.insert(folder.into());
+    }
+
+    pub fn allow_listing(&self, folder: &str) {
+        lock(&self.state).refuse_listing.remove(folder);
     }
 
     /// The operations called on `name`, in order.
@@ -452,7 +467,14 @@ impl FileAccess for TestDisk {
     /// Stalls like a read when [`TestDisk::stall_read`] names the folder.
     fn list_dir(&self, dir: &Path) -> io::Result<Vec<FileInfo>> {
         let name = self.enter("list_dir", dir, true);
-        let r = StdDisk.list_dir(dir);
+        let r = if lock(&self.state).refuse_listing.contains(&name) {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Operation not permitted",
+            ))
+        } else {
+            StdDisk.list_dir(dir)
+        };
         self.leave("list_dir", name);
         r
     }
@@ -795,6 +817,8 @@ pub struct Config {
     pub registry: Option<Arc<Registry>>,
     /// Thumbnails kept from an earlier session.
     pub thumbnails: Option<KeptThumbnails>,
+    /// The folder grants of the App Sandbox; `None` runs outside it.
+    pub sandbox: Option<Arc<Store>>,
 }
 
 impl Default for Config {
@@ -811,6 +835,7 @@ impl Default for Config {
             work_area: Some(Rect::new(0.0, 0.0, 1920.0, 1040.0)),
             registry: None,
             thumbnails: None,
+            sandbox: None,
         }
     }
 }
@@ -880,6 +905,7 @@ impl Harness {
             waker: Arc::new(move || {
                 let _ = lock(&tx).send(());
             }),
+            sandbox: config.sandbox,
         };
         let startup = Startup {
             registry: Arc::clone(&registry),

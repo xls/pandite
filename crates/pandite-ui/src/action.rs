@@ -318,6 +318,15 @@ pub enum Action {
         /// True when the user confirmed.
         accepted: bool,
     },
+    /// The answer to the [`crate::Prompt`] of [`crate::UiContext::prompt`]:
+    /// its button (`accepted`), or its close mark or Escape (not
+    /// `accepted`).
+    PromptResult {
+        /// The prompt id.
+        id: u64,
+        /// True for the button.
+        accepted: bool,
+    },
     /// Close the application.
     Quit,
 }
@@ -418,11 +427,13 @@ pub enum ActionKind {
     LargerThumbnails,
     /// [`Action::SmallerThumbnails`].
     SmallerThumbnails,
+    /// [`Action::PromptResult`].
+    PromptResult,
 }
 
 impl ActionKind {
     /// Every kind, in declaration order.
-    pub const ALL: [ActionKind; 46] = [
+    pub const ALL: [ActionKind; 47] = [
         ActionKind::Open,
         ActionKind::SaveAs,
         ActionKind::CopyPath,
@@ -469,6 +480,7 @@ impl ActionKind {
         ActionKind::CopyTo,
         ActionKind::LargerThumbnails,
         ActionKind::SmallerThumbnails,
+        ActionKind::PromptResult,
     ];
 
     /// The position of this kind in [`ActionKind::ALL`]. The match is
@@ -521,6 +533,7 @@ impl ActionKind {
             ActionKind::CopyTo => 43,
             ActionKind::LargerThumbnails => 44,
             ActionKind::SmallerThumbnails => 45,
+            ActionKind::PromptResult => 46,
         }
     }
 }
@@ -574,6 +587,7 @@ impl Action {
             Action::SmallerThumbnails => ActionKind::SmallerThumbnails,
             Action::ToggleInfo => ActionKind::ToggleInfo,
             Action::ConfirmResult { .. } => ActionKind::ConfirmResult,
+            Action::PromptResult { .. } => ActionKind::PromptResult,
             Action::Quit => ActionKind::Quit,
         }
     }

@@ -78,6 +78,10 @@ fn sample(kind: ActionKind, dir: &std::path::Path) -> Action {
         ActionKind::CopyTo => Action::CopyTo,
         ActionKind::LargerThumbnails => Action::LargerThumbnails,
         ActionKind::SmallerThumbnails => Action::SmallerThumbnails,
+        ActionKind::PromptResult => Action::PromptResult {
+            id: 1,
+            accepted: true,
+        },
     }
 }
 
@@ -131,6 +135,7 @@ fn kind_of(action: &Action) -> ActionKind {
         Action::CopyTo => ActionKind::CopyTo,
         Action::LargerThumbnails => ActionKind::LargerThumbnails,
         Action::SmallerThumbnails => ActionKind::SmallerThumbnails,
+        Action::PromptResult { .. } => ActionKind::PromptResult,
     }
 }
 
@@ -197,6 +202,9 @@ fn every_action_has_a_handler() {
             ActionKind::ConfirmResult => {
                 assert_eq!(result, Handled::Ignored, "unknown confirmation id")
             }
+            ActionKind::PromptResult => {
+                assert_eq!(result, Handled::Ignored, "no prompt outside the sandbox")
+            }
             ActionKind::ToggleSelect => {
                 assert_eq!(h.app().selected_indices(), [0]);
                 assert_eq!(h.app().selection().len(), 1);
@@ -223,7 +231,7 @@ fn every_action_has_a_handler() {
         handled.push(kind);
         h.pump();
     }
-    assert_eq!(handled.len(), 46);
+    assert_eq!(handled.len(), 47);
     // The dialogs asked for: open, save, bulk files, bulk folder, bulk
     // destination, the folder of a move and the folder of a copy.
     assert_eq!(lock(&h.dialogs).shown.len(), 7);

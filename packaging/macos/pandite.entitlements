@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  App Sandbox entitlements of Pandite.app for the Mac App Store build and
+  the sandbox test build. packaging/macos/build-app.sh uses this file only
+  with PANDITE_MACOS_STORE=1 or PANDITE_MACOS_SANDBOX_TEST=1; the default
+  Developer ID build has no entitlements. The store build adds the
+  application and team identifiers of the provisioning profile.
+
+  - app-sandbox: the Mac App Store requires the App Sandbox.
+  - files.user-selected.read-write: open, Save As, Move to, Copy to, bulk
+    resize and the folders the user allows, all through system panels.
+  - files.bookmarks.app-scope: security-scoped bookmarks keep the allowed
+    folders (and the Move to and Copy to folders) across starts.
+
+  Pandite never uses the network: no network entitlement.
+  node packaging/check.mjs verifies this file.
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.app-sandbox</key>
+  <true/>
+  <key>com.apple.security.files.user-selected.read-write</key>
+  <true/>
+  <key>com.apple.security.files.bookmarks.app-scope</key>
+  <true/>
+</dict>
+</plist>

@@ -120,6 +120,19 @@ fn shortcuts_cover_every_action() {
     );
     note(&out, "Enter in a confirm dialog");
 
+    // A prompt answers Escape.
+    let mut prompted = ctx;
+    prompted.prompt = Some(pandite_ui::Prompt {
+        id: 3,
+        message: "Allow access",
+        button: "Allow...",
+    });
+    let mut ui = Ui::new();
+    note(
+        &press_key(&mut ui, &prompted, Key::Escape),
+        "Escape with a prompt",
+    );
+
     // Zoom at a point from the context menu.
     let mut ui = Ui::new();
     let p = Point::new(500.0, 300.0);

@@ -274,7 +274,7 @@ cargo build --release -p pandite-app
 ./target/release/pandite
 ```
 
-Store packaging: [docs/store-submission.md](docs/store-submission.md).
+Store packaging: [docs/store-submission.md](docs/store-submission.md) (Microsoft Store), [docs/mac-app-store.md](docs/mac-app-store.md) (Mac App Store and App Sandbox test build).
 
 ## License
 

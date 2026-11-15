@@ -103,12 +103,22 @@
 //! screen, to a folder the application asks for. Shift+M emits
 //! [`Action::CopyTo`], which copies them there and leaves them in place.
 //!
+//! # Prompt
+//!
+//! While [`UiContext::prompt`] is set, a panel with its message, its
+//! button and a close mark shows at the bottom of the content area, above
+//! the notice. A click on the button emits [`Action::PromptResult`] with
+//! `accepted` set; a click on the close mark, or Escape, emits it with
+//! `accepted` cleared. The application takes the prompt away. It is not a
+//! dialog: every other key and gesture acts as without it, and it hides in
+//! crop mode.
+//!
 //! # Escape
 //!
-//! Escape closes the topmost menu, shortcut overlay or dialog. When none
-//! is open it emits [`Action::Quit`], also in full screen, in crop mode,
-//! with a text selection, with the information panel and while a file
-//! loads.
+//! Escape closes the topmost menu, shortcut overlay or dialog, and else
+//! answers the prompt. When none is open it emits [`Action::Quit`], also
+//! in full screen, in crop mode, with a text selection, with the
+//! information panel and while a file loads.
 
 #![forbid(unsafe_code)]
 
@@ -140,7 +150,7 @@ pub use action::{
 pub use command::{command_for_key, Command, Shortcut, SHORTCUTS};
 pub use confirm::ConfirmRequest;
 pub use context::{
-    EncoderInfo, ImageInfo, InfoRow, Loading, Progress, TextView, ThumbState, UiContext,
+    EncoderInfo, ImageInfo, InfoRow, Loading, Progress, Prompt, TextView, ThumbState, UiContext,
 };
 pub use gallery::GallerySize;
 pub use icon::{Icon, ICON_TEXTURE_BASE};

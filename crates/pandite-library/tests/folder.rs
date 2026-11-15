@@ -132,6 +132,8 @@ fn folder_scan_handles_missing_and_empty() {
     let list = FolderList::scan_with(&solo, &reg, &Unreadable);
     assert_eq!(list.paths(), std::slice::from_ref(&solo));
     assert_eq!(list.opened_index(), Some(0));
+    assert_eq!(list.listing_error(), Some(io::ErrorKind::PermissionDenied));
+    assert_eq!(FolderList::scan(&solo, &reg).listing_error(), None);
     // A file vanishes between two scans: the neighbor takes its place.
     let a = dir.image("a.fake", 1, 1);
     let b = dir.image("b.fake", 1, 1);
@@ -170,6 +172,31 @@ fn folder_scan_handles_missing_and_empty() {
     );
     assert!(lib.get(0).is_ready() && lib.get(2).is_ready());
     assert_eq!(h.dec.count(&Call::full("img01.fake")), 0);
+}
+
+#[test]
+fn library_reports_a_refused_listing() {
+    // A folder the system does not let the program list: the opened file
+    // alone, and the reason, until a new list replaces it.
+    let mut h = Harness::new("refused", |c| c.files = Arc::new(Unreadable));
+    let solo = h.dir.image("solo.fake", 1, 1);
+    h.dir.image("other.fake", 1, 1);
+    let lib = Arc::clone(h.lib());
+    lib.open(solo.clone());
+    assert!(h.wait_for(|e| matches!(e, Event::Listed { len: 1, .. })));
+    assert_eq!(lib.paths(), std::slice::from_ref(&solo));
+    assert_eq!(lib.listing_error(), Some(io::ErrorKind::PermissionDenied));
+    lib.set_items(vec![solo]);
+    assert_eq!(lib.listing_error(), None);
+
+    // A folder that lists has no error.
+    let mut h = Harness::new("listed", |_| {});
+    let paths = h.dir.images(2, 1, 1);
+    let lib = Arc::clone(h.lib());
+    lib.open(paths[0].clone());
+    assert_eq!(lib.listing_error(), None, "no listing yet");
+    assert!(h.wait_for(|e| matches!(e, Event::Listed { len: 2, .. })));
+    assert_eq!(lib.listing_error(), None);
 }
 
 #[test]

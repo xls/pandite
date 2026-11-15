@@ -28,6 +28,7 @@ pub mod info;
 pub mod platform;
 pub mod register;
 pub mod resident;
+pub mod sandbox;
 pub mod settings;
 pub mod shell;
 pub mod trash;

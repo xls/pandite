@@ -487,6 +487,14 @@ impl Library {
         self.shared.lock().current()
     }
 
+    /// Why the folder listing that made the list could not read the
+    /// folder, when it could not (see [`crate::FolderList::listing_error`]).
+    /// The list then holds only the opened file. `None` while the listing
+    /// of a newly opened file runs, and after [`Library::set_items`].
+    pub fn listing_error(&self) -> Option<std::io::ErrorKind> {
+        self.shared.lock().listing_error()
+    }
+
     /// Show image `index`. Its decode is scheduled before anything else;
     /// read-ahead follows (next, previous, next+1, previous+1, ...), then
     /// thumbnails. Running decodes that left the read-ahead window are
