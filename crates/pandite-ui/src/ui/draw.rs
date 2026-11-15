@@ -337,13 +337,22 @@ impl Ui {
                 out.rect(cell, t.hover, radius);
             }
             if current {
-                let ring = paint::outset(cell, m.px(2.0));
-                out.border(ring, t.accent, m.px(2.0), radius + m.px(2.0));
+                let w = m.current_ring();
+                let ring = paint::outset(cell, w);
+                out.border(ring, t.accent, w, radius + w);
             }
             // A marker only: the pointer never changes the selection.
             if ctx.is_selected(i) {
                 self.draw_thumb_badge(layout.badge_rect(cell), m, t, out);
             }
+        }
+        // Where the current item is in the whole list. Only the marker
+        // moves; the track stays in the middle of the strip.
+        if let Some(marker) = self.gallery.marker {
+            let track = layout.track;
+            out.rect(track, t.gallery_track, track.h * 0.5);
+            let r = layout.marker_rect(marker.at);
+            out.rect(r, t.gallery_marker, r.h * 0.5);
         }
         out.clip(None);
     }

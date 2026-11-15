@@ -676,6 +676,7 @@ impl Ui {
         }
         if let Some(layout) = self.gallery_layout(ctx, &m) {
             self.gallery.track(&layout, ctx.index, ctx.count);
+            self.gallery.mark(&layout, ctx.index, ctx.count);
             self.gallery.animate(dt);
             self.gallery.scroll = layout.clamp_scroll(self.gallery.scroll);
         } else {

@@ -133,6 +133,22 @@ impl Metrics {
     pub fn thumb_badge_inset(&self) -> f32 {
         self.px(4.0)
     }
+    /// Height of the track of the gallery position indicator.
+    pub fn position_track_h(&self) -> f32 {
+        self.px(3.0)
+    }
+    /// Width of the marker on the gallery position track.
+    pub fn position_marker_w(&self) -> f32 {
+        self.px(24.0)
+    }
+    /// Height of the marker on the gallery position track.
+    pub fn position_marker_h(&self) -> f32 {
+        self.px(5.0)
+    }
+    /// Width of the ring around the current gallery item.
+    pub fn current_ring(&self) -> f32 {
+        self.px(2.0)
+    }
     /// Height of the "Marked" pill on a selected image.
     pub fn marked_h(&self) -> f32 {
         self.px(20.0)

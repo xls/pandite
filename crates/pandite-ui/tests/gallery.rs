@@ -5,7 +5,7 @@ mod support;
 use pandite_core::{DrawCmd, Point, Rect};
 use pandite_ui::{
     Action, ActionKind, Command, GallerySize, Icon, Key, Modifiers, PointerButton, Theme,
-    ThumbState, Ui, UiContext, UiMode,
+    ThemeKind, ThumbState, Ui, UiContext, UiMode,
 };
 use std::collections::HashMap;
 use support::*;
@@ -662,4 +662,143 @@ fn gallery_placeholder_for_missing_thumbnail() {
         kinds(&click(&mut ui, &ctx, cell(3).center())),
         vec![ActionKind::GoTo]
     );
+}
+
+/// The position track and its marker, when the strip draws them: thin
+/// fills of their colors in the bottom padding of the strip.
+fn position(list: &pandite_core::DrawList, theme: &Theme) -> Option<(Rect, Rect)> {
+    let below_cells = thumbnail_draws(list)
+        .iter()
+        .map(|d| d.1.bottom())
+        .fold(f32::INFINITY, f32::min);
+    let fill = |want| {
+        list.cmds.iter().find_map(|cmd| match cmd {
+            DrawCmd::Rect { rect, color, .. }
+                if *color == want && rect.y >= below_cells && rect.h <= 8.0 =>
+            {
+                Some(*rect)
+            }
+            _ => None,
+        })
+    };
+    match (fill(theme.gallery_track), fill(theme.gallery_marker)) {
+        (Some(track), Some(marker)) => Some((track, marker)),
+        (None, None) => None,
+        other => panic!("track and marker come together: {other:?}"),
+    }
+}
+
+/// Where the marker is along the track: 0 at the left end, 1 at the right.
+fn marker_at(track: Rect, marker: Rect) -> f32 {
+    (marker.x - track.x) / (track.w - marker.w)
+}
+
+#[test]
+fn position_marker_shows_where_the_current_image_is() {
+    let thumbs = ready(101);
+    for kind in [ThemeKind::Dark, ThemeKind::Light] {
+        let theme = Theme::for_kind(kind);
+        let ctx_at = |index: usize, t: u64| {
+            let mut c = at(gallery_ctx(101, index, thumbs), ms(t));
+            c.theme = kind;
+            c
+        };
+        let mut ui = Ui::new();
+        let first = ctx_at(0, 0);
+        let list = frame(&mut ui, &first);
+        let strip = panel(&ui, &first);
+        // The track takes no height: the strip is the cell and its padding.
+        assert_eq!(strip.h, 96.0 + 2.0 * 15.0);
+        let (track, marker) = position(&list, theme).expect("drawn");
+        assert_eq!(marker.x, track.x, "first image: left end");
+        let cells: Vec<Rect> = thumbnail_draws(&list).into_iter().map(|d| d.1).collect();
+        let cell_bottom = cells.iter().map(|r| r.bottom()).fold(0.0, f32::max);
+        for r in [track, marker] {
+            assert!(r.y >= cell_bottom + 2.0, "below the ring: {r:?}");
+            assert!(r.bottom() <= strip.bottom(), "inside the strip: {r:?}");
+            assert!(r.h <= 5.0, "a few pixels high: {r:?}");
+        }
+        assert!((track.center().x - strip.center().x).abs() <= 1.0);
+        assert!(marker.h > track.h && marker.w < track.w);
+        // Each image moves the marker by the same step. The last image puts
+        // it at the right end.
+        for (index, want, t) in [(50, 0.5, 1000), (100, 1.0, 2000), (25, 0.25, 3000)] {
+            frame(&mut ui, &ctx_at(index, t));
+            let list = frame(&mut ui, &ctx_at(index, t + 1000));
+            let (track, marker) = position(&list, theme).unwrap();
+            let got = marker_at(track, marker);
+            assert!((got - want).abs() < 0.01, "image {index}: {got}");
+            if index == 100 {
+                assert_eq!(marker.right(), track.right(), "last image: right end");
+            }
+        }
+        // A faint track and a solid marker.
+        assert!(theme.gallery_track.a < 64);
+        assert_eq!(theme.gallery_marker.a, 255);
+    }
+}
+
+#[test]
+fn position_marker_slides_to_the_new_image() {
+    let thumbs = ready(11);
+    let theme = Theme::for_kind(gallery_ctx(11, 0, thumbs).theme);
+    let mut ui = Ui::new();
+    frame(&mut ui, &at(gallery_ctx(11, 0, thumbs), ms(1000)));
+    assert!(!ui.wants_redraw());
+    let start = at(gallery_ctx(11, 10, thumbs), ms(1016));
+    let (track, marker) = position(&frame(&mut ui, &start), theme).unwrap();
+    assert!(ui.wants_redraw(), "the marker moves");
+    let mut last = marker_at(track, marker);
+    assert!(last < 0.5, "a short ease, not a jump: {last}");
+    for t in (1032..1600).step_by(16) {
+        let list = frame(&mut ui, &at(gallery_ctx(11, 10, thumbs), ms(t)));
+        let (track, marker) = position(&list, theme).unwrap();
+        let now = marker_at(track, marker);
+        assert!(now >= last, "{last} -> {now} at {t} ms");
+        last = now;
+    }
+    assert_eq!(last, 1.0);
+    assert!(!ui.wants_redraw(), "the marker stops");
+}
+
+#[test]
+fn position_marker_hides_with_the_strip_and_for_one_image() {
+    let theme = Theme::for_kind(image_ctx().theme);
+    let mut ui = Ui::new();
+    let one = gallery_ctx(1, 0, ready(1));
+    let list = frame(&mut ui, &one);
+    assert!(!thumbnail_draws(&list).is_empty(), "the strip shows");
+    assert_eq!(position(&list, theme), None, "one image: no marker");
+
+    let mut hidden = gallery_ctx(20, 19, ready(20));
+    hidden.gallery_visible = false;
+    assert_eq!(position(&frame(&mut ui, &hidden), theme), None);
+    // Shown again, the marker is at its place at once.
+    let shown = at(gallery_ctx(20, 19, ready(20)), ms(1000));
+    let (track, marker) = position(&frame(&mut ui, &shown), theme).unwrap();
+    assert_eq!(marker.right(), track.right());
+    assert!(!ui.wants_redraw());
+}
+
+#[test]
+fn position_marker_follows_a_folder_change() {
+    let theme = Theme::for_kind(image_ctx().theme);
+    let mut ui = Ui::new();
+    // The last of ten images.
+    let (track, marker) = position(&frame(&mut ui, &scaled(10, 9, 1.0)), theme).unwrap();
+    assert_eq!(marker_at(track, marker), 1.0);
+    // Ten files come after it: it is the tenth of twenty now.
+    let (moved, count) = insert(10, 10, 10);
+    let after = at(scaled(count, 9, 1.0), ms(1000));
+    ui.list_changed(&after, &moved);
+    frame(&mut ui, &after);
+    let settled = at(scaled(count, 9, 1.0), ms(2000));
+    let (track, marker) = position(&frame(&mut ui, &settled), theme).unwrap();
+    let got = marker_at(track, marker);
+    assert!((got - 9.0 / 19.0).abs() < 0.01, "{got}");
+    // Every file but the current one leaves: the marker goes.
+    let moved: Vec<Option<usize>> = (0..count).map(|i| (i == 9).then_some(0)).collect();
+    let alone = at(scaled(1, 0, 1.0), ms(3000));
+    ui.list_changed(&alone, &moved);
+    assert_eq!(position(&frame(&mut ui, &alone), theme), None);
 }

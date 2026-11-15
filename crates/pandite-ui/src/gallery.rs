@@ -15,6 +15,13 @@
 //! The cells come in three sizes ([`GallerySize`]). The gap between cells
 //! and the padding around them grow with the cell; the badge and the ring
 //! around the current item keep their size.
+//!
+//! A thin position track sits in the padding below the cells, in the middle
+//! of the strip. Its small marker shows where the current item is in the
+//! whole list: the first item puts it at the left end, the last at the
+//! right end ([`marker_fraction`]). When the current item or the count
+//! changes, the marker slides there with the same ease as the scrolling.
+//! The track takes no extra height and does not show for a single item.
 
 use crate::metrics::Metrics;
 use pandite_core::{Point, Rect};
@@ -105,6 +112,10 @@ pub(crate) struct GalleryLayout {
     pub badge: f32,
     /// Gap between the cell corner and the badge.
     pub badge_inset: f32,
+    /// The position track below the cells.
+    pub track: Rect,
+    /// Width and height of the marker on the track.
+    pub marker: (f32, f32),
 }
 
 impl GalleryLayout {
@@ -125,6 +136,21 @@ impl GalleryLayout {
         } else {
             panel.x + pad
         };
+        // The track goes in the middle of the space between the ring
+        // around the current cell and the bottom of the panel.
+        let below = strip.bottom() + m.current_ring();
+        let room = (panel.bottom() - below).max(0.0);
+        let marker_h = m.position_marker_h().min(room);
+        let track_h = m.position_track_h().min(marker_h);
+        let marker_y = (below + (room - marker_h) * 0.5).floor();
+        let track_y = marker_y + ((marker_h - track_h) * 0.5).floor();
+        let track_w = (panel.w * 0.3)
+            .round()
+            .clamp(m.px(80.0), m.px(400.0))
+            .min(panel.w - 2.0 * pad)
+            .max(0.0);
+        let track_x = panel.x + ((panel.w - track_w) * 0.5).round();
+        let marker_w = m.position_marker_w().min((track_w * 0.25).round());
         Self {
             panel,
             strip,
@@ -134,6 +160,8 @@ impl GalleryLayout {
             origin,
             badge: m.thumb_badge().min(cell),
             badge_inset: m.thumb_badge_inset(),
+            track: Rect::new(track_x, track_y, track_w, track_h),
+            marker: (marker_w, marker_h),
         }
     }
 
@@ -188,6 +216,25 @@ impl GalleryLayout {
         Rect::new(cell.x + inset, cell.y + inset, side, side)
     }
 
+    /// How far the marker moves from one end of the track to the other.
+    pub fn marker_travel(&self) -> f32 {
+        (self.track.w - self.marker.0).max(0.0)
+    }
+
+    /// The marker at `fraction` of the track (0 left end, 1 right end),
+    /// snapped to whole pixels.
+    pub fn marker_rect(&self, fraction: f32) -> Rect {
+        let f = if fraction.is_finite() {
+            fraction.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let (w, h) = self.marker;
+        let x = (self.track.x + f * self.marker_travel()).round();
+        let y = self.track.y - ((h - self.track.h) * 0.5).floor();
+        Rect::new(x, y, w, h)
+    }
+
     /// The item under `p` at `scroll`, if any.
     pub fn hit(&self, p: Point, scroll: f32) -> Option<usize> {
         if !self.panel.contains(p) {
@@ -227,6 +274,29 @@ impl GalleryLayout {
     }
 }
 
+/// Where item `index` of `count` sits on the position track: 0 for the
+/// first item, 1 for the last, evenly between. `None` for fewer than two
+/// items: the track does not show then. An index past the end counts as
+/// the last item.
+pub(crate) fn marker_fraction(index: usize, count: usize) -> Option<f32> {
+    if count < 2 {
+        return None;
+    }
+    let last = count - 1;
+    Some(index.min(last) as f32 / last as f32)
+}
+
+/// The position marker: where it is drawn and where it moves to.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Marker {
+    /// Current (animated) place, as a fraction of the track.
+    pub at: f32,
+    /// Place the animation moves toward.
+    pub target: f32,
+    /// Track travel in pixels, to stop the animation within half a pixel.
+    pub travel: f32,
+}
+
 /// Scroll and tracking state of the strip.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct GalleryState {
@@ -238,6 +308,8 @@ pub(crate) struct GalleryState {
     pub tracked: Option<(usize, usize, u32, u32)>,
     /// Hovered item.
     pub hover: Option<usize>,
+    /// The position marker, `None` while the track does not show.
+    pub marker: Option<Marker>,
 }
 
 impl GalleryState {
@@ -307,31 +379,65 @@ impl GalleryState {
         Some(delta)
     }
 
-    /// Advance the scroll animation by `dt` seconds. Returns true while it
-    /// is still moving.
+    /// Point the position marker at item `index` of `count` on the track
+    /// of `layout`. A marker that was not shown starts there; a shown one
+    /// moves there with [`GalleryState::animate`]. Fewer than two items
+    /// hide it.
+    pub fn mark(&mut self, layout: &GalleryLayout, index: usize, count: usize) {
+        let Some(target) = marker_fraction(index, count) else {
+            self.marker = None;
+            return;
+        };
+        let travel = layout.marker_travel();
+        self.marker = Some(match self.marker {
+            Some(m) => Marker {
+                target,
+                travel,
+                ..m
+            },
+            None => Marker {
+                at: target,
+                target,
+                travel,
+            },
+        });
+    }
+
+    /// Advance the scroll and marker animations by `dt` seconds. Returns
+    /// true while one is still moving.
     pub fn animate(&mut self, dt: f32) -> bool {
+        let k = 1.0 - (-dt.max(0.0) * 16.0).exp();
         let diff = self.target - self.scroll;
         if diff.abs() < 0.5 {
             self.scroll = self.target;
-            return false;
+        } else {
+            self.scroll += diff * k;
+            if (self.target - self.scroll).abs() < 0.5 {
+                self.scroll = self.target;
+            }
         }
-        let k = 1.0 - (-dt.max(0.0) * 16.0).exp();
-        self.scroll += diff * k;
-        if (self.target - self.scroll).abs() < 0.5 {
-            self.scroll = self.target;
-            return false;
+        if let Some(m) = &mut self.marker {
+            m.at += (m.target - m.at) * k;
+            if (m.target - m.at).abs() * m.travel < 0.5 {
+                m.at = m.target;
+            }
         }
-        true
+        self.animating()
     }
 
-    /// True while the scroll animation runs.
+    /// True while the scroll or marker animation runs.
     pub fn animating(&self) -> bool {
-        (self.target - self.scroll).abs() >= 0.5
+        let marker = self
+            .marker
+            .is_some_and(|m| (m.target - m.at).abs() * m.travel >= 0.5);
+        (self.target - self.scroll).abs() >= 0.5 || marker
     }
 
-    /// Forget tracking so the next frame jumps to the current item.
+    /// Forget tracking so the next frame jumps to the current item, and
+    /// hide the marker so it starts at its place when it shows again.
     pub fn reset(&mut self) {
         self.tracked = None;
+        self.marker = None;
     }
 }
 
@@ -402,6 +508,61 @@ mod tests {
             assert_eq!((b.x - cell.x, b.y - cell.y), (m.px(4.0), m.px(4.0)));
             assert!(b.right() <= cell.right() && b.bottom() <= cell.bottom());
         }
+    }
+
+    #[test]
+    fn marker_fraction_spreads_items_over_the_track() {
+        assert_eq!(marker_fraction(0, 0), None);
+        assert_eq!(marker_fraction(0, 1), None, "one item: no track");
+        assert_eq!(marker_fraction(0, 2), Some(0.0));
+        assert_eq!(marker_fraction(1, 2), Some(1.0));
+        assert_eq!(marker_fraction(0, 101), Some(0.0));
+        assert_eq!(marker_fraction(50, 101), Some(0.5));
+        assert_eq!(marker_fraction(100, 101), Some(1.0));
+        assert_eq!(marker_fraction(500, 101), Some(1.0), "past the end");
+    }
+
+    #[test]
+    fn marker_stays_in_the_bottom_padding_at_every_size_and_scale() {
+        let sizes = GallerySize::ALL.into_iter();
+        for (size, scale) in sizes.flat_map(|g| [1.0, 1.25, 1.5, 2.0, 3.0].map(|s| (g, s))) {
+            let m = Metrics::new(scale).with_gallery(size);
+            let panel = Rect::new(0.0, 700.0, 1200.0, m.gallery_h());
+            let l = GalleryLayout::new(panel, 40, &m);
+            let why = format!("{size:?} at {scale}");
+            let ring = l.strip.bottom() + m.current_ring();
+            for f in [0.0, 0.5, 1.0] {
+                let r = l.marker_rect(f);
+                assert!(r.y >= ring && r.bottom() <= panel.bottom(), "{why}: {r:?}");
+                assert!(r.x >= l.track.x && r.right() <= l.track.right(), "{why}");
+                assert!(r.y <= l.track.y && r.bottom() >= l.track.bottom(), "{why}");
+            }
+            assert_eq!(l.marker_rect(0.0).x, l.track.x, "{why}");
+            assert_eq!(l.marker_rect(1.0).right(), l.track.right(), "{why}");
+            let mid = l.marker_rect(0.5).center().x - l.track.center().x;
+            assert!(mid.abs() <= 1.0, "{why}: middle off by {mid}");
+        }
+    }
+
+    #[test]
+    fn marker_slides_to_a_new_place_and_stops() {
+        let l = layout(11);
+        let mut g = GalleryState::default();
+        g.mark(&l, 0, 11);
+        assert_eq!(g.marker.map(|m| m.at), Some(0.0), "starts at its place");
+        assert!(!g.animating());
+        g.mark(&l, 10, 11);
+        assert!(g.animating());
+        g.animate(0.016);
+        let at = g.marker.unwrap().at;
+        assert!(at > 0.0 && at < 1.0, "{at}");
+        for _ in 0..60 {
+            g.animate(0.016);
+        }
+        assert_eq!(g.marker.unwrap().at, 1.0);
+        assert!(!g.animating());
+        g.mark(&l, 0, 1);
+        assert_eq!(g.marker, None, "one item hides it");
     }
 
     #[test]

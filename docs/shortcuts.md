@@ -129,6 +129,12 @@ When an image is added to the folder, removed from it or renamed in it,
 the strip shows the change after a few seconds. The thumbnails on screen
 keep their place.
 
+A thin track below the thumbnails shows where the image on screen is in
+the folder. Its marker is at the left end for the first image and at the
+right end for the last image. When the image or the number of images
+changes, the marker moves to its new position. The track does not show
+when the folder has only one image.
+
 - The thumbnails have three sizes: small, medium and large. Medium is the
   default.
 - A small thumbnail is 64 pixels, a medium thumbnail is 96 pixels and a

@@ -78,6 +78,12 @@ pub struct Theme {
     /// Check mark of the selection badge and text of the "Marked" pill: a
     /// blue that is clear on `check_fill`.
     pub check_mark: Color,
+    /// Track of the position indicator under the gallery strip: faint, so
+    /// it stays in the background.
+    pub gallery_track: Color,
+    /// Marker of the position indicator: where the image on screen is in
+    /// the folder.
+    pub gallery_marker: Color,
 }
 
 impl Theme {
@@ -111,6 +117,8 @@ impl Theme {
         check_fill: Color::rgba(255, 255, 255, 235),
         check_line: Color::rgba(0, 0, 0, 64),
         check_mark: Color::rgb(10, 96, 214),
+        gallery_track: Color::rgba(255, 255, 255, 36),
+        gallery_marker: Color::rgb(226, 226, 230),
     };
 
     /// The light table.
@@ -143,6 +151,8 @@ impl Theme {
         check_fill: Color::rgba(255, 255, 255, 235),
         check_line: Color::rgba(0, 0, 0, 64),
         check_mark: Color::rgb(10, 96, 214),
+        gallery_track: Color::rgba(0, 0, 0, 30),
+        gallery_marker: Color::rgb(118, 118, 124),
     };
 
     /// The table for `kind`.
