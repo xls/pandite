@@ -1,6 +1,6 @@
 //! Input handling: pointer, wheel, keyboard and text.
 
-use super::{Capture, CropButton, Dialog, PromptPart, Target, TextGrip, Ui};
+use super::{draw, Capture, CropButton, Dialog, PromptPart, Target, TextGrip, Ui};
 use crate::action::{Action, WHEEL_ZOOM_STEP};
 use crate::command::{command_for_key, Command};
 use crate::confirm::{Answer, ConfirmOwner};
@@ -641,6 +641,12 @@ impl Ui {
             return;
         }
         if self.help {
+            let layout = draw::HelpLayout::new(ctx, m, draw::help_rows(ctx).len());
+            let amount = pixels.map_or(lines.1 * layout.row_h * 3.0, |p| p.1);
+            if !amount.is_finite() {
+                return;
+            }
+            self.help_scroll = (self.help_scroll - amount).clamp(0.0, layout.max_scroll);
             return;
         }
         if self.confirm.is_some() || self.dialog.is_some() {
@@ -700,7 +706,7 @@ impl Ui {
             return;
         }
         if self.help {
-            if matches!(key, Key::Escape | Key::F1 | Key::Enter) {
+            if matches!(key, Key::Escape | Key::F1 | Key::Question | Key::Enter) {
                 self.help = false;
             }
             return;

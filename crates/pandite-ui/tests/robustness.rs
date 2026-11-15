@@ -312,6 +312,72 @@ fn help_overlay_lists_shortcuts() {
 }
 
 #[test]
+fn help_overlay_scrolls_when_it_does_not_fit() {
+    let theme = pandite_ui::Theme::for_kind(image_ctx().theme);
+    let tracks = |list: &DrawList| -> Vec<Rect> {
+        list.cmds
+            .iter()
+            .filter_map(|c| match c {
+                DrawCmd::Rect { rect, color, .. }
+                    if *color == theme.gallery_marker && rect.h > rect.w =>
+                {
+                    Some(*rect)
+                }
+                _ => None,
+            })
+            .collect()
+    };
+
+    // A tall window fits every row: no indicator.
+    let ctx = image_ctx();
+    let mut ui = Ui::new();
+    press_key(&mut ui, &ctx, Key::F1);
+    let list = frame(&mut ui, &ctx);
+    assert!(has_text(&list, "Press Esc to close"));
+    assert!(!has_text(&list, "Scroll for more"));
+    assert!(tracks(&list).is_empty());
+
+    // A low window: the rows scroll with the wheel, and a marker shows where.
+    let mut low = image_ctx();
+    low.window_size = Size::new(400.0, 300.0);
+    let mut ui = Ui::new();
+    press_key(&mut ui, &low, Key::F1);
+    let first = frame(&mut ui, &low);
+    assert!(has_text(&first, "Scroll for more"));
+    let top = tracks(&first);
+    assert_eq!(top.len(), 1, "one marker");
+    wheel(&mut ui, &low, Point::new(200.0, 150.0), -3.0);
+    let moved = frame(&mut ui, &low);
+    assert_ne!(texts(&first), texts(&moved), "other rows show");
+    assert!(tracks(&moved)[0].y > top[0].y, "the marker moves down");
+    // To the end and back to the top; bad input changes nothing.
+    wheel(&mut ui, &low, Point::new(200.0, 150.0), -1000.0);
+    let end = tracks(&frame(&mut ui, &low))[0];
+    ui.handle_event(
+        InputEvent::Wheel {
+            pos: Point::new(200.0, 150.0),
+            delta: WheelDelta::Pixels {
+                x: 0.0,
+                y: f32::NAN,
+            },
+        },
+        &low,
+    );
+    assert_eq!(tracks(&frame(&mut ui, &low))[0], end);
+    wheel(&mut ui, &low, Point::new(200.0, 150.0), 1000.0);
+    let back = frame(&mut ui, &low);
+    assert_eq!(texts(&back), texts(&first));
+    assert_eq!(tracks(&back), top);
+
+    // ? closes the window, and it opens at the top again.
+    press_key(&mut ui, &low, Key::Question);
+    assert_eq!(ui.mode(), UiMode::Normal);
+    wheel(&mut ui, &low, Point::new(200.0, 150.0), -3.0);
+    press_key(&mut ui, &low, Key::F1);
+    assert_eq!(texts(&frame(&mut ui, &low)), texts(&first));
+}
+
+#[test]
 fn cursor_follows_what_is_under_the_pointer() {
     use pandite_ui::CursorShape;
     let mut ctx = image_ctx();

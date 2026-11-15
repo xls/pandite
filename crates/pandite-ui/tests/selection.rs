@@ -671,26 +671,29 @@ fn help_pill_sits_in_the_corner_and_fades_with_the_toolbar() {
     let mut ui = Ui::new();
     let content = ui.content_rect(&ctx);
     let list = frame(&mut ui, &ctx);
-    let hint = text_rect_exact(&list, "F1/? help").expect("the help pill shows");
+    let hint = text_rect_exact(&list, "F1 / ? help").expect("the help pill shows");
     assert!(hint.x - content.x < 30.0);
     assert!(content.bottom() - hint.bottom() < 30.0);
-    assert_eq!(text_color(&list, "F1/? help"), Some(theme.text_dim));
+    assert_eq!(text_color(&list, "F1 / ? help"), Some(theme.text_dim));
 
     // It stays alone in its corner when images are selected.
     let mut selected = ctx;
     selected.selected = &[3];
     let list = frame(&mut ui, &selected);
-    assert_eq!(text_rect_exact(&list, "F1/? help"), Some(hint));
+    assert_eq!(text_rect_exact(&list, "F1 / ? help"), Some(hint));
     let marked = text_rect_exact(&list, "Marked").unwrap();
     assert!(marked.x > hint.right());
 
     // Gone once the toolbar has faded out, and in a tiny window.
     let mut ui = Ui::new();
     move_to(&mut ui, &at(ctx, ms(100)), Point::new(640.0, 400.0));
-    assert!(!has_text(&frame(&mut ui, &at(ctx, ms(5000))), "F1/? help"));
+    assert!(!has_text(
+        &frame(&mut ui, &at(ctx, ms(5000))),
+        "F1 / ? help"
+    ));
     let mut tiny = image_ctx();
     tiny.window_size = Size::new(60.0, 60.0);
-    assert!(!has_text(&frame(&mut Ui::new(), &tiny), "F1/? help"));
+    assert!(!has_text(&frame(&mut Ui::new(), &tiny), "F1 / ? help"));
 }
 
 #[test]

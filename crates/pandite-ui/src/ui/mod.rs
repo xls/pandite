@@ -201,6 +201,8 @@ pub struct Ui {
     confirm_queue: VecDeque<(ConfirmOwner, ConfirmRequest)>,
     menu: Option<MenuState>,
     help: bool,
+    /// How far the rows of the keyboard shortcuts window are scrolled.
+    help_scroll: f32,
     gallery: GalleryState,
     toasts: Vec<Toast>,
     icons: IconCache,
@@ -250,6 +252,7 @@ impl Ui {
             confirm_queue: VecDeque::new(),
             menu: None,
             help: false,
+            help_scroll: 0.0,
             gallery: GalleryState::default(),
             toasts: Vec::new(),
             icons: IconCache::default(),
@@ -1197,6 +1200,7 @@ impl Ui {
             Command::Help => {
                 self.menu = None;
                 self.help = !self.help;
+                self.help_scroll = 0.0;
             }
             Command::Cancel => self.cancel(ctx, out),
             Command::Quit => out.push(Action::Quit),

@@ -1128,33 +1128,10 @@ impl Ui {
     ) {
         let win = ctx.window_rect();
         out.rect(win, t.backdrop, 0.0);
-        let rows: Vec<(String, &'static str)> = Command::ALL
-            .iter()
-            .filter(|cmd| ctx.text_enabled || !cmd.is_text())
-            .filter_map(|cmd| {
-                let keys: Vec<String> = SHORTCUTS
-                    .iter()
-                    .filter(|s| s.command == *cmd)
-                    .map(|s| s.label())
-                    .collect();
-                (!keys.is_empty()).then(|| (keys.join(" / "), cmd.label()))
-            })
-            .collect();
-        let margin = m.margin();
-        let row_h = m.px(22.0);
-        let col_w = m.px(340.0);
-        let avail_w = (win.w - 2.0 * margin).max(m.px(100.0));
-        let cols = ((avail_w / col_w) as usize).clamp(1, 3);
-        let per_col = rows.len().div_ceil(cols);
-        let w = (col_w * cols as f32).min(avail_w);
-        let h = (m.px(56.0) + per_col as f32 * row_h + m.px(36.0))
-            .min((win.h - 2.0 * margin).max(m.px(60.0)));
-        let panel = Rect::new(
-            (win.x + (win.w - w) * 0.5).round(),
-            (win.y + (win.h - h) * 0.5).round(),
-            w,
-            h,
-        );
+        let rows = help_rows(ctx);
+        let layout = HelpLayout::new(ctx, m, rows.len());
+        let panel = layout.panel;
+        let scroll = self.help_scroll.clamp(0.0, layout.max_scroll);
         paint::panel(
             out,
             panel,
@@ -1180,29 +1157,44 @@ impl Ui {
             t.text,
         );
         let font = m.text();
-        let cw = w / cols as f32;
+        let cw = panel.w / layout.cols as f32;
         let key_w = (cw * 0.42).round();
+        let body = layout.body;
+        out.clip(Some(body));
         for (i, (keys, label)) in rows.iter().enumerate() {
-            let col = i / per_col;
-            let row = i % per_col;
+            let col = i / layout.per_col;
+            let row = i % layout.per_col;
             let x = panel.x + m.px(18.0) + col as f32 * cw;
-            let y = panel.y + m.px(48.0) + row as f32 * row_h;
-            let kr = Rect::new(x, y, key_w - m.px(8.0), row_h);
-            let lr = Rect::new(x + key_w, y, (cw - key_w - m.px(24.0)).max(0.0), row_h);
+            let y = (body.y + row as f32 * layout.row_h - scroll).round();
+            if y + layout.row_h < body.y || y > body.bottom() {
+                continue;
+            }
+            let kr = Rect::new(x, y, key_w - m.px(8.0), layout.row_h);
+            let lr = Rect::new(
+                x + key_w,
+                y,
+                (cw - key_w - m.px(24.0)).max(0.0),
+                layout.row_h,
+            );
             let k = paint::elide_end(measure, keys, m.text_small(), kr.w);
             paint::text_left(out, measure, kr, &k, m.text_small(), t.accent);
             let l = paint::elide_end(measure, label, font, lr.w);
             paint::text_left(out, measure, lr, &l, font, t.text);
         }
+        out.clip(Some(panel));
+        // Where the visible rows are in the whole list, when they scroll.
+        if let Some(track) = layout.track() {
+            out.rect(track, t.gallery_track, track.w * 0.5);
+            let r = layout.marker_rect(scroll);
+            out.rect(r, t.gallery_marker, r.w * 0.5);
+        }
         let foot = Rect::new(panel.x, panel.bottom() - m.px(30.0), panel.w, m.px(24.0));
-        paint::text_center(
-            out,
-            measure,
-            foot,
-            "Press Esc to close",
-            m.text_small(),
-            t.text_dim,
-        );
+        let hint = if layout.max_scroll > 0.0 {
+            "Scroll for more. Press Esc to close"
+        } else {
+            "Press Esc to close"
+        };
+        paint::text_center(out, measure, foot, hint, m.text_small(), t.text_dim);
         out.clip(None);
     }
 
@@ -1356,7 +1348,104 @@ const MARKED: &str = "Marked";
 
 /// The pill in the bottom left corner of the image area that names the
 /// help keys.
-pub(crate) const HELP_HINT: &str = "F1/? help";
+pub(crate) const HELP_HINT: &str = "F1 / ? help";
+
+/// The rows of the keyboard shortcuts window: the keys and the command.
+pub(crate) fn help_rows(ctx: &UiContext<'_>) -> Vec<(String, &'static str)> {
+    Command::ALL
+        .iter()
+        .filter(|cmd| ctx.text_enabled || !cmd.is_text())
+        .filter_map(|cmd| {
+            let keys: Vec<String> = SHORTCUTS
+                .iter()
+                .filter(|s| s.command == *cmd)
+                .map(|s| s.label())
+                .collect();
+            (!keys.is_empty()).then(|| (keys.join(" / "), cmd.label()))
+        })
+        .collect()
+}
+
+/// The places in the keyboard shortcuts window.
+pub(crate) struct HelpLayout {
+    pub(crate) panel: Rect,
+    /// The area of the rows, between the title and the footer.
+    pub(crate) body: Rect,
+    pub(crate) cols: usize,
+    pub(crate) per_col: usize,
+    pub(crate) row_h: f32,
+    /// How far the rows scroll when they do not fit.
+    pub(crate) max_scroll: f32,
+    bar_w: f32,
+    bar_inset: f32,
+}
+
+impl HelpLayout {
+    pub(crate) fn new(ctx: &UiContext<'_>, m: &Metrics, rows: usize) -> Self {
+        let win = ctx.window_rect();
+        let margin = m.margin();
+        let row_h = m.px(22.0);
+        let col_w = m.px(340.0);
+        let avail_w = (win.w - 2.0 * margin).max(m.px(100.0));
+        let cols = ((avail_w / col_w) as usize).clamp(1, 3);
+        let per_col = rows.div_ceil(cols);
+        let w = (col_w * cols as f32).min(avail_w);
+        let (top, foot) = (m.px(48.0), m.px(36.0));
+        let rows_h = per_col as f32 * row_h;
+        let h = (top + rows_h + foot + m.px(8.0)).min((win.h - 2.0 * margin).max(m.px(60.0)));
+        let panel = Rect::new(
+            (win.x + (win.w - w) * 0.5).round(),
+            (win.y + (win.h - h) * 0.5).round(),
+            w,
+            h,
+        );
+        let body = Rect::new(
+            panel.x,
+            panel.y + top,
+            panel.w,
+            (panel.h - top - foot).max(0.0),
+        );
+        Self {
+            panel,
+            body,
+            cols,
+            per_col,
+            row_h,
+            max_scroll: (rows_h - body.h).max(0.0),
+            bar_w: m.px(4.0),
+            bar_inset: m.px(6.0),
+        }
+    }
+
+    /// The track of the scroll indicator at the right edge of the rows.
+    /// `None` when all rows fit.
+    pub(crate) fn track(&self) -> Option<Rect> {
+        (self.max_scroll > 0.0 && self.body.h > 0.0).then(|| {
+            Rect::new(
+                (self.body.right() - self.bar_inset - self.bar_w).round(),
+                self.body.y,
+                self.bar_w,
+                self.body.h,
+            )
+        })
+    }
+
+    /// The marker on the track: its length is the visible share of the
+    /// rows, its place is how far they are scrolled.
+    pub(crate) fn marker_rect(&self, scroll: f32) -> Rect {
+        let track = self.track().unwrap_or(self.body);
+        let total = self.body.h + self.max_scroll;
+        let h = (track.h * self.body.h / total)
+            .max(self.bar_w * 3.0)
+            .min(track.h);
+        let at = if self.max_scroll > 0.0 {
+            (scroll / self.max_scroll).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        Rect::new(track.x, (track.y + (track.h - h) * at).round(), track.w, h)
+    }
+}
 
 /// Geometry of the information panel for one frame.
 struct InfoLayout {
