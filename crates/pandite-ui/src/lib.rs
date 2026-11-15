@@ -54,6 +54,11 @@
 //! When the size or the scale factor changes, make the thumbnails again
 //! at the new [`Ui::thumbnail_px`].
 //!
+//! When files come to or leave the folder without the user asking, call
+//! [`Ui::list_changed`] with the new context before the next event or
+//! frame. The strip then keeps the thumbnails on screen in place and does
+//! not scroll to the current item.
+//!
 //! # Coordinates
 //!
 //! Positions and sizes are physical pixels from the window's top-left,

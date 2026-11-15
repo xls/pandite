@@ -7,6 +7,7 @@ use pandite_ui::{
     Action, ActionKind, Command, GallerySize, Icon, Key, Modifiers, PointerButton, Theme,
     ThumbState, Ui, UiContext, UiMode,
 };
+use std::collections::HashMap;
 use support::*;
 
 fn gallery_ctx(count: usize, index: usize, thumbs: &'static [ThumbState]) -> UiContext<'static> {
@@ -465,6 +466,152 @@ fn gallery_keeps_current_in_view() {
     let c3 = at(gallery_ctx(500, 251, thumbs), ms(8000));
     frame(&mut ui, &c3);
     assert!(ui.gallery_visible_range(&c3).contains(&251));
+}
+
+/// Where each drawn thumbnail starts on screen, by index.
+fn xs(list: &pandite_core::DrawList) -> HashMap<usize, f32> {
+    thumbnail_draws(list)
+        .into_iter()
+        .map(|(i, r)| (i, r.x))
+        .collect()
+}
+
+/// `n` new items before old item `at` of `count`: the new index of each
+/// old item, and the new count.
+fn insert(count: usize, at: usize, n: usize) -> (Vec<Option<usize>>, usize) {
+    let moved = (0..count)
+        .map(|i| Some(if i < at { i } else { i + n }))
+        .collect();
+    (moved, count + n)
+}
+
+/// Old items `at..at + n` of `count` leave.
+fn remove(count: usize, at: usize, n: usize) -> (Vec<Option<usize>>, usize) {
+    let moved = (0..count)
+        .map(|i| match i {
+            i if i < at => Some(i),
+            i if i < at + n => None,
+            i => Some(i - n),
+        })
+        .collect();
+    (moved, count - n)
+}
+
+/// The gallery context of `count` ready items, `index` current, at
+/// display scale `scale`.
+fn scaled(count: usize, index: usize, scale: f32) -> UiContext<'static> {
+    let mut ctx = gallery_ctx(count, index, ready(count));
+    ctx.scale_factor = scale;
+    ctx
+}
+
+#[test]
+fn background_list_change_keeps_thumbnails_in_place() {
+    for scale in [1.0, 1.5] {
+        let before = scaled(300, 150, scale);
+        let mut ui = Ui::new();
+        let list = frame(&mut ui, &before);
+        let range = ui.gallery_visible_range(&before);
+        let (first, last) = (range.start, range.end - 1);
+        let old = xs(&list);
+        let pitch = old[&(first + 1)] - old[&first];
+        // (case, the change, the first old item that moves, by how many
+        // cells): items before that one keep their places.
+        let cases = [
+            ("insert before", insert(300, first - 20, 3), None, 0.0),
+            (
+                "insert inside",
+                insert(300, first + 2, 2),
+                Some(first + 2),
+                2.0,
+            ),
+            ("insert after", insert(300, last + 10, 4), None, 0.0),
+            ("remove before", remove(300, first - 30, 5), None, 0.0),
+            (
+                "remove inside",
+                remove(300, first + 3, 1),
+                Some(first + 4),
+                -1.0,
+            ),
+            ("remove after", remove(300, last + 5, 2), None, 0.0),
+        ];
+        for (what, (moved, count), split, cells) in cases {
+            let why = format!("{what} at scale {scale}");
+            let mut ui = Ui::new();
+            assert_eq!(xs(&frame(&mut ui, &before)), old, "{why}");
+            let index = moved[150].expect("the current item stays");
+            let after = at(scaled(count, index, scale), ms(1000));
+            ui.list_changed(&after, &moved);
+            let new = xs(&frame(&mut ui, &after));
+            let mut kept = 0;
+            for (&o, &x) in &old {
+                let Some(n) = moved[o] else { continue };
+                let shifted = split.is_some_and(|s| o >= s);
+                let expect = if shifted { x + cells * pitch } else { x };
+                match new.get(&n) {
+                    Some(&got) => assert_eq!(got, expect, "{why}: item {o} drawn as {n}"),
+                    // Pushed off the strip by the items that came.
+                    None => assert!(shifted && cells > 0.0, "{why}: item {o} gone"),
+                }
+                kept += usize::from(!shifted);
+            }
+            assert!(kept >= 2, "{why}: {kept} items stayed");
+            // Later frames leave the strip where it is.
+            let later = at(scaled(count, index, scale), ms(3000));
+            assert_eq!(xs(&frame(&mut ui, &later)), new, "{why}");
+        }
+    }
+}
+
+#[test]
+fn background_list_change_does_not_scroll_but_the_user_does() {
+    for scale in [1.0, 1.5] {
+        let mut ui = Ui::new();
+        let ctx = scaled(500, 250, scale);
+        frame(&mut ui, &ctx);
+        // The user scrolls the strip away from the current item.
+        let p = panel(&ui, &ctx).center();
+        wheel(&mut ui, &ctx, p, 40.0);
+        let scrolled = at(scaled(500, 250, scale), ms(2000));
+        let old = xs(&frame(&mut ui, &scrolled));
+        assert!(!ui.gallery_visible_range(&scrolled).contains(&250));
+
+        // Ten files come at the front, two go after the strip: the same
+        // thumbnails stay at the same places and the current item stays
+        // out of view.
+        let (front, count) = insert(500, 0, 10);
+        let (back, count) = remove(count, 400, 2);
+        let moved: Vec<Option<usize>> = front.iter().map(|m| m.and_then(|i| back[i])).collect();
+        let changed = at(scaled(count, 260, scale), ms(3000));
+        ui.list_changed(&changed, &moved);
+        let new = xs(&frame(&mut ui, &changed));
+        for (o, x) in &old {
+            let n = moved[*o].unwrap();
+            assert_eq!(new.get(&n), Some(x), "item {o} at scale {scale}");
+        }
+        let later = at(scaled(count, 260, scale), ms(5000));
+        assert_eq!(xs(&frame(&mut ui, &later)), new);
+        assert!(!ui.gallery_visible_range(&later).contains(&260));
+
+        // The user moves on to the next image: the strip shows it.
+        let next = at(scaled(count, 261, scale), ms(6000));
+        frame(&mut ui, &next);
+        let settled = at(scaled(count, 261, scale), ms(8000));
+        frame(&mut ui, &settled);
+        assert!(ui.gallery_visible_range(&settled).contains(&261));
+
+        // A new list the user opened (a count change without
+        // `list_changed`) scrolls to the current item as before.
+        let mut ui = Ui::new();
+        frame(&mut ui, &ctx);
+        wheel(&mut ui, &ctx, p, 40.0);
+        frame(&mut ui, &scrolled);
+        let opened = at(scaled(520, 300, scale), ms(4000));
+        frame(&mut ui, &opened);
+        let shown = at(scaled(520, 300, scale), ms(6000));
+        frame(&mut ui, &shown);
+        assert!(ui.gallery_visible_range(&shown).contains(&300));
+    }
 }
 
 #[test]

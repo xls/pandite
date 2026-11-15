@@ -4,7 +4,9 @@
 //! the wheel (smoothly animated toward a target offset) or by dragging. The
 //! current item is scrolled into view whenever the current index, the item
 //! count or the strip width changes; manual scrolling is left alone
-//! otherwise.
+//! otherwise. A change of the item list that the user did not ask for
+//! (files that came to or left the folder) scrolls nothing into view: the
+//! items on screen keep their places ([`GalleryState::follow`]).
 //!
 //! A selected item carries a small round badge in the top left corner of
 //! its cell. The badge is a marker only: a click anywhere on a cell shows
@@ -269,6 +271,40 @@ impl GalleryState {
             self.target = layout.scroll_to_show(index, self.target);
         }
         self.scroll = layout.clamp_scroll(self.scroll);
+    }
+
+    /// The items moved without the user: item `i` of the `old` layout is
+    /// item `moved[i]` of the `new` one, `None` when it left. The first
+    /// item on screen that stayed keeps its place, so the offset moves by
+    /// the width of the items that came or went before it. `index` and the
+    /// new count become the tracked ones: the strip does not scroll to the
+    /// current item for this change. Returns the change of the offset.
+    /// `None` when the strip did not show `old` or no item stayed; the
+    /// strip then tracks as usual.
+    pub fn follow(
+        &mut self,
+        old: &GalleryLayout,
+        new: &GalleryLayout,
+        index: usize,
+        moved: &[Option<usize>],
+    ) -> Option<f32> {
+        let (_, count, width, cell) = self.tracked?;
+        let same_strip = (width, cell) == (new.panel.w.round() as u32, new.cell.round() as u32);
+        if count != moved.len() || old.count != count || !same_strip {
+            return None;
+        }
+        let visible = old.visible_range(old.clamp_scroll(self.scroll));
+        let stayed = |i: usize| Some((i, moved[i].filter(|&n| n < new.count)?));
+        let (from, to) = visible
+            .clone()
+            .find_map(stayed)
+            .or_else(|| (0..visible.start).rev().find_map(stayed))
+            .or_else(|| (visible.end..count).find_map(stayed))?;
+        let delta = (new.origin + to as f32 * new.pitch) - (old.origin + from as f32 * old.pitch);
+        self.scroll = new.clamp_scroll(self.scroll + delta);
+        self.target = new.clamp_scroll(self.target + delta);
+        self.tracked = Some((index, new.count, width, cell));
+        Some(delta)
     }
 
     /// Advance the scroll animation by `dt` seconds. Returns true while it

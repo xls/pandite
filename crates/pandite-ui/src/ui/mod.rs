@@ -463,6 +463,50 @@ impl Ui {
         }
     }
 
+    /// The item list changed without the user asking (files came to or
+    /// left the folder on disk): `moved[i]` is the new index of old item
+    /// `i`, `None` for an item that left, and `ctx` describes the new list.
+    /// The gallery strip keeps what it shows in place: the first item on
+    /// screen that stayed keeps its position, so items that came or went
+    /// before it move the offset by their width. The strip does not
+    /// scroll to the current item for this change, and an offset the user
+    /// scrolled to stays. Hover and a press on the strip follow their
+    /// items. Call it before the next event or frame.
+    pub fn list_changed(&mut self, ctx: &UiContext<'_>, moved: &[Option<usize>]) {
+        let remap = |i: usize| moved.get(i).copied().flatten().filter(|&n| n < ctx.count);
+        self.gallery.hover = self.gallery.hover.and_then(remap);
+        if let Target::Gallery(Some(i)) = self.hover {
+            self.hover = Target::Gallery(remap(i));
+        }
+        let m = Metrics::of(ctx);
+        let shift = match (self.gallery_layout(ctx, &m), self.gallery.tracked) {
+            (Some(new), Some((_, count, _, _))) => {
+                let old = GalleryLayout::new(new.panel, count, &m);
+                self.gallery.follow(&old, &new, ctx.index, moved)
+            }
+            _ => None,
+        };
+        if let Some((
+            Capture::Gallery {
+                index,
+                start,
+                start_scroll,
+                dragging,
+            },
+            button,
+        )) = self.capture
+        {
+            // A drag goes on from where the items are now.
+            let capture = Capture::Gallery {
+                index: index.and_then(remap),
+                start,
+                start_scroll: start_scroll + shift.unwrap_or(0.0),
+                dragging,
+            };
+            self.capture = Some((capture, button));
+        }
+    }
+
     /// Answer [`Action::PickBulkFiles`]: add these files to the bulk job.
     pub fn add_bulk_files(&mut self, files: Vec<PathBuf>) {
         if let Some(b) = self.bulk_mut() {
