@@ -134,6 +134,37 @@ Release packages come from the
 On Windows, HEIC needs "HEIF Image Extensions" and "HEVC Video
 Extensions" from the Microsoft Store.
 
+### Omarchy
+
+Do these steps after you install Pandite, for example with `npx pandite`.
+The desktop entry of Pandite is `pandite.desktop`.
+
+1. Make Pandite the default viewer for every format that it opens:
+
+   ```sh
+   desktop=$(ls ~/.local/share/applications/pandite.desktop /usr/share/applications/pandite.desktop 2>/dev/null | head -n 1)
+   xdg-mime default pandite.desktop $(grep '^MimeType=' "$desktop" | cut -d= -f2 | tr ';' ' ')
+   ```
+
+2. Make sure that the default is set. This command must print
+   `pandite.desktop`:
+
+   ```sh
+   xdg-mime query default image/jpeg
+   ```
+
+3. To open Pandite as a floating window, add this line at the bottom of
+   `~/.config/hypr/hyprland.lua`:
+
+   ```lua
+   o.window("pandite", {tag = "+floating-window"})
+   ```
+
+The system can report a Sony ARW file as `image/tiff` and not as
+`image/x-sony-arw`. Step 1 sets Pandite for both types, so ARW files open
+in Pandite. To see the type of a file, run
+`xdg-mime query filetype <file>`.
+
 ## Command line
 
 ```text
