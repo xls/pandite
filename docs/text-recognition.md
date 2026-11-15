@@ -4,16 +4,18 @@ pandite reads the text in the image on screen, so you can select it and
 copy it like text in a document. A photo of a sign, a scanned page or a
 screenshot becomes text you can paste into a note or a search box.
 
-Recognition runs on your computer with the text recognizer that is part
-of the operating system. Nothing is sent anywhere, and pandite works the
-same without a network connection.
+Recognition runs on your computer. On Windows, pandite uses the text
+recognizer that is part of the operating system. On macOS and Linux,
+pandite uses its own recognizer, which is built into the program. Nothing
+is sent anywhere, and pandite works the same without a network
+connection.
 
 pandite reads the text after the image is on screen at full resolution
 and stays there for a quarter of a second. Recognition runs in the
-background at a low priority, so the image always comes first. When you
-move to another image, pandite stops the recognition. pandite keeps the
-text of recently viewed images until it closes, so an image that you come
-back to has its text at once.
+background, so the image always comes first. On Windows, it also runs at a
+low priority. When you move to another image, pandite stops the
+recognition. pandite keeps the text of recently viewed images until it
+closes, so an image that you come back to has its text at once.
 
 The recognizer reads upright text best. Sideways or upside-down text gives
 little or no text. When you rotate or flip the image, pandite reads the
@@ -74,17 +76,34 @@ turned image replaces them. Then the selection clears.
 
 ## Platforms and limits
 
-- Windows 10 and 11 only, for now. On macOS and Linux, pandite shows no
-  text features.
-- Windows reads text in the OCR languages that are installed. Windows
-  installs one with most display languages.
-- Without an OCR language, pandite shows no text features and no error.
+- Windows 10 and 11: pandite uses Windows OCR. Windows reads text in the
+  OCR languages that are installed. Windows installs one with most display
+  languages.
+- On Windows without an OCR language, pandite shows no text features and
+  no error.
+- macOS and Linux: pandite uses its built-in recognizer, the PP-OCRv6
+  tiny models of PaddleOCR. It needs no download, no language pack and no
+  network connection.
+- The built-in recognizer reads the Latin script, also with accented
+  letters, as in English, German, French, Spanish or Norwegian. It also
+  reads digits, punctuation and Chinese. It knows the plain Greek letters,
+  as in formulas, but not the accented letters of Greek text. It does not
+  read Cyrillic, Arabic, Hebrew or other scripts.
+- The built-in recognizer uses one processor core. On a desktop
+  processor, it reads a screenshot of 900 x 420 pixels in about half a
+  second. Large images and pages with many lines take longer, up to a few
+  seconds. The first image after start, and the first image of each new
+  size, take about a tenth of a second more.
+- With the built-in recognizer, the box of each word is as high as its
+  line.
 - pandite reads still images. It does not read animations.
 - Text that is not upright gives little or no text. Rotate or flip the
   image until the text is upright. pandite then reads it again.
-- pandite reads large images at 6000 pixels on the long side. Very small
-  print in a very large photo can be lost. Zooming in does not change
-  this.
+- On Windows, pandite reads large images at 6000 pixels on the long side.
+  On macOS and Linux, it reads them at 2000 pixels. Very small print in a
+  very large photo can be lost. Zooming in does not change this.
+- The models of the built-in recognizer are licensed under the Apache
+  License 2.0. See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
 ## Add an OCR language on Windows
 

@@ -1,0 +1,35 @@
+PP-OCRv6 tiny text detection and recognition models
+
+The built-in text recognizer of pandite on macOS and Linux embeds these two
+files unchanged. The Windows program does not contain them.
+
+| File | Size in bytes | SHA-256 |
+|---|---|---|
+| PP-OCRv6_det_tiny.onnx | 1829618 | f42c0fbd294d95eac1a550e131b277dac97462c8025fa4b6c3cec1b7894bd3d5 |
+| PP-OCRv6_rec_tiny.onnx | 4489813 | e16e242de5937ad92609223f19bc2aff3727ee40b095f996907c24749bad251b |
+
+The detection model reads an image and gives a probability map of text.
+The recognition model reads one line of text, 48 pixels high, and gives
+the probability of each of 6906 classes per time step. Its character list
+is in the ONNX metadata under the key "character".
+
+Origin: the PP-OCRv6 models of the PaddleOCR project
+(https://github.com/PaddlePaddle/PaddleOCR), converted to ONNX and
+distributed by the RapidOCR project (https://github.com/RapidAI/RapidOCR).
+pandite reads them the way RapidOCR 3.10.0 does.
+
+The upstream model weights are copyright Baidu and/or the applicable
+PaddleOCR rights holders. The conversion and packaging are copyright the
+RapidOCR Authors. Both are licensed under the Apache License, Version 2.0.
+The full license text is in LICENSE-APACHE beside this file.
+
+Modification notice, as RapidOCR states it for its converted models:
+
+    Converted from an official PaddleOCR model to the indicated inference
+    format and packaged for use with RapidOCR. The upstream model weights
+    are copyright Baidu and/or the applicable PaddleOCR rights holders and
+    are licensed under the Apache License, Version 2.0.
+
+RapidOCR has identified no model-specific NOTICE file of the upstream
+models. The names Baidu, PaddlePaddle, PaddleOCR and RapidOCR describe the
+origin of the files only. They imply no endorsement.

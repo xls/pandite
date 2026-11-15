@@ -7,31 +7,39 @@
 //! - Windows: [`WindowsOcr`], the recognizer built into Windows 10 and 11
 //!   (`Windows.Media.Ocr`). It runs fully offline and needs an OCR
 //!   language, which Windows installs with most display languages.
-//! - macOS and Linux: none yet. The registry stays empty and the viewer
-//!   shows no text features.
+//! - macOS and Linux: `PpOcr`, the PP-OCRv6 tiny models of PaddleOCR
+//!   embedded in the program and run by tract, a pure Rust inference
+//!   engine. It runs fully offline and needs nothing installed. It reads
+//!   Latin scripts and Chinese. The Windows program links neither the
+//!   engine nor the models; the unit tests build it on every system.
 //!
-//! Large images are scaled down before recognition: the long side is at
-//! most [`MAX_SIDE`] pixels (and never above the engine's own limit), and
-//! word outlines are mapped back to full-image pixels. [`prepare`] holds
-//! that platform-neutral part.
+//! For Windows OCR, large images are scaled down before recognition: the
+//! long side is at most [`MAX_SIDE`] pixels (and never above the engine's
+//! own limit), and word outlines are mapped back to full-image pixels.
+//! [`prepare`] holds that part. The built-in models read color and follow
+//! their reference pipeline instead, at most 2000 pixels on the long side.
 //!
 //! The Windows module is the only one with `unsafe` code: it lowers the
 //! worker thread's scheduling priority for the duration of a recognition.
 
 #![deny(unsafe_code)]
 
+#[cfg(any(not(windows), test))]
+mod pp_ocr;
 pub mod prepare;
 #[cfg(windows)]
 mod windows_ocr;
 
+#[cfg(any(not(windows), test))]
+pub use pp_ocr::{OcrLine, PpOcr};
 #[cfg(windows)]
 pub use windows_ocr::WindowsOcr;
 
 use pandite_core::{Registry, TextProvider};
 use std::sync::Arc;
 
-/// The longest side, in pixels, an image is recognized at. Larger images
-/// are scaled down by area averaging first.
+/// The longest side, in pixels, an image is recognized at with Windows
+/// OCR. Larger images are scaled down by area averaging first.
 ///
 /// Chosen by measurement (`examples/ocr_bench.rs`, Windows OCR, release
 /// build): a 9504 x 6336 synthetic photo with ten lines of text from 18 to
@@ -44,8 +52,8 @@ use std::sync::Arc;
 /// takes about 800 ms at 6000 x 8400.
 pub const MAX_SIDE: u32 = 6000;
 
-/// Every text recognizer this platform has, best first. Empty on
-/// platforms without one.
+/// Every text recognizer this platform has, best first: Windows OCR on
+/// Windows, the built-in PP-OCRv6 models on macOS and Linux.
 pub fn text_providers() -> Vec<Arc<dyn TextProvider>> {
     #[cfg(windows)]
     {
@@ -53,7 +61,7 @@ pub fn text_providers() -> Vec<Arc<dyn TextProvider>> {
     }
     #[cfg(not(windows))]
     {
-        Vec::new()
+        vec![Arc::new(PpOcr::new()) as Arc<dyn TextProvider>]
     }
 }
 

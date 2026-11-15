@@ -96,8 +96,10 @@ Writes PNG, JPEG, lossless WebP and BMP.
 - **Edit.** Rotate, flip, crop and resize with undo. Save as PNG, JPEG,
   WebP or BMP.
 - **Bulk convert.** Convert and resize a set of files or a whole folder.
-- **Text in images (Windows).** Select and copy the text in a picture
-  with the mouse. The Windows recognizer reads it offline.
+- **Text in images.** Select and copy the text in a picture with the
+  mouse. Windows reads it with its own recognizer. On macOS and Linux, a
+  recognizer built into Pandite reads Latin scripts and Chinese. Both work
+  offline.
 - **Image information.** I shows file size, pixel size, codec, channels,
   bit depth, compression ratio, color profile and camera settings.
 - **Copy.** Ctrl+C copies the image, Ctrl+Shift+C copies the file path.
@@ -190,8 +192,8 @@ Settings file: `%APPDATA%\pandite\settings.ini` on Windows,
 
 ## Build
 
-Rust 1.87 or later. Linux needs the libraries in
-[docs/building.md](docs/building.md).
+Rust 1.87 or later on Windows, 1.91 or later on macOS and Linux. Linux
+needs the libraries in [docs/building.md](docs/building.md).
 
 ```sh
 cargo build --release -p pandite-app
