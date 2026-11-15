@@ -753,20 +753,28 @@ fn read_sensor(d: &[u8], i: &Dng, cancel: &CancelToken) -> Result<Vec<u16>> {
     out.resize(len, 0);
     let (tw, th) = (i.tile.0.max(1), i.tile.1.max(1));
     let across = if i.tiled { w.div_ceil(tw) } else { 1 };
-    for (k, &(off, count)) in i.chunks.iter().enumerate() {
-        cancel.check()?;
+    let cw = if i.tiled { tw } else { w };
+    // Each chunk with its top left corner; chunks below the image are
+    // ignored.
+    let chunks: Vec<(usize, usize, usize, usize)> = i
+        .chunks
+        .iter()
+        .enumerate()
+        .map(|(k, &(off, count))| {
+            if i.tiled {
+                (off, count, (k % across) * tw, (k / across) * th)
+            } else {
+                (off, count, 0, k * th)
+            }
+        })
+        .take_while(|c| c.3 < h)
+        .collect();
+    // Chunks decode in parallel; each places its rows under the lock.
+    let plane = std::sync::Mutex::new(&mut out[..]);
+    crate::pool::run(chunks, cancel, |(off, count, x0, y0)| {
         let src = d
             .get(off..off.saturating_add(count))
             .ok_or_else(|| corrupt(FORMAT, "sensor data outside the file"))?;
-        let (x0, y0) = if i.tiled {
-            ((k % across) * tw, (k / across) * th)
-        } else {
-            (0, k * th)
-        };
-        if y0 >= h {
-            break;
-        }
-        let cw = if i.tiled { tw } else { w };
         let samples: Vec<u16> = match i.compression {
             1 => unpack(src, cw * th * spp, i.bits, i.le)?,
             7 => {
@@ -783,6 +791,9 @@ fn read_sensor(d: &[u8], i: &Dng, cancel: &CancelToken) -> Result<Vec<u16>> {
         };
         // Place the chunk; its rows are `cw * spp` samples long.
         let row = cw * spp;
+        let mut out = plane
+            .lock()
+            .map_err(|_| Error::Backend("sensor plane poisoned".into()))?;
         for r in 0..th.min(h - y0) {
             let s = r * row;
             if s >= samples.len() {
@@ -793,7 +804,8 @@ fn read_sensor(d: &[u8], i: &Dng, cancel: &CancelToken) -> Result<Vec<u16>> {
             let o = ((y0 + r) * w + x0) * spp;
             out[o..o + take].copy_from_slice(&samples[s..s + take]);
         }
-    }
+        Ok(())
+    })?;
     Ok(out)
 }
 
