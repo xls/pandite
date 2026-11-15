@@ -397,6 +397,10 @@ fn folder_checks_never_bring_the_question_back() {
     h.key(Key::Escape, Modifiers::NONE);
     assert_eq!(h.app().access_prompt(), None);
     assert_eq!(h.app().next_tick_at(), None);
+    // Work on the image on screen ends before the count starts.
+    assert!(h.app().library().wait_idle(support::WAIT));
+    h.pump();
+    h.frame();
     let wakes = h.wakes();
     time_passes(&mut h, 3);
     assert_eq!(h.app().access_prompt(), None);
