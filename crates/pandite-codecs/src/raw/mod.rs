@@ -902,12 +902,26 @@ fn camera_to_srgb(xyz_to_cam: [f64; 9]) -> Option<[f64; 9]> {
     invert(cam_rgb)
 }
 
+/// The mean of each color's samples, 0 for a color without samples.
+fn average(sum: [f32; 3], cnt: [u32; 3]) -> [f32; 3] {
+    [0, 1, 2].map(|c| {
+        if cnt[c] > 0 {
+            sum[c] / cnt[c] as f32
+        } else {
+            0.0
+        }
+    })
+}
+
+/// Output rows per work item of [`develop`].
+const BAND: usize = 64;
+
 /// Develop the DNG sensor image in one pass over the output area:
 /// normalize, demosaic, white balance, color matrix, then the default
 /// display rendering ([`tone`], with the file's baseline exposure as its
 /// exposure gain) and sRGB encoding per pixel, so only the sensor data and
-/// the result are held in memory. `eight_bit` delivers `Rgba8`, else
-/// `Rgba16`.
+/// the result are held in memory. Bands of [`BAND`] rows run on the shared
+/// decoder threads. `eight_bit` delivers `Rgba8`, else `Rgba16`.
 fn develop(d: &[u8], i: &Dng, cancel: &CancelToken, eight_bit: bool) -> Result<ImageBuf> {
     let format = if eight_bit {
         PixelFormat::Rgba8
@@ -929,20 +943,26 @@ fn develop(d: &[u8], i: &Dng, cancel: &CancelToken, eight_bit: bool) -> Result<I
 
     // Normalized (0..1) sample `s` at active-area position (y, x).
     let lut: Option<&[u16]> = (!i.linearization.is_empty()).then_some(&i.linearization[..]);
-    let (br, bc) = i.black_dim;
+    // Black level and white range per black pattern cell and sample.
+    let (br, bc) = (i.black_dim.0.max(1), i.black_dim.1.max(1));
+    let levels: Vec<(f32, f32)> = (0..br * bc * spp)
+        .map(|idx| {
+            let b = if i.black.is_empty() {
+                0.0
+            } else {
+                i.black.get(idx).or(i.black.first()).copied().unwrap_or(0.0)
+            };
+            (b, (i.white - b).max(1.0))
+        })
+        .collect();
     let norm = |y: usize, x: usize, s: usize| -> f32 {
         let v = raw[((y + top) * w + x + left) * spp + s];
         let v = match lut {
             Some(t) => f32::from(t[usize::from(v).min(t.len() - 1)]),
             None => f32::from(v),
         };
-        let b = if i.black.is_empty() {
-            0.0
-        } else {
-            let idx = ((y % br) * bc + (x % bc)) * spp + s;
-            i.black.get(idx).or(i.black.first()).copied().unwrap_or(0.0)
-        };
-        ((v - b) / (i.white - b).max(1.0)).clamp(0.0, 1.0)
+        let (b, range) = levels[((y % br) * bc + (x % bc)) * spp + s];
+        ((v - b) / range).clamp(0.0, 1.0)
     };
     let (pr, pc) = (i.pattern_dim.0.max(1), i.pattern_dim.1.max(1));
     let color = |r: usize, c: usize| -> usize {
@@ -975,15 +995,8 @@ fn develop(d: &[u8], i: &Dng, cancel: &CancelToken, eight_bit: bool) -> Result<I
                 }
             }
         }
-        [0, 1, 2].map(|c| {
-            if cnt[c] > 0 {
-                sum[c] / cnt[c] as f32
-            } else {
-                0.0
-            }
-        })
+        average(sum, cnt)
     };
-
     let neutral = i.neutral.unwrap_or([1.0, 1.0, 1.0]);
     let wb = neutral.map(|n| (1.0 / n) as f32);
     let matrix = i
@@ -1015,38 +1028,45 @@ fn develop(d: &[u8], i: &Dng, cancel: &CancelToken, eight_bit: bool) -> Result<I
     };
     let (cw, ch) = (cw.min(aw - cx), ch.min(ah - cy));
     let len = check_size(cw as u32, ch as u32, format)?;
-    let mut out = util::alloc(len, cw as u32, ch as u32)?;
-    for (row, y) in (cy..cy + ch).enumerate() {
-        if row % 128 == 0 {
-            cancel.check()?;
+    // Camera RGB to the output pixel.
+    let finish = |p: [f32; 3], px: &mut [u8]| {
+        // Clip after white balance so highlights stay neutral.
+        let c = [0, 1, 2].map(|k| (p[k] * wb[k]).min(1.0));
+        let rgb = match matrix {
+            Some(m) => {
+                [0, 1, 2].map(|r| m[r * 3] * c[0] + m[r * 3 + 1] * c[1] + m[r * 3 + 2] * c[2])
+            }
+            None => c,
+        };
+        let lin = rgb.map(|v| v.clamp(0.0, 1.0));
+        let shown = rendering.apply(lin);
+        if eight_bit {
+            for k in 0..3 {
+                px[k] = srgb8[tone::srgb8_index(shown[k])];
+            }
+            px[3] = 255;
+        } else {
+            for (k, v) in shown.into_iter().enumerate() {
+                let code = encode[(v.clamp(0.0, 1.0) * 65535.0 + 0.5) as usize];
+                px[2 * k..2 * k + 2].copy_from_slice(&code.to_ne_bytes());
+            }
+            px[6..8].copy_from_slice(&u16::MAX.to_ne_bytes());
         }
-        let line = &mut out[row * cw * bpp..(row + 1) * cw * bpp];
-        for (px, x) in line.chunks_exact_mut(bpp).zip(cx..cx + cw) {
-            let p = camera(y, x);
-            // Clip after white balance so highlights stay neutral.
-            let c = [0, 1, 2].map(|k| (p[k] * wb[k]).min(1.0));
-            let rgb = match matrix {
-                Some(m) => {
-                    [0, 1, 2].map(|r| m[r * 3] * c[0] + m[r * 3 + 1] * c[1] + m[r * 3 + 2] * c[2])
-                }
-                None => c,
-            };
-            let lin = rgb.map(|v| v.clamp(0.0, 1.0));
-            let shown = rendering.apply(lin);
-            if eight_bit {
-                for k in 0..3 {
-                    px[k] = srgb8[tone::srgb8_index(shown[k])];
-                }
-                px[3] = 255;
-            } else {
-                for (k, v) in shown.into_iter().enumerate() {
-                    let code = encode[(v.clamp(0.0, 1.0) * 65535.0 + 0.5) as usize];
-                    px[2 * k..2 * k + 2].copy_from_slice(&code.to_ne_bytes());
-                }
-                px[6..8].copy_from_slice(&u16::MAX.to_ne_bytes());
+    };
+    let mut out = util::alloc(len, cw as u32, ch as u32)?;
+    // Bands of rows develop in parallel.
+    let row_bytes = cw * bpp;
+    let bands: Vec<(usize, &mut [u8])> = out.chunks_mut(BAND * row_bytes).enumerate().collect();
+    crate::pool::run(bands, cancel, |(b, part)| {
+        let y0 = cy + b * BAND;
+        for (row, line) in part.chunks_exact_mut(row_bytes).enumerate() {
+            let y = y0 + row;
+            for (px, x) in line.chunks_exact_mut(bpp).zip(cx..cx + cw) {
+                finish(camera(y, x), px);
             }
         }
-    }
+        Ok(())
+    })?;
     ImageBuf::new(cw as u32, ch as u32, format, out)
 }
 
