@@ -21,12 +21,14 @@ be public: issues on GitHub can be read by everyone.
 
 ## Find the version
 
-Open the right-click menu or the shortcut overlay with F1. On a command
-line, run:
+On a command line, run:
 
 ```sh
 pandite --version
 ```
+
+On a Mac, select Pandite in Finder and press Command+I. On Windows, the
+version is in Settings, Apps, Installed apps.
 
 ## Documents
 
