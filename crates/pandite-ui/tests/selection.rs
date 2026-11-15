@@ -551,7 +551,6 @@ fn selected_image_shows_badge() {
         let ctx = with_image(ctx, 4000, 3000);
         let mut ui = Ui::new();
         let content = ui.content_rect(&ctx);
-        let image = ctx.image.unwrap().screen_rect;
         let list = frame(&mut ui, &ctx);
         assert!(text_rect_exact(&list, "Marked").is_none(), "not selected");
 
@@ -579,12 +578,10 @@ fn selected_image_shows_badge() {
             theme.check_fill,
             pandite_core::Color::rgba(255, 255, 255, 235)
         );
-        // In the bottom left corner of the image.
-        let visible = image.intersect(content).unwrap();
-        assert!(inside(pill, visible));
-        assert!(pill.center().x < visible.center().x && pill.center().y > visible.center().y);
-        assert!(pill.x - visible.x < 40.0 * scale);
-        assert!(visible.bottom() - pill.bottom() < 40.0 * scale);
+        // In the bottom left corner of the image area, above the strip.
+        assert!(inside(pill, content));
+        assert!(pill.x - content.x < 20.0 * scale);
+        assert!(content.bottom() - pill.bottom() < 20.0 * scale);
         // A label, not a check mark.
         assert!(checks_in(&list, content).is_empty());
 
@@ -595,13 +592,12 @@ fn selected_image_shows_badge() {
         assert!(text_rect_exact(&list, "Marked").is_none());
         assert!(checks_in(&list, content).is_empty());
 
-        // A small image keeps the pill on its own corner.
+        // A small image puts the pill in the same corner, not on itself.
         let mut small = with_image(ctx, 400, 200);
         small.selected = &[3];
         let list = frame(&mut ui, &small);
-        let rect = small.image.unwrap().screen_rect;
-        let label = text_rect_exact(&list, "Marked").expect("the pill shows");
-        assert!(inside(label, rect), "{rect:?} {label:?}");
+        let small_label = text_rect_exact(&list, "Marked").expect("the pill shows");
+        assert_eq!(small_label, label);
 
         // Crop mode hides the pill, so the corner stays free to crop.
         let mut ui = Ui::new();
@@ -619,45 +615,65 @@ fn selection_count_is_shown() {
     let list = frame(&mut ui, &ctx);
     assert!(!has_text(&list, "selected"), "nothing selected, no count");
 
-    ctx.selected = &[1, 4, 7];
+    // The image on screen (4) is not selected: the count takes the corner
+    // of the image area, in the accent color, and not the toolbar.
+    ctx.selected = &[1, 5, 7];
+    let content = ui.content_rect(&ctx);
     let list = frame(&mut ui, &ctx);
     let count = text_rect_exact(&list, "3 selected").expect("the count shows");
-    let position = text_rect_exact(&list, "4 / 10").expect("the position shows");
-    // Beside the position, on the same toolbar row, left of it.
-    assert_eq!(count.y, position.y);
-    assert!(count.right() < position.x && position.x - count.right() < 30.0);
-    assert!(count.bottom() <= 40.0);
+    assert!(count.x - content.x < 30.0);
+    assert!(content.bottom() - count.bottom() < 30.0);
     assert_eq!(text_color(&list, "3 selected"), Some(theme.accent));
+    assert!(text_rect_exact(&list, "Marked").is_none());
 
-    ctx.selected = &[9];
-    assert!(has_text(&frame(&mut ui, &ctx), "1 selected"));
+    // The image on screen is selected too: the count sits right of
+    // "Marked", on the same row.
+    ctx.selected = &[1, 3, 7];
+    let list = frame(&mut ui, &ctx);
+    let marked = text_rect_exact(&list, "Marked").expect("marked");
+    let count = text_rect_exact(&list, "3 selected").expect("count");
+    assert_eq!(count.center().y, marked.center().y);
+    assert!(count.x > marked.right());
 
-    // A file that failed to open shows the position and the count too.
+    // It stays while the toolbar is hidden.
+    let mut ui = Ui::new();
+    move_to(&mut ui, &at(ctx, ms(100)), Point::new(640.0, 400.0));
+    let list = frame(&mut ui, &at(ctx, ms(5000)));
+    assert!(has_text(&list, "3 selected"), "visible without the toolbar");
+
+    // A file that failed to open shows the count too.
     let mut failed = base_ctx();
     failed.selected = &[0, 3];
-    let list = frame(&mut ui, &failed);
-    let count = text_rect_exact(&list, "2 selected").expect("count without an image");
-    let position = text_rect_exact(&list, "4 / 10").unwrap();
-    assert!(count.right() < position.x);
+    assert!(has_text(&frame(&mut Ui::new(), &failed), "2 selected"));
 }
 
 #[test]
-fn toolbar_names_the_help_keys_when_there_is_room() {
+fn help_pill_sits_in_the_corner_and_fades_with_the_toolbar() {
     let theme = Theme::for_kind(image_ctx().theme);
+    let ctx = image_ctx();
     let mut ui = Ui::new();
-    let list = frame(&mut ui, &image_ctx());
-    let hint = text_rect_exact(&list, "F1/? help").expect("the help note shows");
-    let position = text_rect_exact(&list, "4 / 10").expect("the position shows");
-    // At the right end of the toolbar, right of the position.
-    assert!(hint.x > position.right(), "{hint:?} {position:?}");
-    assert!(hint.bottom() <= 40.0);
+    let content = ui.content_rect(&ctx);
+    let list = frame(&mut ui, &ctx);
+    let hint = text_rect_exact(&list, "F1/? help").expect("the help pill shows");
+    assert!(hint.x - content.x < 30.0);
+    assert!(content.bottom() - hint.bottom() < 30.0);
     assert_eq!(text_color(&list, "F1/? help"), Some(theme.text_dim));
 
-    // A narrow window keeps its room for the status and drops the note.
-    let mut narrow = image_ctx();
-    narrow.window_size = Size::new(640.0, 600.0);
-    let list = frame(&mut Ui::new(), &narrow);
-    assert!(!has_text(&list, "F1/? help"));
+    // Above the "Marked" pill when the image on screen is selected.
+    let mut selected = ctx;
+    selected.selected = &[3];
+    let list = frame(&mut ui, &selected);
+    let hint = text_rect_exact(&list, "F1/? help").unwrap();
+    let marked = text_rect_exact(&list, "Marked").unwrap();
+    assert!(hint.bottom() < marked.y, "{hint:?} above {marked:?}");
+
+    // Gone once the toolbar has faded out, and in a tiny window.
+    let mut ui = Ui::new();
+    move_to(&mut ui, &at(ctx, ms(100)), Point::new(640.0, 400.0));
+    assert!(!has_text(&frame(&mut ui, &at(ctx, ms(5000))), "F1/? help"));
+    let mut tiny = image_ctx();
+    tiny.window_size = Size::new(60.0, 60.0);
+    assert!(!has_text(&frame(&mut Ui::new(), &tiny), "F1/? help"));
 }
 
 #[test]

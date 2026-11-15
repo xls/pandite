@@ -45,6 +45,9 @@ impl Ui {
         if let Some(l) = loading.filter(|l| l.over_image) {
             self.draw_loading_pill(ctx, &l, measure, &m, theme, out);
         }
+        if self.crop.is_none() {
+            self.draw_help_hint(ctx, measure, &m, theme, content, out);
+        }
         self.draw_info(ctx, measure, &m, theme, content, out);
         self.draw_bottom(ctx, measure, &m, theme, content, out);
         self.draw_dialogs(ctx, measure, &m, theme, out);
@@ -87,9 +90,71 @@ impl Ui {
         out.clip(None);
     }
 
-    /// The "Marked" pill in the bottom left corner of the visible image
-    /// while the image on screen is selected. It fits its label at every
-    /// scale.
+    /// A pill for `label` in the bottom left corner of the image area, just
+    /// above the gallery strip. `None` when the area is too small for it.
+    fn corner_pill(
+        measure: &dyn TextMeasure,
+        m: &Metrics,
+        content: Rect,
+        label: &str,
+    ) -> Option<Rect> {
+        let h = m.marked_h();
+        let w = (measure.measure(label, m.text_small()).w + 2.0 * m.marked_pad()).ceil();
+        let margin = m.px(10.0);
+        if content.w < w + 2.0 * margin || content.h < m.toolbar_h() + 2.0 * h + 3.0 * margin {
+            return None;
+        }
+        Some(Rect::new(
+            (content.x + margin).round(),
+            (content.bottom() - margin - h).round(),
+            w,
+            h,
+        ))
+    }
+
+    /// Where the "Marked" pill sits while the image on screen is selected:
+    /// the bottom left corner of the image area, the same place for every
+    /// image size.
+    fn marked_rect(
+        &self,
+        ctx: &UiContext<'_>,
+        measure: &dyn TextMeasure,
+        m: &Metrics,
+        content: Rect,
+    ) -> Option<Rect> {
+        if ctx.image.is_none() || !ctx.current_selected() || self.crop.is_some() {
+            return None;
+        }
+        Self::corner_pill(measure, m, content, MARKED)
+    }
+
+    /// Where the pill with the number of selected images sits, and its
+    /// label: right of the "Marked" pill, or in the corner itself. It shows
+    /// whenever images are selected, also while the toolbar is hidden.
+    fn count_rect(
+        &self,
+        ctx: &UiContext<'_>,
+        measure: &dyn TextMeasure,
+        m: &Metrics,
+        content: Rect,
+    ) -> Option<(Rect, String)> {
+        if ctx.selected.is_empty() || self.crop.is_some() {
+            return None;
+        }
+        let label = format!("{} selected", ctx.selected.len());
+        let mut r = Self::corner_pill(measure, m, content, &label)?;
+        if let Some(marked) = self.marked_rect(ctx, measure, m, content) {
+            r.x = (marked.right() + m.px(6.0)).round();
+            if r.right() > content.right() - m.px(10.0) {
+                return None;
+            }
+        }
+        Some((r, label))
+    }
+
+    /// The "Marked" pill in the bottom left corner of the image area while
+    /// the image on screen is selected, and the number of selected images
+    /// beside it. Both fit their labels at every scale.
     fn draw_marked(
         &self,
         ctx: &UiContext<'_>,
@@ -99,20 +164,16 @@ impl Ui {
         content: Rect,
         out: &mut DrawList,
     ) {
-        let Some(info) = ctx.image else { return };
-        if !ctx.current_selected() {
-            return;
+        if let Some((r, label)) = self.count_rect(ctx, measure, m, content) {
+            out.rect(r, t.panel, r.h * 0.5);
+            out.border(r, t.border, m.hairline(), r.h * 0.5);
+            paint::text_center(out, measure, r, &label, m.text_small(), t.accent);
         }
-        let Some(visible) = info.screen_rect.intersect(content) else {
+        let Some(r) = self.marked_rect(ctx, measure, m, content) else {
             return;
         };
         let font = m.text_small();
-        let h = m.marked_h();
-        let w = (measure.measure(MARKED, font).w + 2.0 * m.marked_pad()).ceil();
-        let margin = m.px(10.0);
-        let y = (visible.bottom() - margin - h).max(visible.y);
-        let x = (visible.x + margin).min((visible.right() - w).max(visible.x));
-        let r = Rect::new(x.round(), y.round(), w, h);
+        let h = r.h;
         // The fill stops under the middle of the outline, so no light
         // edge shows outside the dark line.
         let line = m.px(1.5);
@@ -123,6 +184,39 @@ impl Ui {
         );
         out.border(r, t.check_line, line, h * 0.5);
         paint::text_center(out, measure, r, MARKED, font, t.check_mark);
+    }
+
+    /// The small pill that names the help keys, in the bottom left corner
+    /// of the image area, just above the gallery strip. It fades in and out
+    /// with the toolbar. While the "Marked" pill takes the corner, it sits
+    /// directly above it. It does not show when the image area is too
+    /// small for it.
+    fn draw_help_hint(
+        &self,
+        ctx: &UiContext<'_>,
+        measure: &dyn TextMeasure,
+        m: &Metrics,
+        t: &Theme,
+        content: Rect,
+        out: &mut DrawList,
+    ) {
+        let alpha = self.toolbar_alpha;
+        if alpha <= 0.0 || self.help {
+            return;
+        }
+        let Some(mut r) = Self::corner_pill(measure, m, content, HELP_HINT) else {
+            return;
+        };
+        let row = self
+            .marked_rect(ctx, measure, m, content)
+            .or_else(|| self.count_rect(ctx, measure, m, content).map(|(r, _)| r));
+        if let Some(row) = row {
+            r.y = (row.y - m.px(6.0) - r.h).round();
+        }
+        let (font, h) = (m.text_small(), r.h);
+        out.rect(r, fade(t.panel, alpha), h * 0.5);
+        out.border(r, fade(t.border, alpha), m.hairline(), h * 0.5);
+        paint::text_center(out, measure, r, HELP_HINT, font, fade(t.text_dim, alpha));
     }
 
     /// The marker of a selected thumbnail: a small round badge with a
@@ -216,44 +310,21 @@ impl Ui {
         alpha: f32,
         out: &mut DrawList,
     ) {
-        let mut area = self.toolbar.status;
+        let area = self.toolbar.status;
         if area.w < m.px(40.0) {
             return;
         }
         let font = m.text();
         let gap = m.px(14.0);
-        // A small note at the right end names the help keys. It shows only
-        // when the bar has room to spare, so it never pushes out the status.
-        let hint_font = m.text_small();
-        let hint_w = measure.measure(HELP_HINT, hint_font).w;
-        if area.w - hint_w - gap >= m.px(HELP_HINT_ROOM) {
-            let r = Rect::new(area.right() - hint_w, area.y, hint_w, area.h);
-            paint::text_left(
-                out,
-                measure,
-                r,
-                HELP_HINT,
-                hint_font,
-                fade(t.text_dim, alpha),
-            );
-            area.w -= hint_w + gap;
-        }
         let position = (ctx.count > 0)
             .then(|| format!("{} / {}", ctx.index.min(ctx.count - 1) + 1, ctx.count));
-        // The number of selected images sits beside the position.
-        let selected =
-            (!ctx.selected.is_empty()).then(|| format!("{} selected", ctx.selected.len()));
         let Some(info) = ctx.image else {
-            let mut right = area.right();
-            for (text, color) in [(position, t.text_dim), (selected, t.accent)] {
-                let Some(text) = text else { continue };
+            if let Some(text) = position {
                 let w = measure.measure(&text, font).w;
-                if right - w < area.x {
-                    break;
+                if w <= area.w {
+                    let r = Rect::new(area.right() - w, area.y, w, area.h);
+                    paint::text_left(out, measure, r, &text, font, fade(t.text_dim, alpha));
                 }
-                let r = Rect::new(right - w, area.y, w, area.h);
-                paint::text_left(out, measure, r, &text, font, fade(color, alpha));
-                right -= w + gap;
             }
             return;
         };
@@ -267,9 +338,6 @@ impl Ui {
         let mut parts: Vec<(String, Color)> = Vec::with_capacity(5);
         if let Some(p) = position {
             parts.push((p, t.text_dim));
-        }
-        if let Some(n) = selected {
-            parts.push((n, t.accent));
         }
         parts.push((zoom, t.text_dim));
         parts.push((dims, t.text_dim));
@@ -1274,12 +1342,9 @@ impl Ui {
 /// The label of the image on screen while it is selected.
 const MARKED: &str = "Marked";
 
-/// The note at the right end of the toolbar that names the help keys.
-const HELP_HINT: &str = "F1/? help";
-
-/// The status width, in unscaled pixels, that must stay free beside the
-/// help note. Below it the note is not shown.
-const HELP_HINT_ROOM: f32 = 360.0;
+/// The pill in the bottom left corner of the image area that names the
+/// help keys.
+pub(crate) const HELP_HINT: &str = "F1/? help";
 
 /// Geometry of the information panel for one frame.
 struct InfoLayout {
