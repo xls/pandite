@@ -10,13 +10,38 @@ npx pandite
 
 ## Commands
 
-| Command | Action |
-|---|---|
-| `npx pandite` | Install the latest release. |
-| `npx pandite install -v 0.2.0` | Install that release. `0.2.0` and `v0.2.0` are equal. |
-| `npx pandite update` | Install the latest release when it is newer than the installed one. Install it when Pandite is not installed. |
-| `npx pandite uninstall` | Remove Pandite. `--uninstall` is the same. |
-| `npx pandite --list` | Print the release versions, newest first. |
+Install the latest release of Pandite. The installer reads the releases on
+GitHub each time, so this command always gets the newest one, and it
+updates an older Pandite:
+
+```sh
+npx pandite
+```
+
+Install one named release. `0.2.0` and `v0.2.0` are equal:
+
+```sh
+npx pandite install -v 0.2.0
+```
+
+Install the latest release only when it is newer than the installed one.
+When Pandite is not installed, this installs it:
+
+```sh
+npx pandite update
+```
+
+Remove Pandite. `--uninstall` is the same:
+
+```sh
+npx pandite uninstall
+```
+
+Print the release versions, newest first:
+
+```sh
+npx pandite --list
+```
 
 | Option | Action |
 |---|---|
@@ -73,8 +98,11 @@ The installer asks nothing on an update and nothing without a terminal.
 | `--float` | Does the second step without a question. |
 | `--no-float` | Does not ask the second question. |
 
-To do a step for a Pandite that is installed, run `npx pandite --default`
-or `npx pandite --float`.
+To do the steps for a Pandite that is installed, run:
+
+```sh
+npx pandite --default --float
+```
 
 The installer keeps the earlier default program of each format.
 `npx pandite uninstall` gives each format that still opens with Pandite
@@ -96,8 +124,12 @@ it deletes the app.
 
 ## Notes
 
-- npx keeps a copy of the installer. To use the newest installer, run
-  `npx pandite@latest`.
+- npx keeps a copy of the installer. The kept copy still installs the
+  latest Pandite. To use the newest installer also, run:
+
+  ```sh
+  npx pandite@latest
+  ```
 - `npm install -g pandite` adds a `pandite` command that is this installer,
   not the image viewer. Use npx.
 

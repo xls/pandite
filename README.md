@@ -121,18 +121,85 @@ Text recognition: [docs/text-recognition.md](docs/text-recognition.md).
 
 ## Install
 
-Release packages come from the
-[releases page](https://github.com/xls/pandite/releases).
+### With npx (Windows, macOS, Linux)
 
-| System | Package | Steps |
-|---|---|---|
-| Windows x64, ARM64 | `pandite-<version>-<arch>-windows-setup.exe` | Run it. It installs for your user, without administrator rights, and associates image files. It is not code-signed: at the SmartScreen warning, select More info, then Run anyway. |
-| Windows x64, ARM64, portable | `pandite-<version>-<arch>-windows-portable.zip` | Extract. Run `pandite.exe --register` once to add Pandite to Open with and Default apps. |
-| macOS 11+, universal | `pandite-<version>-universal-macos.dmg` | Drag to Applications. The app is signed and notarized by Apple. |
-| Debian, Ubuntu x86_64, glibc 2.35+ | `pandite_<version>_amd64.deb` | `sudo apt install ./pandite_<version>_amd64.deb` |
-| Fedora, openSUSE x86_64, glibc 2.35+ | `pandite-<version>-1.x86_64.rpm` | `sudo dnf install ./pandite-<version>-1.x86_64.rpm` |
-| Linux x86_64, glibc 2.35+ | `pandite-<version>-x86_64-linux.tar.gz` | Extract. Run `./install.sh` to install for your user. |
-| Windows, macOS, Linux x86_64 with Node.js 18+ | npm package `pandite` (installer) | `npx pandite` installs the latest release for your user. It checks the download against `SHA256SUMS.txt`. `npx pandite update` installs a newer release, `npx pandite -v <version>` a named one, `npx pandite uninstall` removes Pandite. |
+This needs Node.js 18 or later.
+
+```sh
+npx pandite
+```
+
+The command always installs the latest release of Pandite for your user. It
+reads the releases on GitHub each time it runs, and it checks the download
+against `SHA256SUMS.txt`. When an older Pandite is installed, the same
+command updates it.
+
+To install a newer release only when one exists:
+
+```sh
+npx pandite update
+```
+
+To install one named release:
+
+```sh
+npx pandite -v 0.2.5
+```
+
+To remove Pandite:
+
+```sh
+npx pandite uninstall
+```
+
+`npx` keeps the installer that it downloaded before. To get the newest
+installer also, add `@latest`:
+
+```sh
+npx pandite@latest
+```
+
+### From the release files
+
+The files are on the
+[releases page](https://github.com/xls/pandite/releases). In the commands,
+replace `<version>` with the version of the file.
+
+**Windows x64 and ARM64, setup program.** Run
+`pandite-<version>-<arch>-windows-setup.exe`. It installs for your user,
+without administrator rights, and associates image files. It is not
+code-signed: at the SmartScreen warning, select More info, then Run anyway.
+
+**Windows x64 and ARM64, portable.** Extract
+`pandite-<version>-<arch>-windows-portable.zip`. To add Pandite to Open
+with and Default apps, run this command once in the extracted folder:
+
+```powershell
+.\pandite.exe --register
+```
+
+**macOS 11 or later.** Open `pandite-<version>-universal-macos.dmg` and
+drag Pandite to Applications. The app is signed and notarized by Apple.
+
+**Debian and Ubuntu x86_64, glibc 2.35 or later.**
+
+```sh
+sudo apt install ./pandite_<version>_amd64.deb
+```
+
+**Fedora and openSUSE x86_64, glibc 2.35 or later.**
+
+```sh
+sudo dnf install ./pandite-<version>-1.x86_64.rpm
+```
+
+**Other Linux x86_64, glibc 2.35 or later.** This installs for your user:
+
+```sh
+tar -xzf pandite-<version>-x86_64-linux.tar.gz
+cd pandite-<version>-x86_64-linux
+./install.sh
+```
 
 On Windows, HEIC needs "HEIF Image Extensions" and "HEVC Video
 Extensions" from the Microsoft Store.
@@ -140,7 +207,11 @@ Extensions" from the Microsoft Store.
 ### Omarchy
 
 `npx pandite` asks about both steps on a first install and does them for
-you. For a Pandite that is installed, run `npx pandite --default --float`.
+you. To do both steps for a Pandite that is installed, run:
+
+```sh
+npx pandite --default --float
+```
 
 To do the steps by hand, use these commands. The desktop entry of Pandite
 is `pandite.desktop`.
@@ -168,8 +239,11 @@ is `pandite.desktop`.
 
 The system can report a Sony ARW file as `image/tiff` and not as
 `image/x-sony-arw`. Step 1 sets Pandite for both types, so ARW files open
-in Pandite. To see the type of a file, run
-`xdg-mime query filetype <file>`.
+in Pandite. To see the type of a file, run:
+
+```sh
+xdg-mime query filetype <file>
+```
 
 ## Command line
 
