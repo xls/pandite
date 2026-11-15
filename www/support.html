@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Support - Pandite</title>
+<meta name="description" content="How to get help with Pandite.">
+<link rel="icon" href="icon.png">
+<style>
+:root { color-scheme: dark; --bg: #0b1020; --panel: #121a30; --text: #e9ecf4; --dim: #a7b0c6; --accent: #4f9cff; --line: #243052; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 17px/1.6 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+main { max-width: 760px; margin: 0 auto; padding: 48px 20px 72px; }
+header.top { display: flex; align-items: center; gap: 14px; margin-bottom: 36px; }
+header.top img { width: 44px; height: 44px; }
+header.top a { color: var(--text); text-decoration: none; font-weight: 600; font-size: 20px; }
+header.top nav { margin-left: auto; display: flex; gap: 18px; font-size: 15px; }
+header.top nav a { color: var(--dim); font-weight: 400; font-size: 15px; }
+h1 { font-size: 34px; line-height: 1.2; margin: 0 0 12px; }
+h2 { font-size: 21px; margin: 36px 0 8px; }
+p, li { color: var(--dim); }
+strong { color: var(--text); }
+a { color: var(--accent); }
+code { background: var(--panel); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; font: 14px/1.4 ui-monospace, Consolas, monospace; color: var(--text); }
+pre { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; overflow-x: auto; }
+pre code { border: 0; padding: 0; background: none; }
+.hero { text-align: center; padding: 16px 0 8px; }
+.hero img { width: 148px; height: 148px; }
+.hero p { font-size: 20px; max-width: 560px; margin: 8px auto 26px; }
+.button { display: inline-block; background: var(--accent); color: #06122b; text-decoration: none; font-weight: 600; padding: 12px 22px; border-radius: 10px; margin: 4px 6px; }
+.button.quiet { background: none; color: var(--text); border: 1px solid var(--line); }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-top: 34px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
+.card h3 { margin: 0 0 6px; font-size: 17px; color: var(--text); }
+.card p { margin: 0; font-size: 15px; }
+footer { margin-top: 56px; padding-top: 18px; border-top: 1px solid var(--line); font-size: 14px; color: var(--dim); }
+footer a { color: var(--dim); }
+</style>
+</head>
+<body>
+<main>
+<header class="top">
+<a href="./"><img src="icon.png" alt=""></a><a href="./">Pandite</a>
+<nav><a href="support.html">Support</a><a href="privacy.html">Privacy</a><a href="https://github.com/xls/pandite">GitHub</a></nav>
+</header>
+<h1>Support</h1>
+<p>Pandite is a free, open-source image viewer. Help comes through the project page on GitHub.</p>
+<h2>Report a problem or ask a question</h2>
+<p>Open an issue at <a href="https://github.com/xls/pandite/issues">https://github.com/xls/pandite/issues</a>.</p>
+<p>A good report says:</p>
+<ol><li>What you did.</li><li>What you expected.</li><li>What happened.</li><li>The Pandite version, and your system: Windows, macOS or Linux, and its version.</li></ol>
+<p>If one file causes the problem, say what kind of file it is, for example "a Sony ARW from an A7 IV". Attach the file only if you are happy for it to be public: issues on GitHub can be read by everyone.</p>
+<h2>Find the version</h2>
+<p>On a command line, run:</p>
+<pre><code>pandite --version</code></pre>
+<p>On a Mac, select Pandite in Finder and press Command+I. On Windows, the version is in Settings, Apps, Installed apps.</p>
+<h2>Documents</h2>
+<ul><li><a href="https://github.com/xls/pandite/blob/main/docs/shortcuts.md">Keyboard shortcuts and commands</a></li><li><a href="https://github.com/xls/pandite/blob/main/docs/formats.md">Supported formats</a></li><li><a href="https://github.com/xls/pandite/blob/main/docs/text-recognition.md">Text recognition</a></li><li><a href="privacy.html">Privacy policy</a></li></ul>
+<h2>Updates</h2>
+<ul><li><strong>Mac App Store and Microsoft Store:</strong> the store installs updates.</li><li><strong>Installed with <code>npx pandite</code>:</strong> run the command again.</li><li><strong>Downloaded from GitHub:</strong> get the new file from the <a href="https://github.com/xls/pandite/releases">releases page</a>.</li></ul>
+<footer>Pandite is free and open source under the MIT license. <a href="privacy.html">Privacy policy</a> - <a href="support.html">Support</a> - <a href="https://github.com/xls/pandite">Source code</a></footer>
+</main>
+</body>
+</html>

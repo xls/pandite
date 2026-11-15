@@ -1,6 +1,7 @@
-"""Build the small Pandite website (the gh-pages branch) from PRIVACY.md and SUPPORT.md.
-Usage: python packaging/make-site.py <repo> <out_dir>
-Publish: copy <out_dir> to the root of the gh-pages branch and push it."""
+"""Build the privacy and support pages of the Pandite website from PRIVACY.md and SUPPORT.md.
+Usage: python packaging/make-site.py . www
+The folder www/ is the website. Publish: copy its content to the root of the
+gh-pages branch and push it."""
 import html
 import re
 import shutil
@@ -138,24 +139,7 @@ def page(title, body, description):
 """
 
 
-HOME = """<section class="hero">
-<img src="icon.png" alt="Pandite icon">
-<h1>Pandite</h1>
-<p>A fast image viewer that works offline. It opens photos, camera RAW files and screenshots at once, and it never uses the network.</p>
-<a class="button" href="https://github.com/xls/pandite/releases/latest">Download</a>
-<a class="button quiet" href="https://github.com/xls/pandite">Source on GitHub</a>
-</section>
-<section class="cards">
-<div class="card"><h3>Fast</h3><p>A typical photo is on screen in a fraction of a second.</p></div>
-<div class="card"><h3>Many formats</h3><p>JPEG, PNG, WebP, AVIF, HEIC, TIFF, and camera RAW from Sony, Canon, Nikon, Fujifilm and others.</p></div>
-<div class="card"><h3>Private</h3><p>No account, no tracking, no network connection. Your pictures stay on your computer.</p></div>
-<div class="card"><h3>Text in images</h3><p>Select and copy text from a screenshot or a photo. The recognition runs on your computer.</p></div>
-<div class="card"><h3>Simple tools</h3><p>Crop, resize, rotate, bulk resize, and move, copy or delete a selection of images.</p></div>
-<div class="card"><h3>Windows, macOS, Linux</h3><p>One viewer with the same keys on every system.</p></div>
-</section>
-"""
-
-(out / "index.html").write_text(page("Pandite - a fast offline image viewer", HOME, "Pandite is a fast image viewer for Windows, macOS and Linux that works offline and never uses the network."), encoding="ascii", newline="\n")
+# The welcome page, index.html, is written by hand and lives in www/.
 for name, src, title, desc in [
     ("privacy.html", "PRIVACY.md", "Privacy policy - Pandite", "Pandite collects no data and makes no network connection."),
     ("support.html", "SUPPORT.md", "Support - Pandite", "How to get help with Pandite."),
