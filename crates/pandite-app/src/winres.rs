@@ -342,7 +342,7 @@ mod tests {
 
     #[test]
     fn resource_file_lists_icons_version_and_manifest() {
-        let ico = crate::icon::program_ico().unwrap();
+        let ico = include_bytes!("../assets/pandite.ico").to_vec();
         let version = version_info(&VersionStrings {
             version: "0.1.0",
             fields: FIELDS,

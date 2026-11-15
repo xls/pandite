@@ -2,13 +2,16 @@
 //!
 //! Usage: `cargo run -p pandite-app --example make_icon -- <out_dir> <size> [<size>...]`
 //!
-//! Writes `icon-<size>.png` for each size (antialiased, transparent
-//! background) and `pandite.ico` with every size of
+//! Scales the master `assets/icon-1024.png` of this crate. Writes
+//! `icon-<size>.png` for each size (transparent outside the tile), the raw
+//! window icons `icon-32.rgba` and `icon-64.rgba`, and `pandite.ico` with
+//! every size of
 //! `pandite_app::icon::ICO_SIZES` (32-bit bitmaps below 256 px, PNG at
-//! 256 px). Copy that file to `crates/pandite-app/assets/` after the icon
-//! changes. Sizes run from 1 to 4096.
+//! 256 px). Copy `pandite.ico`, `icon-256.png` and the two `.rgba` files to
+//! `crates/pandite-app/assets/` after the icon changes. Sizes run from 1 to 4096.
 
-use pandite_app::icon::{encode_png, program_ico, render_icon, MAX_ICON_SIZE};
+use pandite_app::icon::{encode_png, program_ico, scale_icon, MAX_ICON_SIZE};
+use pandite_core::{DecodeOptions, DecoderProvider, ImageBuf, Source};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -41,11 +44,41 @@ fn main() -> ExitCode {
         eprintln!("cannot create {}: {err}", dir.display());
         return ExitCode::FAILURE;
     }
+    let master_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/icon-1024.png");
+    let master: ImageBuf = match std::fs::read(&master_path)
+        .map_err(|e| e.to_string())
+        .and_then(|bytes| {
+            pandite_codecs::PngDecoder
+                .decode(&Source::from_vec(bytes, None), &DecodeOptions::default())
+                .map(|content| content.first_image().clone())
+                .map_err(|e| e.to_string())
+        }) {
+        Ok(master) => master,
+        Err(err) => {
+            eprintln!("cannot read {}: {err}", master_path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    for side in [32u32, 64] {
+        let path = dir.join(format!("icon-{side}.rgba"));
+        let raw = match scale_icon(&master, side) {
+            Ok(image) => image.data().to_vec(),
+            Err(err) => {
+                eprintln!("cannot scale the {side} px icon: {err}");
+                return ExitCode::FAILURE;
+            }
+        };
+        if let Err(err) = std::fs::write(&path, &raw) {
+            eprintln!("cannot write {}: {err}", path.display());
+            return ExitCode::FAILURE;
+        }
+        println!("wrote {}", path.display());
+    }
     for &size in &sizes {
-        let png = match render_icon(size).and_then(|img| encode_png(&img)) {
+        let png = match scale_icon(&master, size).and_then(|img| encode_png(&img)) {
             Ok(png) => png,
             Err(err) => {
-                eprintln!("cannot draw the {size} px icon: {err}");
+                eprintln!("cannot scale the {size} px icon: {err}");
                 return ExitCode::FAILURE;
             }
         };
@@ -57,7 +90,7 @@ fn main() -> ExitCode {
         println!("wrote {}", path.display());
     }
     let path = dir.join("pandite.ico");
-    let ico = match program_ico() {
+    let ico = match program_ico(&master) {
         Ok(ico) => ico,
         Err(err) => {
             eprintln!("cannot build the icon file: {err}");
