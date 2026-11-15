@@ -19,7 +19,7 @@
 //! Jobs already running finish.
 
 use super::{ErrorEntry, Role, Staged, Thumb};
-use super::{Kind, ListRunning, Outcome, PlanJob, Running, State, Task, Work};
+use super::{Kind, ListRunning, Listing, Outcome, PlanJob, Running, State, Task, Work};
 use crate::cache::Entry;
 use crate::fs::Stamp;
 use crate::{Event, Reduced};
@@ -517,7 +517,7 @@ impl State {
         if self.is_reserved(tid) {
             return None;
         }
-        if let Some((gen, target)) = self.list_pending.take() {
+        if let Some((gen, listing)) = self.list_pending.take() {
             let id = self.new_id();
             let cancel = CancelToken::new();
             self.list_running = Some(ListRunning {
@@ -529,7 +529,7 @@ impl State {
             return Some(Task {
                 id,
                 cancel,
-                work: Work::List { gen, target },
+                work: Work::List { gen, listing },
             });
         }
         // The current image has the machine to itself while it decodes.
@@ -683,12 +683,15 @@ impl State {
         let was_empty = self.events.is_empty();
         let mine = self.is_mine(&task);
         match task.work {
-            Work::List { gen, .. } => {
+            Work::List { gen, listing } => {
                 if mine {
                     self.list_running = None;
                     if gen == self.list_gen && !self.shutdown {
+                        // A check that could not list the folder changes
+                        // nothing.
                         if let Outcome::Listed(Some(list)) = outcome {
-                            self.merge_listing(list);
+                            let check = matches!(listing, Listing::Check { .. });
+                            self.merge_listing(list, check);
                         }
                     }
                 }

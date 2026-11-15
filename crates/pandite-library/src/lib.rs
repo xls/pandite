@@ -27,6 +27,9 @@
 //! - [`Library::export_thumbnails`] hands the thumbnails of the folder to
 //!   the next library ([`LibraryConfig::kept_thumbnails`]), which uses each
 //!   one whose file did not change instead of decoding it again.
+//! - [`Library::check_folder`] lists the folder again and reports added,
+//!   removed and changed files with [`Event::Changed`]. A folder that did
+//!   not change costs one directory listing and sends nothing.
 //!
 //! The crate uses only the standard library.
 //!
@@ -55,6 +58,6 @@ pub use fs::{
 };
 pub use kept::{KeptThumbnail, KeptThumbnails};
 pub use library::{
-    DownscaleFn, Event, Fetch, Library, LibraryConfig, LoadTimings, Reduced, Stats, ThumbnailFn,
-    WakeFn,
+    DownscaleFn, Event, Fetch, Library, LibraryConfig, ListChange, LoadTimings, Reduced, Stats,
+    ThumbnailFn, WakeFn,
 };

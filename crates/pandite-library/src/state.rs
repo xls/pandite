@@ -11,7 +11,7 @@ use crate::cache::{Cache, Entry, Rank, NO_INDEX};
 use crate::folder::FolderList;
 use crate::fs::{FileInfo, Stamp};
 use crate::kept::{KeptThumbnail, KeptThumbnails};
-use crate::{Event, Fetch, LoadTimings, Reduced, Stats};
+use crate::{Event, Fetch, ListChange, LoadTimings, Reduced, Stats};
 use pandite_core::{CancelToken, Content, Error, ImageBuf, Result};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
@@ -86,9 +86,24 @@ pub(crate) enum Work {
         from: Option<(Arc<Content>, Option<Stamp>)>,
         side: u32,
     },
-    /// List the folder of `target`.
-    List { gen: u64, target: PathBuf },
+    /// List a folder.
+    List { gen: u64, listing: Listing },
 }
+
+/// What a folder listing job lists.
+pub(crate) enum Listing {
+    /// The folder of a file (or a folder itself), as
+    /// [`FolderList::scan_with`] lists it.
+    Scan(PathBuf),
+    /// A check of `dir` with one directory listing
+    /// ([`FolderList::relist_with`]), keeping the files of `keep`.
+    Check { dir: PathBuf, keep: Vec<PathBuf> },
+}
+
+/// What the listing that made the list found about one file: its stamp
+/// and whether its data is stored locally. `None` for a path no listing
+/// reported.
+type Facts = Option<(Stamp, bool)>;
 
 /// What a worker reports back.
 pub(crate) enum Outcome {
@@ -246,6 +261,8 @@ impl ThumbRanker {
 pub(crate) struct State {
     cfg: Settings,
     items: Vec<PathBuf>,
+    /// What the listings found about each item, by index.
+    facts: Vec<Facts>,
     index_of: HashMap<PathBuf, usize>,
     current: Option<usize>,
     visible: Option<(usize, usize)>,
@@ -271,10 +288,13 @@ pub(crate) struct State {
     /// Screen decodes that failed; the full decode runs when the image
     /// becomes current and reports any error.
     screen_failed: HashSet<PathBuf>,
-    list_pending: Option<(u64, PathBuf)>,
+    list_pending: Option<(u64, Listing)>,
     list_running: Option<ListRunning>,
     list_gen: u64,
     last_dir: Option<PathBuf>,
+    /// The file passed to the last [`State::open`]: a folder check keeps
+    /// it in the list, also with an extension the registry does not know.
+    opened: Option<PathBuf>,
     /// Why the listing that made the list could not read its folder.
     listing_error: Option<io::ErrorKind>,
     events: VecDeque<Event>,
@@ -297,6 +317,7 @@ impl State {
         Self {
             cfg,
             items: Vec::new(),
+            facts: Vec::new(),
             index_of: HashMap::new(),
             current: None,
             visible: None,
@@ -318,6 +339,7 @@ impl State {
             list_running: None,
             list_gen: 0,
             last_dir: None,
+            opened: None,
             listing_error: None,
             events: VecDeque::new(),
             next_id: 1,
@@ -450,6 +472,10 @@ impl State {
         self.listing_error
     }
 
+    pub fn any_not_local(&self) -> bool {
+        !self.non_local.is_empty()
+    }
+
     /// Show `path` at once as a one-item list and list its folder on a worker.
     pub fn open(&mut self, path: PathBuf) {
         if self.kept.as_ref().is_some_and(|k| !k.serves(&path)) {
@@ -458,11 +484,12 @@ impl State {
         }
         self.cancel_listing();
         self.list_gen += 1;
-        self.list_pending = Some((self.list_gen, path.clone()));
+        self.list_pending = Some((self.list_gen, Listing::Scan(path.clone())));
         self.last_dir = path.parent().map(Path::to_path_buf);
+        self.opened = Some(path.clone());
         self.listing_error = None;
         self.user_cancelled.remove(&path);
-        self.replace_items(vec![path], Some(0), false);
+        self.replace_items(vec![path], vec![None], Some(0), false);
         self.preempt();
     }
 
@@ -475,7 +502,27 @@ impl State {
         let Some(target) = target else { return };
         self.cancel_listing();
         self.list_gen += 1;
-        self.list_pending = Some((self.list_gen, target));
+        self.list_pending = Some((self.list_gen, Listing::Scan(target)));
+    }
+
+    /// Look on a worker whether the folder of the list changed. Nothing
+    /// happens while a listing is queued or runs, or with no folder.
+    pub fn check(&mut self) {
+        if self.shutdown || self.list_pending.is_some() || self.list_running.is_some() {
+            return;
+        }
+        let Some(dir) = self.last_dir.clone() else {
+            return;
+        };
+        let current = self.current.and_then(|c| self.items.get(c));
+        let opened = self
+            .opened
+            .as_ref()
+            .filter(|p| self.index_of.contains_key(p.as_path()));
+        let mut keep: Vec<PathBuf> = current.into_iter().chain(opened).cloned().collect();
+        keep.dedup();
+        self.list_gen += 1;
+        self.list_pending = Some((self.list_gen, Listing::Check { dir, keep }));
     }
 
     pub fn set_items(&mut self, paths: Vec<PathBuf>) -> Option<usize> {
@@ -488,7 +535,15 @@ impl State {
             .current
             .and_then(|c| self.items.get(c))
             .and_then(|p| paths.iter().position(|x| x == p));
-        self.replace_items(paths, current, true);
+        // Facts follow their path.
+        let facts = paths
+            .iter()
+            .map(|p| {
+                let old = *self.index_of.get(p)?;
+                self.facts.get(old).copied().flatten()
+            })
+            .collect();
+        self.replace_items(paths, facts, current, true);
         self.current
     }
 
@@ -669,16 +724,24 @@ impl State {
             && self.scan(usize::MAX).is_none()
     }
 
-    /// Replace the folder list. Cached data follows its path to the new
-    /// index. Paths that left the list are dropped when `drop_missing` is
-    /// set, otherwise kept at the back of the eviction line.
-    fn replace_items(&mut self, paths: Vec<PathBuf>, current: Option<usize>, drop_missing: bool) {
+    /// Replace the folder list; `facts` holds what the listings found about
+    /// each path. Cached data follows its path to the new index. Paths
+    /// that left the list are dropped when `drop_missing` is set,
+    /// otherwise kept at the back of the eviction line.
+    fn replace_items(
+        &mut self,
+        paths: Vec<PathBuf>,
+        facts: Vec<Facts>,
+        current: Option<usize>,
+        drop_missing: bool,
+    ) {
         self.index_of = paths
             .iter()
             .enumerate()
             .map(|(i, p)| (p.clone(), i))
             .collect();
         self.items = paths;
+        self.facts = facts;
         let index_of = &self.index_of;
         self.full.remap(|p| index_of.get(p).copied(), drop_missing);
         self.screen
@@ -703,8 +766,18 @@ impl State {
     /// changed, record which files are not local, keep the current image
     /// selected by path, and cache the kept thumbnails whose file did not
     /// change (each announced with [`Event::ThumbnailReady`] after
-    /// [`Event::Listed`]).
-    fn merge_listing(&mut self, list: FolderList) {
+    /// [`Event::Listed`]). The listing of a folder `check` that finds the
+    /// list as it is changes nothing and queues no event; one that finds
+    /// a change is announced with [`Event::Changed`].
+    fn merge_listing(&mut self, list: FolderList, check: bool) {
+        let change = if check {
+            let Some(change) = self.list_change(&list) else {
+                return;
+            };
+            Some(change)
+        } else {
+            None
+        };
         let current_path = self.current.and_then(|c| self.items.get(c).cloned());
         let new_current = current_path.as_ref().and_then(|p| {
             list.index_of(p).or_else(|| {
@@ -744,15 +817,58 @@ impl State {
             .take()
             .filter(|k| k.folder == dir && k.thumb_size == side);
         self.last_dir = Some(dir);
-        self.replace_items(paths, new_current, true);
+        let facts = info.iter().map(|f| Some((f.stamp, f.local))).collect();
+        self.replace_items(paths, facts, new_current, true);
         let seeded = kept.map(|k| self.seed_thumbnails(k, &info));
-        self.push(Event::Listed {
-            len: self.items.len(),
-            current: self.current,
+        let (len, current) = (self.items.len(), self.current);
+        self.push(match change {
+            Some(change) => Event::Changed {
+                len,
+                current,
+                change,
+            },
+            None => Event::Listed { len, current },
         });
         for (index, path) in seeded.into_iter().flatten() {
             self.push(Event::ThumbnailReady { index, path });
         }
+    }
+
+    /// What `list` would change in the list, or `None` when it holds the
+    /// same paths in the same order, each with the same stamp and
+    /// locality, and the same listing error.
+    fn list_change(&self, list: &FolderList) -> Option<ListChange> {
+        let facts_of = |i: usize| list.info(i).map(|f| (f.stamp, f.local));
+        let fact = |i: usize| self.facts.get(i).copied().flatten();
+        let same = list.listing_error() == self.listing_error
+            && list.paths() == self.items.as_slice()
+            && (0..list.len()).all(|i| fact(i) == facts_of(i));
+        if same {
+            return None;
+        }
+        let map = list.index_map();
+        let moved: Vec<Option<usize>> = self
+            .items
+            .iter()
+            .map(|p| map.get(p.as_path()).copied())
+            .collect();
+        let removed = moved.iter().filter(|m| m.is_none()).count();
+        let added = list.len().saturating_sub(moved.len() - removed);
+        let stayed = || moved.iter().flatten();
+        let reordered = stayed().zip(stayed().skip(1)).any(|(a, b)| a >= b);
+        let mut modified: Vec<usize> = moved
+            .iter()
+            .enumerate()
+            .filter_map(|(old, new)| new.filter(|&n| fact(old) != facts_of(n)))
+            .collect();
+        modified.sort_unstable();
+        Some(ListChange {
+            moved,
+            added,
+            removed,
+            reordered,
+            modified,
+        })
     }
 
     /// Hold thumbnails kept from an earlier library until the folder

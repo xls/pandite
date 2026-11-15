@@ -64,6 +64,15 @@ fn names_match_ignoring_case(a: &OsStr, b: &OsStr) -> bool {
         || a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
 }
 
+/// The path to list for `dir`: the current directory for an empty path.
+fn listing_dir(dir: &Path) -> &Path {
+    if dir.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        dir
+    }
+}
+
 /// The openable files of one folder in natural order.
 #[derive(Clone, Debug, Default)]
 pub struct FolderList {
@@ -115,12 +124,7 @@ impl FolderList {
         registry: &Registry,
         files: &dyn FileAccess,
     ) -> Self {
-        let listing_dir = if dir.as_os_str().is_empty() {
-            Path::new(".")
-        } else {
-            dir.as_path()
-        };
-        let (listed, listing_error) = match files.list_dir(listing_dir) {
+        let (listed, listing_error) = match files.list_dir(listing_dir(&dir)) {
             Ok(listed) => (listed, None),
             Err(err) => (Vec::new(), Some(err.kind())),
         };
@@ -141,6 +145,74 @@ impl FolderList {
                 None => entries.push(target.clone()),
             }
         }
+        let opened = target.map(|t| t.name);
+        Self::from_entries(dir, entries, opened.as_deref(), listing_error)
+    }
+
+    /// List `dir` again with a single directory listing and nothing else,
+    /// to find out whether the folder changed. The files in `keep` stay in
+    /// the list while the folder holds them, also with an extension the
+    /// registry does not know (an opened file that a decoder found by its
+    /// signature). On Windows and macOS, a file of `keep` that the folder
+    /// holds under another case keeps the spelling of `keep`. The first
+    /// file of `keep` is the opened one. `None` when the folder cannot be
+    /// listed.
+    pub(crate) fn relist_with(
+        dir: &Path,
+        keep: &[PathBuf],
+        registry: &Registry,
+        files: &dyn FileAccess,
+    ) -> Option<Self> {
+        let listed = files.list_dir(listing_dir(dir)).ok()?;
+        let names: Vec<&OsStr> = keep
+            .iter()
+            .filter(|p| p.parent() == Some(dir))
+            .filter_map(|p| p.file_name())
+            .collect();
+        let mut kept = vec![false; listed.len()];
+        let mut found = vec![false; names.len()];
+        for (i, info) in listed.iter().enumerate() {
+            if let Some(k) = names.iter().position(|n| *n == info.name) {
+                kept[i] = info.is_file;
+                found[k] = true;
+            }
+        }
+        let mut spelled: Vec<(usize, &OsStr)> = Vec::new();
+        if cfg!(any(windows, target_os = "macos")) {
+            for (name, _) in names.iter().zip(&found).filter(|(_, f)| !**f) {
+                let other = (0..listed.len()).find(|&i| {
+                    !kept[i]
+                        && listed[i].is_file
+                        && names_match_ignoring_case(&listed[i].name, name)
+                });
+                if let Some(i) = other {
+                    kept[i] = true;
+                    spelled.push((i, name));
+                }
+            }
+        }
+        let mut entries = Vec::with_capacity(listed.len());
+        for (i, mut info) in listed.into_iter().enumerate() {
+            if let Some(&(_, name)) = spelled.iter().find(|(at, _)| *at == i) {
+                // Keep the caller's spelling so paths compare equal.
+                info.name = name.to_os_string();
+            }
+            if kept[i] || (info.is_file && registry.can_open_path(&dir.join(&info.name))) {
+                entries.push(info);
+            }
+        }
+        let opened = names.first().copied();
+        Some(Self::from_entries(dir.to_path_buf(), entries, opened, None))
+    }
+
+    /// Sort `entries` of `dir` into a list; `opened` names the entry that
+    /// was opened.
+    fn from_entries(
+        dir: PathBuf,
+        entries: Vec<FileInfo>,
+        opened: Option<&OsStr>,
+        listing_error: Option<io::ErrorKind>,
+    ) -> Self {
         let mut keyed: Vec<(String, FileInfo)> = entries
             .into_iter()
             .map(|info| (info.name.to_string_lossy().into_owned(), info))
@@ -149,7 +221,7 @@ impl FolderList {
         keyed.dedup_by(|a, b| a.1.name == b.1.name);
         let info: Vec<FileInfo> = keyed.into_iter().map(|(_, info)| info).collect();
         let paths: Vec<PathBuf> = info.iter().map(|i| dir.join(&i.name)).collect();
-        let opened = target.and_then(|t| info.iter().position(|i| i.name == t.name));
+        let opened = opened.and_then(|name| info.iter().position(|i| i.name == name));
         Self {
             dir,
             paths,

@@ -180,9 +180,38 @@ impl<T> Fetch<T> {
     }
 }
 
+/// How a folder check ([`Library::check_folder`]) found the list changed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ListChange {
+    /// For each index of the old list, the index of the same path in the
+    /// new list, or `None` when the path left the list (removed, or
+    /// renamed to a new path).
+    pub moved: Vec<Option<usize>>,
+    /// Paths that joined the list (new files, and new names of renamed
+    /// files).
+    pub added: usize,
+    /// Paths that left the list.
+    pub removed: usize,
+    /// True when paths that stayed come in another order.
+    pub reordered: bool,
+    /// New indexes of the paths that stayed whose file changed (size,
+    /// modification time, or whether it is stored locally), ascending.
+    /// Their cached images, thumbnails and errors are dropped when the
+    /// stamp changed, and made again when wanted.
+    pub modified: Vec<usize>,
+}
+
+impl ListChange {
+    /// True when no path joined, left or moved, and no file changed.
+    pub fn is_empty(&self) -> bool {
+        self.added == 0 && self.removed == 0 && !self.reordered && self.modified.is_empty()
+    }
+}
+
 /// Something the interface may want to react to. Indexes refer to the
 /// folder list at the time the event was queued; after
-/// [`Event::Listed`] earlier indexes are stale, so match by path.
+/// [`Event::Listed`] and [`Event::Changed`] earlier indexes are stale, so
+/// match by path.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum Event {
@@ -194,6 +223,20 @@ pub enum Event {
         len: usize,
         /// Index of the current image in the new list.
         current: Option<usize>,
+    },
+    /// A folder check ([`Library::check_folder`]) found the folder changed
+    /// and replaced the list. The current image stayed by path, or moved
+    /// to its neighbor when its file left, as after [`Library::refresh`].
+    /// Earlier indexes are stale: `change.moved` maps them to the new
+    /// ones. The visible gallery range was cleared: report it again with
+    /// [`Library::set_visible_thumbnails`].
+    Changed {
+        /// Number of images in the new list.
+        len: usize,
+        /// Index of the current image in the new list.
+        current: Option<usize>,
+        /// What changed.
+        change: ListChange,
     },
     /// A screen-resolution image is cached; [`Library::reduced`] returns
     /// it. For the current image it comes before [`Event::Ready`], and
@@ -454,6 +497,21 @@ impl Library {
         self.update(State::refresh);
     }
 
+    /// Look on a worker whether the folder changed, at the cost of one
+    /// directory listing. When the folder holds the same files with the
+    /// same sizes, modification times and locality as the list, nothing
+    /// changes: no event is queued and the wake callback is not called.
+    /// Otherwise the list is replaced as [`Library::refresh`] replaces it,
+    /// cached data of unchanged files stays, and [`Event::Changed`] tells
+    /// what changed. The current file and the opened file stay in the
+    /// list while the folder holds them, also when the registry does not
+    /// know their extension. A folder that cannot be listed changes
+    /// nothing. Does nothing while another listing is queued or runs, and
+    /// before the first listing.
+    pub fn check_folder(&self) {
+        self.update(State::check);
+    }
+
     /// Replace the list with `paths` (no disk access). Cached data follows
     /// its path. Kept thumbnails not used yet are dropped: without a
     /// listing their files cannot be checked. Returns the new index of the
@@ -493,6 +551,13 @@ impl Library {
     /// of a newly opened file runs, and after [`Library::set_items`].
     pub fn listing_error(&self) -> Option<std::io::ErrorKind> {
         self.shared.lock().listing_error()
+    }
+
+    /// True when the list holds files whose data is not stored on this
+    /// machine (cloud placeholders, offline storage), as the folder
+    /// listing or a worker found.
+    pub fn any_not_local(&self) -> bool {
+        self.shared.lock().any_not_local()
     }
 
     /// Show image `index`. Its decode is scheduled before anything else;

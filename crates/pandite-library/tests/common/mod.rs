@@ -473,6 +473,16 @@ impl FakeFiles {
         wait_until(&self.state, &self.cv, |s| s.lists > 0)
     }
 
+    /// Folder listings that started.
+    pub fn lists(&self) -> usize {
+        lock(&self.state).lists
+    }
+
+    /// Metadata lookups of single files that started.
+    pub fn infos(&self) -> usize {
+        lock(&self.state).infos.len()
+    }
+
     fn localize(&self, mut info: FileInfo) -> FileInfo {
         if lock(&self.state)
             .cloud

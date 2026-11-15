@@ -3,7 +3,7 @@
 use crate::folder::FolderList;
 use crate::fs::Stamp;
 use crate::library::{LoadTimings, Reduced, Shared};
-use crate::state::{Outcome, Staged, State, Task, Work};
+use crate::state::{Listing, Outcome, Staged, State, Task, Work};
 use pandite_core::{
     CancelToken, Content, DecodeOptions, Error, ImageBuf, ImageMeta, Result, Source,
 };
@@ -119,7 +119,10 @@ enum Early {
 
 fn run_task(shared: &Arc<Shared>, tid: u64, task: &Task, timings: &mut LoadTimings) -> Outcome {
     match &task.work {
-        Work::List { target, .. } => {
+        Work::List {
+            listing: Listing::Scan(target),
+            ..
+        } => {
             let listed = guard(|| {
                 Ok(FolderList::scan_with(
                     target,
@@ -128,6 +131,20 @@ fn run_task(shared: &Arc<Shared>, tid: u64, task: &Task, timings: &mut LoadTimin
                 ))
             });
             Outcome::Listed(listed.ok())
+        }
+        Work::List {
+            listing: Listing::Check { dir, keep },
+            ..
+        } => {
+            let listed = guard(|| {
+                Ok(FolderList::relist_with(
+                    dir,
+                    keep,
+                    &shared.registry,
+                    &*shared.files,
+                ))
+            });
+            Outcome::Listed(listed.ok().flatten())
         }
         Work::Full {
             path,
