@@ -125,6 +125,10 @@ On macOS, Ctrl is the Command key and Alt is the Option key.
 The gallery strip shows a thumbnail of each image of the folder along the
 bottom of the window. G shows or hides the strip.
 
+When an image is added to the folder, removed from it or renamed in it,
+the strip shows the change after a few seconds. The thumbnails on screen
+keep their place.
+
 - The thumbnails have three sizes: small, medium and large. Medium is the
   default.
 - A small thumbnail is 64 pixels, a medium thumbnail is 96 pixels and a

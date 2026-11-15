@@ -11,6 +11,11 @@
 //! workers or on the job threads in [`jobs`], which report through a
 //! channel and the [`Waker`]. A job stuck in a file system call or a
 //! clipboard hand-over is never waited for, also not when the app quits.
+//!
+//! Folder changes: while the window shows, [`App::tick`] lists the folder
+//! on screen again every [`FOLDER_CHECK`] on a library worker. Files that
+//! were added, removed or renamed outside pandite join or leave the
+//! gallery strip and the selection; the image on screen stays.
 
 mod jobs;
 mod text;
@@ -517,6 +522,14 @@ const MAX_EDIT_BYTES: usize = 1 << 30;
 /// arranged the window; then it stays as it is.
 const AUTO_SIZE_WINDOW: Duration = Duration::from_secs(3);
 
+/// How often the folder on screen is listed again, to find files that
+/// were added, removed or renamed.
+pub const FOLDER_CHECK: Duration = Duration::from_secs(2);
+
+/// How often a folder is listed again that holds files not stored on this
+/// machine (cloud placeholders) or that is a network share by its path.
+pub const SLOW_FOLDER_CHECK: Duration = Duration::from_secs(10);
+
 /// First-open window sizing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AutoSize {
@@ -576,6 +589,19 @@ struct State {
     /// A removed file whose folder is listed again: when the listing
     /// arrives, its neighbor shows.
     show_after_listing: Option<PathBuf>,
+    /// When the folder on screen was listed or checked last, on the clock
+    /// passed to the core. `None` before its first listing.
+    listed_at: Option<Duration>,
+    /// The last listing could not read the folder: it is not checked.
+    unlisted: bool,
+    /// The folder is checked at the slow interval ([`SLOW_FOLDER_CHECK`]).
+    slow_folder: bool,
+    /// The window is hidden, minimized or covered: the folder is not
+    /// checked.
+    hidden: bool,
+    /// How the gallery indexes moved in folder changes the interface was
+    /// not told about yet: the new index of each old one.
+    moved: Option<Vec<Option<usize>>>,
     folder: Option<PathBuf>,
     shown: Option<Shown>,
     loading: Option<LoadState>,
@@ -651,6 +677,15 @@ pub fn display_path(path: &Path) -> String {
     } else {
         text.into_owned()
     }
+}
+
+/// True for a path on a network share that its form tells, without
+/// touching the disk: a UNC path on Windows (`\\server\share`). A mapped
+/// drive letter cannot be told this way and counts as local.
+fn network_path(path: &Path) -> bool {
+    let text = path.to_string_lossy();
+    let device = text.starts_with(r"\\?\") || text.starts_with(r"\\.\");
+    cfg!(windows) && (text.starts_with(r"\\?\UNC\") || (text.starts_with(r"\\") && !device))
 }
 
 /// True when two paths name the same file, compared without touching the
@@ -758,6 +793,11 @@ impl App {
             count: 0,
             awaiting_listing: false,
             show_after_listing: None,
+            listed_at: None,
+            unlisted: false,
+            slow_folder: false,
+            hidden: false,
+            moved: None,
             folder: open
                 .as_deref()
                 .and_then(Path::parent)
@@ -1060,6 +1100,41 @@ impl App {
         }
     }
 
+    /// When [`App::tick`] is due next, on the clock passed as `now`: the
+    /// next look at the folder on screen for files that were added,
+    /// removed or renamed. It draws no frame. `None` while no look may
+    /// run: before the first listing of the folder and while it runs,
+    /// while the window is hidden ([`App::window_hidden`]), during a
+    /// delete, move or copy of files and during a save, and while the
+    /// folder cannot be listed.
+    pub fn next_tick_at(&self) -> Option<Duration> {
+        let st = &self.st;
+        let at = st.listed_at?;
+        st.may_check().then(|| at + st.check_interval())
+    }
+
+    /// Time passed: start the look at the folder on a worker when it is
+    /// due ([`App::next_tick_at`]). It requests no frame. A folder that
+    /// did not change costs one directory listing; a change arrives
+    /// through [`App::pump`] like any library event.
+    pub fn tick(&mut self, now: Duration) {
+        let st = &mut self.st;
+        let due = st
+            .listed_at
+            .is_some_and(|at| now >= at + st.check_interval());
+        if due && st.may_check() {
+            st.listed_at = Some(now);
+            st.library.check_folder();
+        }
+    }
+
+    /// The window is hidden, minimized or covered (`true`), or on screen
+    /// again. While it is hidden the folder is not checked; once it shows
+    /// again, a look that came due meanwhile runs at the next tick.
+    pub fn window_hidden(&mut self, hidden: bool) {
+        self.st.hidden = hidden;
+    }
+
     // ----- events from the shell -------------------------------------------
 
     /// The first frame is on screen: start opening the startup image.
@@ -1317,6 +1392,12 @@ impl App {
         let mut changed = !events.is_empty();
         for event in events {
             self.st.on_library_event(event);
+        }
+        if let Some(moved) = self.st.moved.take() {
+            // The folder changed on disk: the strip keeps its thumbnails
+            // where they are.
+            let ctx = context(&self.st, &self.ui, now);
+            self.ui.list_changed(&ctx, &moved);
         }
         let had_text = self.st.text_id();
         while let Ok(msg) = self.st.inbox.try_recv() {
@@ -2290,10 +2371,62 @@ impl State {
         self.notice = Some(format!("Cannot open {}: {err}", file_name(path)));
     }
 
+    /// The library replaced the folder list and reports `current`, the
+    /// new index of its current image: the target keeps its file by path,
+    /// or takes the index the library moved to when its file left.
+    fn follow_current(&mut self, current: Option<usize>) {
+        let Some(target) = &mut self.target else {
+            return;
+        };
+        match current {
+            Some(index) => target.index = index,
+            None => {
+                let path = target.path.clone();
+                if let Some(index) = self.index_of(&path) {
+                    if let Some(t) = &mut self.target {
+                        t.index = index;
+                    }
+                }
+            }
+        }
+    }
+
+    /// After a folder listing: whether the folder could be read, and
+    /// whether it is checked at the slow interval.
+    fn note_listing(&mut self) {
+        self.unlisted = self.library.listing_error().is_some();
+        self.slow_folder =
+            self.library.any_not_local() || self.folder.as_deref().is_some_and(network_path);
+    }
+
+    /// True when the folder on screen may be checked for changes now.
+    fn may_check(&self) -> bool {
+        !self.hidden
+            && self.folder.is_some()
+            && !self.awaiting_listing
+            && !self.unlisted
+            && self.batch.is_none()
+            && self.deleting.is_none()
+            && self.saving.is_none()
+            && self.pending_save.is_none()
+    }
+
+    /// The time between two checks of the folder on screen.
+    fn check_interval(&self) -> Duration {
+        if self.slow_folder {
+            SLOW_FOLDER_CHECK
+        } else {
+            FOLDER_CHECK
+        }
+    }
+
     fn on_library_event(&mut self, event: Event) {
         match event {
             Event::Listed { len, current } => {
                 self.awaiting_listing = false;
+                self.listed_at = Some(self.clock);
+                // A new list: the strip finds the current image again.
+                self.moved = None;
                 self.count = len;
                 self.thumbs.reset(len);
                 // Files that left the folder leave the selection; the rest
@@ -2308,20 +2441,33 @@ impl State {
                         let index = neighbor_index(&self.library.paths(), &removed);
                         self.go_to(index, self.clock);
                     }
-                } else if let Some(target) = &mut self.target {
-                    match current {
-                        Some(index) => target.index = index,
-                        None => {
-                            let path = target.path.clone();
-                            if let Some(index) = self.index_of(&path) {
-                                if let Some(t) = &mut self.target {
-                                    t.index = index;
-                                }
-                            }
-                        }
-                    }
+                } else {
+                    self.follow_current(current);
                 }
+                self.note_listing();
                 self.check_access();
+            }
+            Event::Changed {
+                len,
+                current,
+                change,
+            } => {
+                // Files came, went or changed on disk. The image on screen,
+                // its view and its text stay; unchanged files keep their
+                // thumbnails, and the selection keeps the files that stay.
+                self.count = len;
+                self.thumbs.remap(len, &change.moved, &change.modified);
+                self.prune_selection();
+                self.refresh_selected();
+                self.follow_current(current);
+                self.note_listing();
+                self.moved = Some(match self.moved.take() {
+                    Some(earlier) => earlier
+                        .iter()
+                        .map(|m| m.and_then(|i| change.moved.get(i).copied().flatten()))
+                        .collect(),
+                    None => change.moved,
+                });
             }
             Event::Reduced { path, .. } => {
                 let Some(target) = self.target.clone() else {
@@ -2374,7 +2520,10 @@ impl State {
                     load.cloud = true;
                 }
             }
-            Event::NotLocal { index, .. } => self.thumbs.mark(index, ThumbState::NotDownloaded),
+            Event::NotLocal { index, .. } => {
+                self.slow_folder = true;
+                self.thumbs.mark(index, ThumbState::NotDownloaded);
+            }
             Event::ThumbnailReady { index, .. } => self.thumbs.ready(index),
             Event::ThumbnailFailed { index, .. } => self.thumbs.mark(index, ThumbState::Failed),
             _ => {}

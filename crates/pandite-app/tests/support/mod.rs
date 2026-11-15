@@ -243,6 +243,24 @@ impl TestDisk {
         lock(&self.state).stall_write.insert(name.into());
     }
 
+    pub fn release_write(&self, name: &str) {
+        lock(&self.state).stall_write.remove(name);
+        self.cv.notify_all();
+    }
+
+    pub fn release_read(&self, name: &str) {
+        lock(&self.state).stall_read.remove(name);
+        self.cv.notify_all();
+    }
+
+    /// Listings of the folder `name` that started.
+    pub fn listings(&self, folder: &str) -> usize {
+        self.ops_on(folder)
+            .iter()
+            .filter(|op| **op == "list_dir")
+            .count()
+    }
+
     /// Whole-file reads of `name` block until released; head reads (the
     /// size probe) go through.
     pub fn stall_full_read(&self, name: &str) {
@@ -877,6 +895,7 @@ pub struct Harness {
     /// Every texture upload of the frames so far, in order.
     pub uploads: Vec<(TextureId, (u32, u32))>,
     wake_rx: Receiver<()>,
+    wakes: Arc<AtomicUsize>,
 }
 
 impl Harness {
@@ -887,6 +906,8 @@ impl Harness {
     pub fn with_disk(config: Config, disk: Arc<TestDisk>) -> Self {
         let (tx, wake_rx) = mpsc::channel();
         let tx = Mutex::new(tx);
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let woken = Arc::clone(&wakes);
         let window = Arc::new(Mutex::new(WindowLog {
             work_area: config.work_area,
             ..WindowLog::default()
@@ -903,6 +924,7 @@ impl Harness {
             dialogs: Box::new(dialogs.clone()),
             window: Box::new(FakeWindow(Arc::clone(&window))),
             waker: Arc::new(move || {
+                woken.fetch_add(1, Ordering::SeqCst);
                 let _ = lock(&tx).send(());
             }),
             sandbox: config.sandbox,
@@ -932,7 +954,25 @@ impl Harness {
             textures: HashMap::new(),
             uploads: Vec::new(),
             wake_rx,
+            wakes,
         }
+    }
+
+    /// Calls of the waker so far: library workers and job threads.
+    pub fn wakes(&self) -> usize {
+        self.wakes.load(Ordering::SeqCst)
+    }
+
+    /// The time for the next look at the folder came: tick the core as
+    /// the shell does at that deadline.
+    pub fn tick(&mut self) {
+        let now = self.now;
+        self.app().tick(now);
+    }
+
+    /// Requests for a redraw the core made so far.
+    pub fn redraws(&self) -> usize {
+        lock(&self.window).redraws
     }
 
     /// Report the newest full-resolution content taken as presented.

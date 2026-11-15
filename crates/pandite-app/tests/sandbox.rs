@@ -5,7 +5,7 @@
 
 mod support;
 
-use pandite_app::app::Handled;
+use pandite_app::app::{Handled, SLOW_FOLDER_CHECK};
 use pandite_app::disk::StdDisk;
 use pandite_app::platform::DialogKind;
 use pandite_app::sandbox::{
@@ -368,6 +368,67 @@ fn a_dismissed_folder_is_not_asked_for_again_in_the_session() {
     // With no prompt, Escape quits again.
     h.key(Key::Escape, Modifiers::NONE);
     assert!(h.app().exit_requested());
+}
+
+/// Let the clock pass the slow interval of a folder check `rounds` times,
+/// ticking the core as the shell does, and let each look end.
+fn time_passes(h: &mut Harness, rounds: usize) {
+    for _ in 0..rounds {
+        h.advance(SLOW_FOLDER_CHECK.as_millis() as u64);
+        h.tick();
+        assert!(h.app().library().wait_idle(support::WAIT));
+        h.pump();
+    }
+}
+
+#[test]
+fn folder_checks_never_bring_the_question_back() {
+    // A refused folder whose question the user dismissed: no look at the
+    // folder, no question, no message.
+    let scene = Scene::new("sandbox-watch");
+    let disk = TestDisk::new();
+    disk.refuse_listing("photos");
+    let store = scene.store(FakeBookmarks::default());
+    let mut h = scene.harness(Arc::clone(&disk), Some(store));
+    h.start();
+    assert!(h.wait_shown(&scene.images[0]));
+    assert!(h.wait_until(|a| a.access_prompt().is_some()));
+    h.frame();
+    h.key(Key::Escape, Modifiers::NONE);
+    assert_eq!(h.app().access_prompt(), None);
+    assert_eq!(h.app().next_tick_at(), None);
+    let wakes = h.wakes();
+    time_passes(&mut h, 3);
+    assert_eq!(h.app().access_prompt(), None);
+    assert!(!has_text(&h.frame(), ALLOW_MESSAGE));
+    assert_eq!(h.app().notice(), None);
+    assert_eq!(disk.listings("photos"), 1);
+    assert_eq!(h.wakes(), wakes);
+    assert_eq!(h.app().count(), 1);
+
+    // A folder that listed and is refused later (its access ended): each
+    // look fails without a word, and the list stays.
+    let scene = Scene::new("sandbox-watch-later");
+    let disk = TestDisk::new();
+    let store = scene.store(FakeBookmarks::default());
+    let mut h = scene.harness(Arc::clone(&disk), Some(store));
+    h.start();
+    assert!(h.wait_shown(&scene.images[0]));
+    assert!(h.wait_until(|a| a.count() == 3));
+    // The thumbnails of the strip are made before the count starts.
+    h.frame();
+    assert!(h.app().library().wait_idle(support::WAIT));
+    h.pump();
+    h.frame();
+    disk.refuse_listing("photos");
+    let (wakes, redraws) = (h.wakes(), h.redraws());
+    time_passes(&mut h, 3);
+    assert_eq!(disk.listings("photos"), 4);
+    assert_eq!(h.app().access_prompt(), None);
+    assert_eq!(h.app().notice(), None);
+    assert_eq!(h.app().count(), 3);
+    assert_eq!((h.wakes(), h.redraws()), (wakes, redraws));
+    assert!(!has_text(&h.frame(), ALLOW_MESSAGE));
 }
 
 #[test]

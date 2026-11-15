@@ -296,6 +296,9 @@ struct Shell {
     pending_drop: Option<PathBuf>,
     last_frame: Option<Instant>,
     anim_deadline: Option<Instant>,
+    /// When the next timed frame is due. A wake at another deadline (a
+    /// look at the folder) draws nothing.
+    frame_at: Option<Instant>,
     minimized: bool,
     occluded: bool,
     scale: f64,
@@ -391,6 +394,7 @@ impl Shell {
             pending_drop: None,
             last_frame: None,
             anim_deadline: None,
+            frame_at: None,
             minimized: false,
             occluded: false,
             scale: 1.0,
@@ -786,6 +790,7 @@ impl Shell {
         self.pending_drop = None;
         self.last_frame = None;
         self.anim_deadline = None;
+        self.frame_at = None;
         self.minimized = false;
         self.occluded = false;
         self.first_frame = false;
@@ -1245,8 +1250,14 @@ impl Shell {
 
 impl ApplicationHandler<UserEvent> for Shell {
     fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
-        if matches!(cause, StartCause::ResumeTimeReached { .. }) {
-            if let Some(window) = &self.window {
+        if let StartCause::ResumeTimeReached {
+            requested_resume, ..
+        } = cause
+        {
+            // A wake for a look at the folder only: `about_to_wait` starts
+            // it, and nothing is drawn.
+            let frame_due = self.frame_at.is_some_and(|at| at <= requested_resume);
+            if let (Some(window), true) = (&self.window, frame_due) {
                 window.request_redraw();
             }
         }
@@ -1469,6 +1480,7 @@ impl ApplicationHandler<UserEvent> for Shell {
         if self.renderer.is_none() {
             // Waiting for the GPU, or in the background: nothing to draw.
             // In the background, wake when the kept thumbnails expire.
+            self.frame_at = None;
             event_loop.set_control_flow(match self.kept_until {
                 Some(at) => ControlFlow::WaitUntil(at),
                 None => ControlFlow::Wait,
@@ -1492,15 +1504,31 @@ impl ApplicationHandler<UserEvent> for Shell {
         if let Some(at) = self.show_at {
             wake = Some(wake.map_or(at, |w| w.min(at)));
         }
+        self.frame_at = wake;
+        // The look at the folder for added and removed files: never while
+        // the window is not on screen, and without a frame.
+        let unseen = hidden || !self.visible;
+        let mut check = None;
+        if let Some(app) = self.app.as_mut() {
+            app.window_hidden(unseen);
+            app.tick(now);
+            check = app.next_tick_at().map(|at| self.start + at);
+        }
+        let check = check.filter(|_| !unseen);
         match wake {
             Some(t) if t <= Instant::now() => {
                 if !hidden {
                     window.request_redraw();
                 }
-                event_loop.set_control_flow(ControlFlow::Wait);
+                event_loop.set_control_flow(match check {
+                    Some(at) => ControlFlow::WaitUntil(at),
+                    None => ControlFlow::Wait,
+                });
             }
-            Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
-            None => event_loop.set_control_flow(ControlFlow::Wait),
+            _ => match wake.into_iter().chain(check).min() {
+                Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
+                None => event_loop.set_control_flow(ControlFlow::Wait),
+            },
         }
     }
 }

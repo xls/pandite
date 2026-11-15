@@ -37,6 +37,60 @@ impl Thumbs {
         self.dirty = true;
     }
 
+    /// The folder changed on disk: the file at old index `i` is at new
+    /// index `moved[i]` (`None`: it left), the files at the new indexes in
+    /// `modified` changed, and the list holds `len` files. Each unchanged
+    /// file keeps its state at its new index. Texture ids are indexes: a
+    /// thumbnail that kept its index keeps its texture, and one that moved
+    /// is uploaded again from the library's cache under its new index.
+    /// New and changed files start pending.
+    pub fn remap(&mut self, len: usize, moved: &[Option<usize>], modified: &[usize]) {
+        let changed: BTreeSet<usize> = modified.iter().copied().collect();
+        let mut states = vec![ThumbState::Pending; len];
+        let mut uploaded = BTreeSet::new();
+        let mut refresh = BTreeSet::new();
+        for (old, state) in self.states.iter().enumerate() {
+            let new = moved.get(old).copied().flatten();
+            let Some(new) = new.filter(|n| *n < len && !changed.contains(n)) else {
+                continue;
+            };
+            match state {
+                ThumbState::Ready { .. } => {
+                    if new == old && self.uploaded.contains(&old) {
+                        states[new] = *state;
+                        uploaded.insert(new);
+                        if self.refresh.contains(&old) {
+                            refresh.insert(new);
+                        }
+                    }
+                }
+                other => states[new] = *other,
+            }
+        }
+        // A texture under an index that now holds another file goes.
+        self.remove
+            .extend(self.uploaded.difference(&uploaded).copied());
+        // The strip shows the same files: the visible range moves with
+        // its first file that stayed.
+        let anchor = self
+            .visible
+            .clone()
+            .find_map(|i| Some((i, moved.get(i).copied().flatten()?)));
+        self.visible = match anchor {
+            Some((old, new)) => {
+                let start = (self.visible.start + new).saturating_sub(old).min(len);
+                let end = (self.visible.end + new).saturating_sub(old).min(len);
+                start..end
+            }
+            None => 0..0,
+        };
+        self.states = states;
+        self.uploaded = uploaded;
+        self.refresh = refresh;
+        self.reported = false;
+        self.dirty = true;
+    }
+
     /// Forget every upload (the GPU device was replaced).
     pub fn invalidate(&mut self) {
         self.uploaded.clear();

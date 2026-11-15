@@ -90,7 +90,8 @@ Writes PNG, JPEG, lossless WebP and BMP.
 ## Features
 
 - **Gallery strip.** Thumbnails of the folder along the bottom. G shows
-  or hides it.
+  or hides it. It follows the folder: images that you add, remove or
+  rename show up or leave within seconds, and the image on screen stays.
 - **Zoom.** Fit, 1:1 and zoom at the pointer. Past 3x, each image pixel
   is a crisp square.
 - **Edit.** Rotate, flip, crop and resize with undo. Save as PNG, JPEG,
