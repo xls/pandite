@@ -578,9 +578,9 @@ fn selected_image_shows_badge() {
             theme.check_fill,
             pandite_core::Color::rgba(255, 255, 255, 235)
         );
-        // In the bottom left corner of the image area, above the strip.
+        // In the bottom right corner of the image area, above the strip.
         assert!(inside(pill, content));
-        assert!(pill.x - content.x < 20.0 * scale);
+        assert!(content.right() - pill.right() < 20.0 * scale);
         assert!(content.bottom() - pill.bottom() < 20.0 * scale);
         // A label, not a check mark.
         assert!(checks_in(&list, content).is_empty());
@@ -615,31 +615,48 @@ fn selection_count_is_shown() {
     let list = frame(&mut ui, &ctx);
     assert!(!has_text(&list, "selected"), "nothing selected, no count");
 
-    // The image on screen (4) is not selected: the count takes the corner
-    // of the image area, in the accent color, and not the toolbar.
+    // The image on screen (4) is not selected: the count sits in the
+    // bottom right of the image area, in the accent color, and not the
+    // toolbar.
     ctx.selected = &[1, 5, 7];
     let content = ui.content_rect(&ctx);
     let list = frame(&mut ui, &ctx);
     let count = text_rect_exact(&list, "3 selected").expect("the count shows");
-    assert!(count.x - content.x < 30.0);
+    let unmarked = count;
+    assert!(count.center().x > content.center().x);
     assert!(content.bottom() - count.bottom() < 30.0);
     assert_eq!(text_color(&list, "3 selected"), Some(theme.accent));
     assert!(text_rect_exact(&list, "Marked").is_none());
 
-    // The image on screen is selected too: the count sits right of
-    // "Marked", on the same row.
+    // The image on screen is selected too: "Marked" takes the corner,
+    // right of the count, and the count does not move.
     ctx.selected = &[1, 3, 7];
     let list = frame(&mut ui, &ctx);
     let marked = text_rect_exact(&list, "Marked").expect("marked");
     let count = text_rect_exact(&list, "3 selected").expect("count");
     assert_eq!(count.center().y, marked.center().y);
-    assert!(count.x > marked.right());
+    assert!(marked.x > count.right());
+    assert_eq!(count, unmarked, "the count stays in place");
+    assert!(content.right() - marked.right() < 30.0);
+
+    // A longer count keeps its right edge.
+    ctx.selected = &[0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11];
+    let list = frame(&mut ui, &ctx);
+    let long = text_rect_exact(&list, "11 selected").expect("count");
+    assert!(
+        (long.right() - count.right()).abs() <= 1.0,
+        "{long:?} {count:?}"
+    );
+    assert_eq!(text_rect_exact(&list, "Marked"), Some(marked));
 
     // It stays while the toolbar is hidden.
     let mut ui = Ui::new();
     move_to(&mut ui, &at(ctx, ms(100)), Point::new(640.0, 400.0));
     let list = frame(&mut ui, &at(ctx, ms(5000)));
-    assert!(has_text(&list, "3 selected"), "visible without the toolbar");
+    assert!(
+        has_text(&list, "11 selected"),
+        "visible without the toolbar"
+    );
 
     // A file that failed to open shows the count too.
     let mut failed = base_ctx();
@@ -659,13 +676,13 @@ fn help_pill_sits_in_the_corner_and_fades_with_the_toolbar() {
     assert!(content.bottom() - hint.bottom() < 30.0);
     assert_eq!(text_color(&list, "F1/? help"), Some(theme.text_dim));
 
-    // Above the "Marked" pill when the image on screen is selected.
+    // It stays alone in its corner when images are selected.
     let mut selected = ctx;
     selected.selected = &[3];
     let list = frame(&mut ui, &selected);
-    let hint = text_rect_exact(&list, "F1/? help").unwrap();
+    assert_eq!(text_rect_exact(&list, "F1/? help"), Some(hint));
     let marked = text_rect_exact(&list, "Marked").unwrap();
-    assert!(hint.bottom() < marked.y, "{hint:?} above {marked:?}");
+    assert!(marked.x > hint.right());
 
     // Gone once the toolbar has faded out, and in a tiny window.
     let mut ui = Ui::new();

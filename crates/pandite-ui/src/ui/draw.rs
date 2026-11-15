@@ -90,31 +90,42 @@ impl Ui {
         out.clip(None);
     }
 
-    /// A pill for `label` in the bottom left corner of the image area, just
-    /// above the gallery strip. `None` when the area is too small for it.
+    /// A box for `label` in a bottom corner of the image area, just above
+    /// the gallery strip: the left corner, or the right corner with
+    /// `right`. `None` when the area is too small for it.
     fn corner_pill(
         measure: &dyn TextMeasure,
         m: &Metrics,
         content: Rect,
         label: &str,
+        right: bool,
     ) -> Option<Rect> {
         let h = m.marked_h();
         let w = (measure.measure(label, m.text_small()).w + 2.0 * m.marked_pad()).ceil();
         let margin = m.px(10.0);
-        if content.w < w + 2.0 * margin || content.h < m.toolbar_h() + 2.0 * h + 3.0 * margin {
+        if content.w < w + 2.0 * margin || content.h < m.toolbar_h() + h + 2.0 * margin {
             return None;
         }
+        let x = if right {
+            content.right() - margin - w
+        } else {
+            content.x + margin
+        };
         Some(Rect::new(
-            (content.x + margin).round(),
+            x.round(),
             (content.bottom() - margin - h).round(),
             w,
             h,
         ))
     }
 
-    /// Where the "Marked" pill sits while the image on screen is selected:
-    /// the bottom left corner of the image area, the same place for every
-    /// image size.
+    /// The place of the "Marked" pill: the bottom right corner of the image
+    /// area. The place stays the same while images are marked and unmarked.
+    fn marked_slot(measure: &dyn TextMeasure, m: &Metrics, content: Rect) -> Option<Rect> {
+        Self::corner_pill(measure, m, content, MARKED, true)
+    }
+
+    /// Where the "Marked" pill sits while the image on screen is selected.
     fn marked_rect(
         &self,
         ctx: &UiContext<'_>,
@@ -125,12 +136,13 @@ impl Ui {
         if ctx.image.is_none() || !ctx.current_selected() || self.crop.is_some() {
             return None;
         }
-        Self::corner_pill(measure, m, content, MARKED)
+        Self::marked_slot(measure, m, content)
     }
 
     /// Where the pill with the number of selected images sits, and its
-    /// label: right of the "Marked" pill, or in the corner itself. It shows
-    /// whenever images are selected, also while the toolbar is hidden.
+    /// label. Its right edge is fixed, left of the place of the "Marked"
+    /// pill, also while that pill does not show. It shows whenever images
+    /// are selected, also while the toolbar is hidden.
     fn count_rect(
         &self,
         ctx: &UiContext<'_>,
@@ -142,19 +154,18 @@ impl Ui {
             return None;
         }
         let label = format!("{} selected", ctx.selected.len());
-        let mut r = Self::corner_pill(measure, m, content, &label)?;
-        if let Some(marked) = self.marked_rect(ctx, measure, m, content) {
-            r.x = (marked.right() + m.px(6.0)).round();
-            if r.right() > content.right() - m.px(10.0) {
-                return None;
-            }
+        let slot = Self::marked_slot(measure, m, content)?;
+        let mut r = Self::corner_pill(measure, m, content, &label, true)?;
+        r.x = (slot.x - m.px(6.0) - r.w).round();
+        if r.x < content.x + m.px(10.0) {
+            return None;
         }
         Some((r, label))
     }
 
-    /// The "Marked" pill in the bottom left corner of the image area while
+    /// The "Marked" pill in the bottom right corner of the image area while
     /// the image on screen is selected, and the number of selected images
-    /// beside it. Both fit their labels at every scale.
+    /// left of it in a box with a border. Both fit their labels at every scale.
     fn draw_marked(
         &self,
         ctx: &UiContext<'_>,
@@ -165,8 +176,8 @@ impl Ui {
         out: &mut DrawList,
     ) {
         if let Some((r, label)) = self.count_rect(ctx, measure, m, content) {
-            out.rect(r, t.panel, r.h * 0.5);
-            out.border(r, t.border, m.hairline(), r.h * 0.5);
+            out.rect(r, t.panel, 0.0);
+            out.border(r, t.border, m.hairline(), 0.0);
             paint::text_center(out, measure, r, &label, m.text_small(), t.accent);
         }
         let Some(r) = self.marked_rect(ctx, measure, m, content) else {
@@ -186,11 +197,11 @@ impl Ui {
         paint::text_center(out, measure, r, MARKED, font, t.check_mark);
     }
 
-    /// The small pill that names the help keys, in the bottom left corner
-    /// of the image area, just above the gallery strip. It fades in and out
-    /// with the toolbar. While the "Marked" pill takes the corner, it sits
-    /// directly above it. It does not show when the image area is too
-    /// small for it.
+    /// The small box with a border that names the help keys, alone in the bottom left
+    /// corner of the image area, just above the gallery strip. It fades in
+    /// and out with the toolbar. It does not show when the image area is
+    /// too small for it, or when it would touch the pills in the right
+    /// corner.
     fn draw_help_hint(
         &self,
         ctx: &UiContext<'_>,
@@ -204,18 +215,19 @@ impl Ui {
         if alpha <= 0.0 || self.help {
             return;
         }
-        let Some(mut r) = Self::corner_pill(measure, m, content, HELP_HINT) else {
+        let Some(r) = Self::corner_pill(measure, m, content, HELP_HINT, false) else {
             return;
         };
-        let row = self
-            .marked_rect(ctx, measure, m, content)
-            .or_else(|| self.count_rect(ctx, measure, m, content).map(|(r, _)| r));
-        if let Some(row) = row {
-            r.y = (row.y - m.px(6.0) - r.h).round();
+        let right = self
+            .count_rect(ctx, measure, m, content)
+            .map(|(c, _)| c.x)
+            .or_else(|| self.marked_rect(ctx, measure, m, content).map(|c| c.x));
+        if right.is_some_and(|x| r.right() + m.px(6.0) > x) {
+            return;
         }
-        let (font, h) = (m.text_small(), r.h);
-        out.rect(r, fade(t.panel, alpha), h * 0.5);
-        out.border(r, fade(t.border, alpha), m.hairline(), h * 0.5);
+        let font = m.text_small();
+        out.rect(r, fade(t.panel, alpha), 0.0);
+        out.border(r, fade(t.border, alpha), m.hairline(), 0.0);
         paint::text_center(out, measure, r, HELP_HINT, font, fade(t.text_dim, alpha));
     }
 
