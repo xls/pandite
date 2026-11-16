@@ -581,7 +581,7 @@ fn selected_image_shows_badge() {
         // In the bottom right corner of the image area, above the strip.
         assert!(inside(pill, content));
         assert!(content.right() - pill.right() < 20.0 * scale);
-        assert!(content.bottom() - pill.bottom() < 20.0 * scale);
+        assert!(content.bottom() - pill.bottom() < 70.0 * scale);
         // A label, not a check mark.
         assert!(checks_in(&list, content).is_empty());
 
@@ -615,41 +615,47 @@ fn selection_count_is_shown() {
     let list = frame(&mut ui, &ctx);
     assert!(!has_text(&list, "selected"), "nothing selected, no count");
 
-    // The image on screen (4) is not selected: the count sits in the
-    // bottom right of the image area, in the accent color, and not the
-    // toolbar.
+    // The image on screen (4) is not selected: the count sits in a box in
+    // the bottom right of the image area, in the accent color, with the
+    // key that clears the selection below it.
     ctx.selected = &[1, 5, 7];
     let content = ui.content_rect(&ctx);
     let list = frame(&mut ui, &ctx);
     let count = text_rect_exact(&list, "3 selected").expect("the count shows");
-    let unmarked = count;
+    let hint = text_rect_exact(&list, "Backspace to clear selection").expect("the hint shows");
     assert!(count.center().x > content.center().x);
-    assert!(content.bottom() - count.bottom() < 30.0);
+    assert!(content.bottom() - hint.bottom() < 30.0);
+    assert!(content.right() - hint.right() < 30.0);
+    assert!(hint.y >= count.bottom(), "{hint:?} below {count:?}");
+    assert_eq!(count.x, hint.x, "one left edge in the box");
     assert_eq!(text_color(&list, "3 selected"), Some(theme.accent));
+    assert_eq!(
+        text_color(&list, "Backspace to clear selection"),
+        Some(theme.text_dim)
+    );
     assert!(text_rect_exact(&list, "Marked").is_none());
 
-    // The image on screen is selected too: "Marked" takes the corner,
-    // right of the count, and the count does not move.
+    // The image on screen is selected too: "Marked" sits above the box,
+    // and the box does not move.
     ctx.selected = &[1, 3, 7];
     let list = frame(&mut ui, &ctx);
     let marked = text_rect_exact(&list, "Marked").expect("marked");
-    let count = text_rect_exact(&list, "3 selected").expect("count");
-    assert_eq!(count.center().y, marked.center().y);
-    assert!(marked.x > count.right());
-    assert_eq!(count, unmarked, "the count stays in place");
+    assert_eq!(text_rect_exact(&list, "3 selected"), Some(count));
+    assert!(marked.bottom() < count.y, "{marked:?} above {count:?}");
     assert!(content.right() - marked.right() < 30.0);
 
-    // A longer count keeps its right edge.
+    // A longer count moves nothing.
     ctx.selected = &[0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11];
     let list = frame(&mut ui, &ctx);
     let long = text_rect_exact(&list, "11 selected").expect("count");
-    assert!(
-        (long.right() - count.right()).abs() <= 1.0,
-        "{long:?} {count:?}"
-    );
+    assert_eq!(long.x, count.x);
     assert_eq!(text_rect_exact(&list, "Marked"), Some(marked));
+    assert_eq!(
+        text_rect_exact(&list, "Backspace to clear selection"),
+        Some(hint)
+    );
 
-    // It stays while the toolbar is hidden.
+    // The box stays while the toolbar is hidden.
     let mut ui = Ui::new();
     move_to(&mut ui, &at(ctx, ms(100)), Point::new(640.0, 400.0));
     let list = frame(&mut ui, &at(ctx, ms(5000)));
@@ -657,6 +663,7 @@ fn selection_count_is_shown() {
         has_text(&list, "11 selected"),
         "visible without the toolbar"
     );
+    assert!(has_text(&list, "Backspace to clear selection"));
 
     // A file that failed to open shows the count too.
     let mut failed = base_ctx();

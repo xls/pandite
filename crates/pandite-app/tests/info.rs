@@ -206,7 +206,7 @@ fn info_key_toggles_panel() {
 }
 
 #[test]
-fn info_panel_sits_bottom_right() {
+fn info_panel_sits_bottom_left() {
     let (_dir, paths) = folder("info-place", &["a.png", "b.png"], 30, 20);
     let mut h = open_with_panel(&paths[0], Config::default());
     assert!(h.wait_until(|a| a.count() == 2));
@@ -239,18 +239,21 @@ fn info_panel_sits_bottom_right() {
         assert!(r.w >= 1.0 && r.h >= 1.0, "{r:?} at {at}");
         // Inside the content area: above the gallery strip.
         assert!(
-            r.right() <= viewport.right() && r.bottom() <= viewport.bottom(),
+            r.x >= viewport.x && r.right() <= viewport.right() && r.bottom() <= viewport.bottom(),
             "{r:?} outside {viewport:?} at {at}"
         );
         if hgt >= 300 {
             assert!(viewport.bottom() < hgt as f32, "the strip shows at {at}");
         }
-        // Anchored to the bottom right corner with one margin.
-        let right_gap = viewport.right() - r.right();
+        // Anchored to the bottom left corner with one margin, above the
+        // place of the help hint.
+        let left_gap = r.x - viewport.x;
         let bottom_gap = viewport.bottom() - r.bottom();
         assert!(
-            (0.0..=16.0 * scale).contains(&right_gap) && (right_gap - bottom_gap).abs() <= 1.0,
-            "gaps {right_gap} and {bottom_gap} at {at}"
+            (0.0..=16.0 * scale).contains(&left_gap)
+                && bottom_gap >= left_gap - 1.0
+                && bottom_gap <= 40.0 * scale,
+            "gaps {left_gap} and {bottom_gap} at {at}"
         );
         // Drawn there, with its first row inside it.
         assert!(fills(&list, r), "panel fill at {at}");
@@ -430,6 +433,44 @@ fn info_follows_current_image() {
         Some(file_size(std::fs::metadata(&d).unwrap().len()))
     );
     h.disk.release_all();
+}
+
+#[test]
+fn info_panel_keeps_its_rows_until_the_next_file_is_read() {
+    let dir = TempDir::new("info-hold");
+    let a = dir.join("a.png");
+    let b = dir.join("b.png");
+    write_png(&a, &opaque(30, 20));
+    write_png(&b, &opaque(40, 10));
+    let mut h = open_with_panel(&a, Config::default());
+    assert!(h.wait_until(|app| app.count() == 2));
+    let list = h.frame();
+    assert!(has_text(&list, "30 x 20"));
+    let before = h.app().ui().info_panel_rect().expect("panel");
+
+    // The facts of b are stuck: the panel keeps the rows of a, at the
+    // same size, and does not draw a short panel for b.
+    h.disk.stall_read("b.png");
+    h.key(Key::Right, Modifiers::NONE);
+    assert!(h.wait_shown(&b));
+    assert!(h.disk.wait_call("read_head", "b.png"));
+    assert!(h.app().info_pending());
+    let list = h.frame();
+    assert!(has_text(&list, "30 x 20"), "the rows of a stay");
+    assert_eq!(h.app().ui().info_panel_rect(), Some(before));
+    assert!(
+        h.app().next_frame_at().is_some(),
+        "a frame is due when the wait ends"
+    );
+
+    // After a short wait the panel shows what is known of b.
+    h.advance(500);
+    let list = h.frame();
+    assert!(!has_text(&list, "30 x 20"), "nothing of a after the wait");
+    h.disk.release_all();
+    assert!(h.wait_until(|app| !app.info_pending()));
+    let list = h.frame();
+    assert!(has_text(&list, "40 x 10"));
 }
 
 #[test]

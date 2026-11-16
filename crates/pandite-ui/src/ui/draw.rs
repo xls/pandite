@@ -90,15 +90,13 @@ impl Ui {
         out.clip(None);
     }
 
-    /// A box for `label` in a bottom corner of the image area, just above
-    /// the gallery strip: the left corner, or the right corner with
-    /// `right`. `None` when the area is too small for it.
+    /// A box for `label` in the bottom left corner of the image area, just
+    /// above the gallery strip. `None` when the area is too small for it.
     fn corner_pill(
         measure: &dyn TextMeasure,
         m: &Metrics,
         content: Rect,
         label: &str,
-        right: bool,
     ) -> Option<Rect> {
         let h = m.marked_h();
         let w = (measure.measure(label, m.text_small()).w + 2.0 * m.marked_pad()).ceil();
@@ -106,44 +104,20 @@ impl Ui {
         if content.w < w + 2.0 * margin || content.h < m.toolbar_h() + h + 2.0 * margin {
             return None;
         }
-        let x = if right {
-            content.right() - margin - w
-        } else {
-            content.x + margin
-        };
         Some(Rect::new(
-            x.round(),
+            (content.x + margin).round(),
             (content.bottom() - margin - h).round(),
             w,
             h,
         ))
     }
 
-    /// The place of the "Marked" pill: the bottom right corner of the image
-    /// area. The place stays the same while images are marked and unmarked.
-    fn marked_slot(measure: &dyn TextMeasure, m: &Metrics, content: Rect) -> Option<Rect> {
-        Self::corner_pill(measure, m, content, MARKED, true)
-    }
-
-    /// Where the "Marked" pill sits while the image on screen is selected.
-    fn marked_rect(
-        &self,
-        ctx: &UiContext<'_>,
-        measure: &dyn TextMeasure,
-        m: &Metrics,
-        content: Rect,
-    ) -> Option<Rect> {
-        if ctx.image.is_none() || !ctx.current_selected() || self.crop.is_some() {
-            return None;
-        }
-        Self::marked_slot(measure, m, content)
-    }
-
-    /// Where the pill with the number of selected images sits, and its
-    /// label. Its right edge is fixed, left of the place of the "Marked"
-    /// pill, also while that pill does not show. It shows whenever images
-    /// are selected, also while the toolbar is hidden.
-    fn count_rect(
+    /// The box of the selection in the bottom right corner of the image
+    /// area: the number of selected images, and below it the key that
+    /// clears the selection. Its size does not change with the number, so
+    /// the "Marked" pill above it stays in place. `None` when nothing is
+    /// selected or the area is too small.
+    fn selection_box(
         &self,
         ctx: &UiContext<'_>,
         measure: &dyn TextMeasure,
@@ -154,18 +128,53 @@ impl Ui {
             return None;
         }
         let label = format!("{} selected", ctx.selected.len());
-        let slot = Self::marked_slot(measure, m, content)?;
-        let mut r = Self::corner_pill(measure, m, content, &label, true)?;
-        r.x = (slot.x - m.px(6.0) - r.w).round();
-        if r.x < content.x + m.px(10.0) {
+        let font = m.text_small();
+        let text_w = measure
+            .measure(CLEAR_HINT, font)
+            .w
+            .max(measure.measure(&label, font).w);
+        let w = (text_w + 2.0 * m.marked_pad()).ceil();
+        let h = (2.0 * m.px(16.0) + 2.0 * m.px(4.0)).round();
+        let margin = m.px(10.0);
+        let room = m.toolbar_h() + h + m.marked_h() + m.px(6.0) + 2.0 * margin;
+        if content.w < w + 2.0 * margin || content.h < room {
             return None;
         }
+        let r = Rect::new(
+            (content.right() - margin - w).round(),
+            (content.bottom() - margin - h).round(),
+            w,
+            h,
+        );
         Some((r, label))
     }
 
-    /// The "Marked" pill in the bottom right corner of the image area while
-    /// the image on screen is selected, and the number of selected images
-    /// left of it in a box with a border. Both fit their labels at every scale.
+    /// Where the "Marked" pill sits while the image on screen is selected:
+    /// above the selection box, with the same right edge.
+    fn marked_rect(
+        &self,
+        ctx: &UiContext<'_>,
+        measure: &dyn TextMeasure,
+        m: &Metrics,
+        content: Rect,
+    ) -> Option<Rect> {
+        if ctx.image.is_none() || !ctx.current_selected() {
+            return None;
+        }
+        let (b, _) = self.selection_box(ctx, measure, m, content)?;
+        let h = m.marked_h();
+        let w = (measure.measure(MARKED, m.text_small()).w + 2.0 * m.marked_pad()).ceil();
+        Some(Rect::new(
+            (b.right() - w).round(),
+            (b.y - m.px(6.0) - h).round(),
+            w,
+            h,
+        ))
+    }
+
+    /// The selection box in the bottom right corner of the image area, and
+    /// the "Marked" pill above it while the image on screen is selected.
+    /// Both fit their labels at every scale.
     fn draw_marked(
         &self,
         ctx: &UiContext<'_>,
@@ -175,10 +184,17 @@ impl Ui {
         content: Rect,
         out: &mut DrawList,
     ) {
-        if let Some((r, label)) = self.count_rect(ctx, measure, m, content) {
+        if let Some((r, label)) = self.selection_box(ctx, measure, m, content) {
             out.rect(r, t.panel, 0.0);
             out.border(r, t.border, m.hairline(), 0.0);
-            paint::text_center(out, measure, r, &label, m.text_small(), t.accent);
+            let (pad, line) = (m.px(4.0), m.px(16.0));
+            let x = r.x + m.marked_pad();
+            let w = r.w - 2.0 * m.marked_pad();
+            let font = m.text_small();
+            let top = Rect::new(x, r.y + pad, w, line);
+            paint::text_left(out, measure, top, &label, font, t.accent);
+            let bottom = Rect::new(x, r.y + pad + line, w, line);
+            paint::text_left(out, measure, bottom, CLEAR_HINT, font, t.text_dim);
         }
         let Some(r) = self.marked_rect(ctx, measure, m, content) else {
             return;
@@ -200,8 +216,7 @@ impl Ui {
     /// The small box with a border that names the help keys, alone in the bottom left
     /// corner of the image area, just above the gallery strip. It fades in
     /// and out with the toolbar. It does not show when the image area is
-    /// too small for it, or when it would touch the pills in the right
-    /// corner.
+    /// too small for it, or when it would touch the selection box.
     fn draw_help_hint(
         &self,
         ctx: &UiContext<'_>,
@@ -215,13 +230,12 @@ impl Ui {
         if alpha <= 0.0 || self.help {
             return;
         }
-        let Some(r) = Self::corner_pill(measure, m, content, HELP_HINT, false) else {
+        let Some(r) = Self::corner_pill(measure, m, content, HELP_HINT) else {
             return;
         };
         let right = self
-            .count_rect(ctx, measure, m, content)
-            .map(|(c, _)| c.x)
-            .or_else(|| self.marked_rect(ctx, measure, m, content).map(|c| c.x));
+            .selection_box(ctx, measure, m, content)
+            .map(|(b, _)| b.x);
         if right.is_some_and(|x| r.right() + m.px(6.0) > x) {
             return;
         }
@@ -1350,6 +1364,9 @@ const MARKED: &str = "Marked";
 /// help keys.
 pub(crate) const HELP_HINT: &str = "F1 / ? help";
 
+/// The hint below the selection count.
+pub(crate) const CLEAR_HINT: &str = "Backspace to clear selection";
+
 /// The rows of the keyboard shortcuts window: the keys and the command.
 pub(crate) fn help_rows(ctx: &UiContext<'_>) -> Vec<(String, &'static str)> {
     Command::ALL
@@ -1449,7 +1466,8 @@ impl HelpLayout {
 
 /// Geometry of the information panel for one frame.
 struct InfoLayout {
-    /// The panel, anchored to the bottom right corner of the content area.
+    /// The panel, anchored to the bottom left corner of the content area,
+    /// above the help hint.
     panel: Rect,
     /// Rows that fit, counted from the first.
     rows: usize,
@@ -1488,8 +1506,16 @@ impl InfoLayout {
         } else {
             0.0
         };
+        // The place of the help hint below the panel stays free, also
+        // while the hint has faded out, so the panel does not move.
+        let below = (m.px(10.0) + m.marked_h() + m.px(6.0)).max(margin);
+        let below = if content.h >= m.px(240.0) {
+            below
+        } else {
+            margin
+        };
         let avail_w = content.w - 2.0 * margin;
-        let avail_h = content.h - 2.0 * margin - top;
+        let avail_h = content.h - margin - below - top;
         let fit = ((avail_h - 2.0 * pad) / row_h).floor();
         // NaN-safe: a degenerate window draws no panel.
         if !(fit >= 1.0 && avail_w >= 2.0 * pad + gap + m.px(40.0)) {
@@ -1510,8 +1536,8 @@ impl InfoLayout {
             .floor();
         let h = 2.0 * pad + shown as f32 * row_h;
         let panel = Rect::new(
-            (content.right() - margin - w).round(),
-            (content.bottom() - margin - h).round(),
+            (content.x + margin).round(),
+            (content.bottom() - below - h).round(),
             w,
             h,
         );

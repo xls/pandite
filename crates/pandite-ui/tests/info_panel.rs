@@ -1,6 +1,6 @@
 //! The information panel: drawn from the context rows, anchored to the
-//! content area, inert to pointer gestures, hidden in crop mode, and never
-//! in the way of Escape.
+//! bottom left of the content area above the help hint, inert to pointer
+//! gestures, hidden in crop mode, and never in the way of Escape.
 
 mod support;
 
@@ -25,8 +25,11 @@ fn info_panel_draws_rows_and_stays_out_of_the_way() {
     let list = frame(&mut ui, &ctx);
     let r = ui.info_panel_rect().expect("panel drawn");
     let content = ui.content_rect(&ctx);
-    assert_eq!(r.right(), content.right() - 16.0);
-    assert_eq!(r.bottom(), content.bottom() - 16.0);
+    assert_eq!(r.x, content.x + 16.0);
+    // Above the help hint in the bottom left corner.
+    let hint = text_rect_exact(&list, "F1 / ? help").expect("the help hint shows");
+    assert!(r.bottom() < hint.y, "{r:?} above {hint:?}");
+    assert!(content.bottom() - r.bottom() < 40.0);
     // The toolbar shows the name and size too: look inside the panel.
     for t in ["File", "photo.jpg", "4000 x 3000", "JPEG"] {
         let inside = list.cmds.iter().any(|c| {

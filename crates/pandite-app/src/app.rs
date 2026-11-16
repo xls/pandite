@@ -361,7 +361,15 @@ struct InfoState {
     /// The rows of the panel, rebuilt before each event and frame while
     /// the panel is on.
     rows: Vec<InfoRow>,
+    /// The file the rows describe.
+    rows_for: Option<PathBuf>,
+    /// Since when the rows wait for the facts of another file.
+    held_since: Option<Duration>,
 }
+
+/// How long the panel keeps the rows of the file before while the facts
+/// of a new file are read, so it does not shrink and grow on each step.
+const INFO_HOLD: Duration = Duration::from_millis(400);
 
 /// Why a dialog was opened.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1094,10 +1102,8 @@ impl App {
     /// Text recognition of the image on screen starts at such a frame.
     pub fn next_frame_at(&self) -> Option<Duration> {
         let ui = self.ui.next_redraw_at();
-        match (ui, self.st.text_due()) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        let info = self.st.info.held_since.map(|t| t + INFO_HOLD);
+        [ui, self.st.text_due(), info].into_iter().flatten().min()
     }
 
     /// When [`App::tick`] is due next, on the clock passed as `now`: the
@@ -1186,7 +1192,7 @@ impl App {
         let mut queue = vec![event];
         while let Some(event) = queue.pop() {
             self.st.refresh_text();
-            self.st.refresh_info();
+            self.st.refresh_info(now);
             let (actions, rect) = {
                 let ctx = context(&self.st, &self.ui, now);
                 let rect = self.ui.content_rect(&ctx);
@@ -1503,7 +1509,7 @@ impl App {
         // A recognition whose start time came wakes the loop for a frame.
         self.st.poll_text(now);
         self.st.refresh_text();
-        self.st.refresh_info();
+        self.st.refresh_info(now);
         let (viewport, background, range) = {
             let ctx = context(&self.st, &self.ui, now);
             let viewport = self.ui.content_rect(&ctx);
@@ -2576,12 +2582,28 @@ impl State {
     }
 
     /// Rebuild the rows the interface draws (none while the panel is off).
-    fn refresh_info(&mut self) {
-        self.info.rows = if self.settings.info_panel {
-            self.info_rows()
-        } else {
-            Vec::new()
+    /// While the facts of a new file are still being read or its full
+    /// image is still decoding, the rows of the file before stay, for at
+    /// most [`INFO_HOLD`].
+    fn refresh_info(&mut self, now: Duration) {
+        let Some(shown) = self.shown.as_ref().filter(|_| self.settings.info_panel) else {
+            self.info.rows = Vec::new();
+            self.info.rows_for = None;
+            self.info.held_since = None;
+            return;
         };
+        let complete = shown.standin.is_none() && self.info_report(&shown.path).is_some();
+        let path = shown.path.clone();
+        let same = self.info.rows_for.as_ref() == Some(&path);
+        if !complete && !same && !self.info.rows.is_empty() {
+            let since = *self.info.held_since.get_or_insert(now);
+            if now < since + INFO_HOLD {
+                return;
+            }
+        }
+        self.info.held_since = None;
+        self.info.rows = self.info_rows();
+        self.info.rows_for = Some(path);
     }
 
     /// Start reading the file facts of the image on screen when the panel
