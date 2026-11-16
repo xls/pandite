@@ -54,6 +54,8 @@ h2 { font-size: clamp(28px, 4.4vw, 46px); line-height: 1.12; margin: 0 0 14px; l
 .hero { min-height: 100vh; display: grid; align-items: center; padding-top: 96px; padding-bottom: 56px; }
 .hero .wrap { display: grid; grid-template-columns: 1.05fr 1fr; gap: clamp(24px, 5vw, 64px); align-items: center; }
 .hero .logo { width: clamp(72px, 8vw, 104px); height: auto; filter: drop-shadow(0 18px 40px rgba(60, 110, 255, 0.45)); }
+.brand { display: flex; align-items: center; gap: clamp(14px, 2vw, 22px); }
+.brand span { font-size: clamp(34px, 4.4vw, 54px); font-weight: 700; letter-spacing: -0.8px; color: var(--text); }
 .actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 28px; }
 .btn { display: inline-flex; align-items: center; gap: 8px; padding: 13px 22px; border-radius: 12px; font-weight: 600; text-decoration: none;
   transition: transform 0.2s, box-shadow 0.2s, background 0.2s; }
@@ -159,8 +161,8 @@ footer .right { margin-left: auto; }
 <section class="hero">
   <div class="wrap">
     <div>
-      <img class="logo rise" src="icon.png" alt="Pandite icon">
-      <h1 class="rise">See your pictures. Nothing else.</h1>
+      <div class="brand rise"><img class="logo" src="icon.png" alt=""><span>Pandite</span></div>
+      <h1 class="rise">See your pictures. Fast.</h1>
       <p class="lead rise">Pandite is a fast image viewer for Windows, macOS and Linux. It opens photos and camera RAW files at once, and it never uses the network.</p>
       <div class="actions rise">
         <a class="btn main" href="https://github.com/xls/pandite/releases/latest">Download</a>
