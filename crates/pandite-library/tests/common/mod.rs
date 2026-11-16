@@ -623,6 +623,20 @@ impl Harness {
         self.wake_rx.recv_timeout(WAIT).is_ok()
     }
 
+    /// Wait until the library is idle and no wake has come for 100 ms,
+    /// then move the queued events into the log. A wake of finished work
+    /// can come a moment after the library reports idle.
+    #[allow(dead_code)]
+    pub fn settle(&mut self) {
+        self.idle();
+        while self
+            .wake_rx
+            .recv_timeout(Duration::from_millis(100))
+            .is_ok()
+        {}
+        self.pump();
+    }
+
     /// Block until the library's shared state is dropped.
     pub fn wait_gone(&self) -> bool {
         self.gone_rx.recv_timeout(WAIT).is_ok()

@@ -152,7 +152,7 @@ fn check_reports_added_removed_renamed_and_changed_files() {
     assert_eq!((thumb.width(), thumb.height()), (8, 1));
 
     // Nothing changed since: the next check is silent again.
-    h.pump();
+    h.settle();
     h.events.clear();
     let wakes = h.wakes();
     lib.check_folder();
