@@ -1,9 +1,15 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
+exclude = ["vendor"]
+
+# winit 0.30.13 with the private macOS blur call removed, which the Mac App
+# Store rejects. See vendor/winit/PANDITE.md.
+[patch.crates-io]
+winit = { path = "vendor/winit" }
 
 [workspace.package]
-version = "0.2.7"
+version = "0.2.8"
 edition = "2021"
 license = "MIT"
 rust-version = "1.87"

@@ -151,7 +151,9 @@ function linked(meta, target, cfg) {
       stack.push(dep.pkg);
     }
   }
-  return [...seen].map((id) => byId.get(id)).filter((p) => p.source !== null);
+  // Registry crates and patched copies in vendor/; not the workspace crates.
+  const own = new Set(meta.workspace_members);
+  return [...seen].map((id) => byId.get(id)).filter((p) => !own.has(p.id));
 }
 
 // Code point -> ASCII spelling for symbols that NFKD does not reduce.

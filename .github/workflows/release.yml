@@ -266,6 +266,17 @@ jobs:
           cargo build --release --locked -p pandite-app \
             --target aarch64-apple-darwin --target x86_64-apple-darwin
 
+      # The Mac App Store rejects private CoreGraphics (CGS) functions.
+      - name: No private CGS symbols
+        run: |
+          for arch in aarch64-apple-darwin x86_64-apple-darwin; do
+            bin="target/$arch/release/pandite"
+            if nm -u "$bin" | grep -E '_CGS[A-Za-z]'; then
+              echo "$bin links private CGS functions" >&2
+              exit 1
+            fi
+          done
+
       - name: Third-party notices
         run: node packaging/third-party-notices.mjs
 
