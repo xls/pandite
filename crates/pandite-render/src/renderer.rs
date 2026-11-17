@@ -16,6 +16,7 @@ use pandite_core::{
     Content, ContentKind, DrawList, Error, ImageBuf, PixelFormat, Rect, Result, Size, TextMeasure,
     TextureId, TextureSink, ViewState,
 };
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -116,6 +117,21 @@ impl ContentFactory {
     }
 }
 
+/// One content of a frame that shows several ([`Renderer::render_panes`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pane {
+    /// The pane content to draw ([`Renderer::set_pane_content`]), or
+    /// `None` for the main content.
+    pub slot: Option<u64>,
+    /// The area the view places the content in.
+    pub viewport: Rect,
+    /// The part of the target the content may draw to.
+    pub clip: Rect,
+    /// Where the whole content lands, in place of what the view gives
+    /// (a magnified copy, for example).
+    pub rect: Option<Rect>,
+}
+
 /// Draws content and interface into a window surface or an offscreen
 /// texture.
 pub struct Renderer {
@@ -128,6 +144,7 @@ pub struct Renderer {
     settings: RenderSettings,
     providers: ProviderRegistry,
     content: Option<PreparedContent>,
+    pane_contents: BTreeMap<u64, PreparedContent>,
     display: Arc<DisplayPipelines>,
     frame_uniform: wgpu::Buffer,
     frame_group: wgpu::BindGroup,
@@ -438,6 +455,7 @@ impl Renderer {
             settings,
             providers: ProviderRegistry::with_builtin(),
             content: None,
+            pane_contents: BTreeMap::new(),
             display,
             frame_uniform,
             frame_group,
@@ -578,6 +596,27 @@ impl Renderer {
         self.content = None;
     }
 
+    /// Keep content for the panes of [`Renderer::render_panes`] under
+    /// `slot`, replacing what the slot held.
+    pub fn set_pane_content(&mut self, slot: u64, content: PreparedContent) {
+        self.pane_contents.insert(slot, content);
+    }
+
+    /// Drop the pane content of `slot`.
+    pub fn remove_pane_content(&mut self, slot: u64) {
+        self.pane_contents.remove(&slot);
+    }
+
+    /// Drop every pane content.
+    pub fn clear_pane_contents(&mut self) {
+        self.pane_contents.clear();
+    }
+
+    /// Natural size of the pane content of `slot`.
+    pub fn pane_content_size(&self, slot: u64) -> Option<Size> {
+        self.pane_contents.get(&slot).map(|c| c.renderer.size())
+    }
+
     /// Kind of the content shown, if any.
     pub fn content_kind(&self) -> Option<ContentKind> {
         self.content.as_ref().map(|c| c.kind)
@@ -624,6 +663,25 @@ impl Renderer {
         viewport: Rect,
         ui: &DrawList,
     ) -> Result<FrameStatus> {
+        let pane = Pane {
+            slot: None,
+            viewport,
+            clip: viewport,
+            rect: None,
+        };
+        self.render_panes(view, &[pane], ui)
+    }
+
+    /// Draw one frame with several contents: background, each pane's
+    /// content placed by `view` inside the pane's viewport and cut to its
+    /// clip rectangle, in order, then `ui` on top. A pane whose slot holds
+    /// no content draws nothing.
+    pub fn render_panes(
+        &mut self,
+        view: &ViewState,
+        panes: &[Pane],
+        ui: &DrawList,
+    ) -> Result<FrameStatus> {
         if self.gpu.is_lost() {
             return Err(Error::Backend("the GPU device was lost".into()));
         }
@@ -637,7 +695,7 @@ impl Renderer {
             let Some((frame, surface_texture)) = self.acquire()? else {
                 return Ok(FrameStatus::Skipped);
             };
-            let result = self.draw_frame(&frame, view, viewport, ui);
+            let result = self.draw_frame(&frame, view, panes, ui);
             if let Some(texture) = surface_texture {
                 if result.is_ok() {
                     self.gpu.queue().present(texture);
@@ -737,7 +795,7 @@ impl Renderer {
         &mut self,
         target_view: &wgpu::TextureView,
         view: &ViewState,
-        viewport: Rect,
+        panes: &[Pane],
         ui: &DrawList,
     ) -> Result<()> {
         let gpu = Arc::clone(&self.gpu);
@@ -746,106 +804,154 @@ impl Renderer {
             .write_buffer(&self.frame_uniform, 0, bytemuck::cast_slice(&params));
         let target = self.target_info();
         let full = self.full_viewport();
-        let viewport = viewport
-            .intersect(full)
-            .unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0));
-        let mut encoder = gpu
-            .device()
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("frame"),
-            });
+        self.ui
+            .prepare(&gpu, ui, self.width, self.height, self.encode_srgb);
 
-        let mut uses_depth = false;
-        let mut placement = None;
-        if let Some(content) = &mut self.content {
-            if !viewport.is_empty() {
-                let placed = placement_for(view, content.renderer.size(), viewport);
+        // A content holds one placement at a time: panes that draw a
+        // content again (a magnified copy) go into a later layer, which
+        // is submitted on its own.
+        let mut layers: Vec<Vec<Pane>> = vec![Vec::new()];
+        for pane in panes {
+            let again = layers
+                .last()
+                .is_some_and(|layer| layer.iter().any(|p| p.slot == pane.slot));
+            if again {
+                layers.push(Vec::new());
+            }
+            if let Some(layer) = layers.last_mut() {
+                layer.push(*pane);
+            }
+        }
+        let count = layers.len();
+        let clear = clear_value(self.settings.background, !self.encode_srgb);
+        for (index, layer) in layers.iter().enumerate() {
+            let last = index + 1 == count;
+            let mut encoder =
+                gpu.device()
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("frame"),
+                    });
+            let mut uses_depth = false;
+            // The panes that draw: slot, placement and clip rectangle.
+            let mut placed: Vec<(Option<u64>, Placement, Rect)> = Vec::new();
+            for pane in layer {
+                let (Some(viewport), Some(clip)) =
+                    (pane.viewport.intersect(full), pane.clip.intersect(full))
+                else {
+                    continue;
+                };
+                let Some(clip) = clip.intersect(viewport) else {
+                    continue;
+                };
+                let content = match pane.slot {
+                    None => self.content.as_mut(),
+                    Some(slot) => self.pane_contents.get_mut(&slot),
+                };
+                let Some(content) = content else { continue };
+                if viewport.is_empty() || clip.is_empty() {
+                    continue;
+                }
+                let size = content.renderer.size();
+                let placement = match pane.rect {
+                    Some(rect) if size.w > 0.0 => Placement {
+                        image_rect: Rect::new(rect.x.round(), rect.y.round(), rect.w, rect.h),
+                        viewport,
+                        scale: rect.w / size.w,
+                    },
+                    _ => placement_for(view, size, viewport),
+                };
                 let mut ctx = FrameContext {
                     gpu: &gpu,
                     encoder: &mut encoder,
-                    placement: placed,
+                    placement,
                     target,
                     settings: &self.settings,
                 };
                 content.renderer.prepare(&mut ctx)?;
-                uses_depth = content.renderer.uses_depth();
-                placement = Some(placed);
+                uses_depth |= content.renderer.uses_depth();
+                placed.push((pane.slot, placement, clip));
             }
-        }
-        if uses_depth {
-            self.ensure_depth();
-        }
-        self.ui
-            .prepare(&gpu, ui, self.width, self.height, self.encode_srgb);
-
-        let clear = clear_value(self.settings.background, !self.encode_srgb);
-        {
-            let depth_attachment = if uses_depth {
-                self.depth
-                    .as_ref()
-                    .map(|(_, view)| wgpu::RenderPassDepthStencilAttachment {
-                        view,
-                        depth_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(1.0),
-                            store: wgpu::StoreOp::Discard,
-                        }),
-                        stencil_ops: None,
-                    })
+            if uses_depth {
+                self.ensure_depth();
+            }
+            let load = if index == 0 {
+                wgpu::LoadOp::Clear(clear)
             } else {
-                None
+                wgpu::LoadOp::Load
             };
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("content"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target_view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(clear),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: depth_attachment,
-                ..Default::default()
-            });
-            if let (Some(content), Some(placement)) = (&self.content, placement) {
-                let [x, y, w, h] = scissor_for(viewport, self.width, self.height);
-                if w > 0 && h > 0 {
-                    pass.set_scissor_rect(x, y, w, h);
-                    let ctx = DrawContext {
-                        placement,
-                        target,
-                        depth_format: uses_depth.then_some(DEPTH_FORMAT),
-                        settings: &self.settings,
-                        frame: &self.frame_group,
-                        pipelines: &self.display,
+            {
+                let depth_attachment = if uses_depth {
+                    self.depth
+                        .as_ref()
+                        .map(|(_, view)| wgpu::RenderPassDepthStencilAttachment {
+                            view,
+                            depth_ops: Some(wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(1.0),
+                                store: wgpu::StoreOp::Discard,
+                            }),
+                            stencil_ops: None,
+                        })
+                } else {
+                    None
+                };
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("content"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: target_view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: depth_attachment,
+                    ..Default::default()
+                });
+                for (slot, placement, clip) in &placed {
+                    let content = match slot {
+                        None => self.content.as_ref(),
+                        Some(slot) => self.pane_contents.get(slot),
                     };
-                    content.renderer.draw(&mut pass, &ctx);
+                    let Some(content) = content else { continue };
+                    let [x, y, w, h] = scissor_for(*clip, self.width, self.height);
+                    if w > 0 && h > 0 {
+                        pass.set_scissor_rect(x, y, w, h);
+                        let ctx = DrawContext {
+                            placement: *placement,
+                            target,
+                            depth_format: uses_depth.then_some(DEPTH_FORMAT),
+                            settings: &self.settings,
+                            frame: &self.frame_group,
+                            pipelines: &self.display,
+                        };
+                        content.renderer.draw(&mut pass, &ctx);
+                    }
+                }
+                if last && !uses_depth {
+                    self.ui.draw(&mut pass, &self.display);
                 }
             }
-            if !uses_depth {
+            if last && uses_depth {
+                // The interface pipeline has no depth state: draw it in a
+                // second pass over the finished content.
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("interface"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: target_view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                });
                 self.ui.draw(&mut pass, &self.display);
             }
+            gpu.queue().submit([encoder.finish()]);
         }
-        if uses_depth {
-            // The interface pipeline has no depth state: draw it in a
-            // second pass over the finished content.
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("interface"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target_view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                ..Default::default()
-            });
-            self.ui.draw(&mut pass, &self.display);
-        }
-        gpu.queue().submit([encoder.finish()]);
         Ok(())
     }
 

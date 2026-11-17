@@ -111,6 +111,10 @@ impl Ui {
     fn on_move(&mut self, pos: Point, ctx: &UiContext<'_>, m: &Metrics, out: &mut Vec<Action>) {
         self.pointer = Some(pos);
         match self.capture {
+            Some((Capture::Split, _)) => {
+                self.set_split(pos.x, ctx);
+                return;
+            }
             Some((
                 Capture::Pan {
                     last,
@@ -346,6 +350,7 @@ impl Ui {
                         _ => Capture::Swallow,
                     }
                 }
+                PointerButton::Left if self.on_split(pos, ctx, m) => Capture::Split,
                 PointerButton::Left => match self.text_press(pos, ctx, m) {
                     Some(capture) => capture,
                     None => {
@@ -609,9 +614,16 @@ impl Ui {
                 let moved = (pos.x - start.x).abs().max((pos.y - start.y).abs());
                 if button == PointerButton::Left && !panned && moved <= m.drag_threshold() {
                     self.text_sel = None;
+                    // A click on a tile makes its image the current one.
+                    let index = self
+                        .compare_tile_at(pos, ctx)
+                        .and_then(|i| ctx.compare?.items.get(i)?.index);
+                    if let Some(index) = index.filter(|i| *i != ctx.index) {
+                        out.push(Action::GoTo(index));
+                    }
                 }
             }
-            Capture::Swallow => {}
+            Capture::Split | Capture::Swallow => {}
         }
     }
 
@@ -706,9 +718,7 @@ impl Ui {
             return;
         }
         if self.help {
-            if matches!(key, Key::Escape | Key::F1 | Key::Question | Key::Enter) {
-                self.help = false;
-            }
+            self.help_key(key, ctx, out);
             return;
         }
         if self.confirm.is_some() || self.dialog.is_some() {
@@ -834,8 +844,50 @@ impl Ui {
         }
     }
 
+    /// A key in the keyboard shortcuts window: Escape and F1 close it,
+    /// and so does ? before anything is typed. With a search typed, Up
+    /// and Down move the highlight, Enter runs the highlighted command
+    /// and Backspace takes a character away.
+    fn help_key(&mut self, key: Key, ctx: &UiContext<'_>, out: &mut Vec<Action>) {
+        let searching = !self.help_query.is_empty();
+        match key {
+            Key::Escape | Key::F1 => self.help = false,
+            Key::Question if !searching => self.help = false,
+            Key::Enter => {
+                let pick = self.help_matches(ctx).get(self.help_pick).map(|row| row.2);
+                self.help = false;
+                if let Some(cmd) = pick.filter(|_| searching) {
+                    self.run_command(cmd, ctx, None, out);
+                }
+            }
+            Key::Backspace => {
+                self.help_query.pop();
+                self.help_pick = 0;
+            }
+            Key::Up => self.help_pick = self.help_pick.saturating_sub(1),
+            Key::Down => {
+                let last = self.help_matches(ctx).len().saturating_sub(1);
+                self.help_pick = (self.help_pick + 1).min(last);
+            }
+            _ => {}
+        }
+    }
+
     fn on_text(&mut self, text: &str, ctx: &UiContext<'_>, m: &Metrics, out: &mut Vec<Action>) {
-        if self.menu.is_some() || self.help || self.confirm.is_some() {
+        if self.help && self.menu.is_none() {
+            // Typing in the keyboard shortcuts window searches the commands.
+            let typed: String = text.chars().filter(|c| !c.is_control()).collect();
+            // The ? that opened the window arrives as text after it: a
+            // search never starts with it.
+            let opener = self.help_query.is_empty() && typed == "?";
+            if !typed.is_empty() && !opener && self.help_query.chars().count() < 40 {
+                self.help_query.push_str(&typed);
+                self.help_pick = 0;
+                self.help_scroll = 0.0;
+            }
+            return;
+        }
+        if self.menu.is_some() || self.confirm.is_some() {
             return;
         }
         let Some(layout) = self.dialog_layout(ctx, m) else {

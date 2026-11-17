@@ -491,3 +491,67 @@ fn pooled_upload_and_letterboxed_stand_in() {
     assert_rgb(&px, 190, 50, [0, 0, 0], 0);
     assert_rgb(&px, 60, 50, [255, 255, 255], 0);
 }
+
+#[test]
+fn panes_draw_each_content_inside_its_clip() {
+    let gpu = gpu_or_skip!();
+    let red = rgba8(8, 8, |_, _| [255, 0, 0, 255]);
+    let blue = rgba8(8, 8, |_, _| [0, 0, 255, 255]);
+    let mut r = offscreen(&gpu, 16, 16, plain(Color::rgb(0, 90, 0)));
+    r.set_content(Content::Still(red)).expect("set content");
+    let prepared = r
+        .content_factory()
+        .create(&crate::RenderInput::Content(Content::Still(blue)))
+        .expect("pane content");
+    r.set_pane_content(7, prepared);
+    assert_eq!(r.pane_content_size(7), Some(Size::new(8.0, 8.0)));
+    let full = r.full_viewport();
+    // A slider: the pane content left of column 8, the main content right.
+    let panes = [
+        crate::Pane {
+            slot: Some(7),
+            viewport: full,
+            clip: Rect::new(0.0, 0.0, 8.0, 16.0),
+            rect: None,
+        },
+        crate::Pane {
+            slot: None,
+            viewport: full,
+            clip: Rect::new(8.0, 0.0, 8.0, 16.0),
+            rect: None,
+        },
+        // A slot without content draws nothing.
+        crate::Pane {
+            slot: Some(9),
+            viewport: full,
+            clip: full,
+            rect: None,
+        },
+        // A copy of the pane content, enlarged into the top left corner.
+        crate::Pane {
+            slot: Some(7),
+            viewport: full,
+            clip: Rect::new(0.0, 0.0, 3.0, 3.0),
+            rect: Some(Rect::new(-10.0, -10.0, 40.0, 40.0)),
+        },
+    ];
+    r.render_panes(&one_to_one(), &panes, &DrawList::new())
+        .expect("render");
+    let image = r.read_pixels().expect("read");
+    let px = Pixels {
+        width: image.width(),
+        height: image.height(),
+        data: image.data().to_vec(),
+    };
+    // Both images sit at (4, 4) to (12, 12).
+    assert_rgb(&px, 5, 8, [0, 0, 255], 1);
+    assert_rgb(&px, 7, 8, [0, 0, 255], 1);
+    assert_rgb(&px, 8, 8, [255, 0, 0], 1);
+    assert_rgb(&px, 11, 8, [255, 0, 0], 1);
+    assert_rgb(&px, 2, 8, [0, 90, 0], 0);
+    assert_rgb(&px, 13, 8, [0, 90, 0], 0);
+    assert_rgb(&px, 1, 1, [0, 0, 255], 1);
+    assert_rgb(&px, 3, 3, [0, 90, 0], 0);
+    r.remove_pane_content(7);
+    assert_eq!(r.pane_content_size(7), None);
+}

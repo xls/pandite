@@ -8,7 +8,7 @@
 
 #![allow(dead_code)]
 
-use pandite_app::app::{App, Handled, Platform, Startup, WindowState};
+use pandite_app::app::{App, CompareUpdate, Handled, PaneOut, Platform, Startup, WindowState};
 use pandite_app::disk::{Disk, StdDisk};
 use pandite_app::platform::{
     Clipboard, DialogKind, DialogReply, Dialogs, ImageWriter, WindowControl,
@@ -883,6 +883,10 @@ pub struct Harness {
     pub now: Duration,
     /// Every content update taken by [`Harness::frame`], oldest first.
     pub updates: Vec<Update>,
+    /// The panes of the last frame: empty without a comparison.
+    pub panes: Vec<PaneOut>,
+    /// What the core asked for the pictures of a comparison, in order.
+    pub compare_updates: Vec<CompareUpdate>,
     /// Report full-resolution content as presented right after
     /// [`Harness::frame`] takes it, the way the shell does after drawing.
     /// Off: only [`Harness::present`] reports it.
@@ -949,6 +953,8 @@ impl Harness {
             registry,
             now: Duration::from_millis(1),
             updates: Vec::new(),
+            panes: Vec::new(),
+            compare_updates: Vec::new(),
             auto_present: true,
             last_full: None,
             textures: HashMap::new(),
@@ -1005,7 +1011,8 @@ impl Harness {
         self.uploads.extend(sink.sizes);
         let app = self.app();
         let mut list = DrawList::new();
-        app.frame(now, &Measure, &mut list);
+        let out = app.frame(now, &Measure, &mut list);
+        let compare = app.take_compare();
         let mut taken = Vec::new();
         while let Some(update) = app.take_content() {
             let image = update.content.as_ref().map(|c| c.first_image().clone());
@@ -1026,6 +1033,8 @@ impl Harness {
                 (last.full_resolution && last.dims.is_some()).then_some(last.generation);
         }
         self.updates.extend(taken);
+        self.panes = out.panes;
+        self.compare_updates.extend(compare);
         if self.auto_present {
             self.present();
         }

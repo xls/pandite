@@ -433,3 +433,48 @@ fn background_work_shows_progress_and_ticks() {
     frame(&mut ui, &ctx);
     assert_ne!(ui.next_redraw_at(), Some(ms(1_100)));
 }
+
+#[test]
+fn help_overlay_searches_commands_and_runs_the_match() {
+    let ctx = image_ctx();
+    let mut ui = Ui::new();
+    press_key(&mut ui, &ctx, Key::F1);
+    assert!(ui.wants_text_input(), "typing reaches the search");
+    let list = frame(&mut ui, &ctx);
+    assert!(has_text(&list, "Type to search"));
+    assert!(has_text(&list, "Rotate left"));
+    assert!(has_text(&list, "Fit to window") || has_text(&list, "Fit"));
+
+    // Typing keeps the commands that match every word, in label or keys.
+    send(&mut ui, &ctx, InputEvent::Text("rot".into()));
+    let list = frame(&mut ui, &ctx);
+    assert!(has_text(&list, "rot|"));
+    assert!(has_text(&list, "Rotate left") && has_text(&list, "Rotate right"));
+    assert!(!has_text(&list, "Clear selection"));
+    assert!(has_text(&list, "Enter runs the highlighted command"));
+
+    // Down moves the highlight; Enter runs that command and closes.
+    press_key(&mut ui, &ctx, Key::Down);
+    let out = press_key(&mut ui, &ctx, Key::Enter);
+    assert_eq!(out, [Action::RotateRight]);
+    assert_eq!(ui.mode(), UiMode::Normal);
+
+    // Backspace takes characters away; nothing matching says so; Escape
+    // closes without running anything, and the next search starts empty.
+    press_key(&mut ui, &ctx, Key::F1);
+    send(&mut ui, &ctx, InputEvent::Text("zzz".into()));
+    assert!(has_text(&frame(&mut ui, &ctx), "No command matches"));
+    assert!(press_key(&mut ui, &ctx, Key::Enter).is_empty());
+    press_key(&mut ui, &ctx, Key::F1);
+    send(&mut ui, &ctx, InputEvent::Text("ctrl+o".into()));
+    press_key(&mut ui, &ctx, Key::Backspace);
+    let list = frame(&mut ui, &ctx);
+    assert!(has_text(&list, "ctrl+|"));
+    assert!(press_key(&mut ui, &ctx, Key::Escape).is_empty());
+    assert_eq!(ui.mode(), UiMode::Normal);
+    press_key(&mut ui, &ctx, Key::F1);
+    assert!(has_text(&frame(&mut ui, &ctx), "Type to search"));
+    // ? closes the window while nothing is typed.
+    press_key(&mut ui, &ctx, Key::Question);
+    assert_eq!(ui.mode(), UiMode::Normal);
+}

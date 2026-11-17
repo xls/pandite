@@ -1,6 +1,6 @@
 //! Frame building: turns the interface state into draw commands.
 
-use super::{Capture, CropButton, PromptPart, PromptRects, Target, Ui};
+use super::{compare, Capture, CropButton, PromptPart, PromptRects, Target, Ui};
 use crate::command::{Command, SHORTCUTS};
 use crate::context::{Loading, Prompt, ThumbState, UiContext};
 use crate::crop::Handle;
@@ -26,6 +26,8 @@ impl Ui {
         let splash = loading.filter(|l| !l.over_image);
 
         self.draw_text_selection(ctx, theme, content, out);
+        self.draw_compare(ctx, measure, &m, theme, content, out);
+        self.draw_peek(ctx, &m, theme, out);
         if self.crop.is_some() {
             self.draw_crop(ctx, measure, &m, theme, out);
         } else {
@@ -129,12 +131,19 @@ impl Ui {
         }
         let label = format!("{} selected", ctx.selected.len());
         let font = m.text_small();
-        let text_w = measure
-            .measure(CLEAR_HINT, font)
-            .w
-            .max(measure.measure(&label, font).w);
+        // Wide enough for every tip, so the box keeps its size.
+        let text_w = [
+            CLEAR_HINT,
+            compare::COMPARE_HINT,
+            compare::COMPARE_END_HINT,
+            compare::COMPARE_MANY_HINT,
+            label.as_str(),
+        ]
+        .iter()
+        .map(|text| measure.measure(text, font).w)
+        .fold(0.0, f32::max);
         let w = (text_w + 2.0 * m.marked_pad()).ceil();
-        let h = (2.0 * m.px(16.0) + 2.0 * m.px(4.0)).round();
+        let h = (3.0 * m.px(16.0) + 2.0 * m.px(4.0)).round();
         let margin = m.px(10.0);
         let room = m.toolbar_h() + h + m.marked_h() + m.px(6.0) + 2.0 * margin;
         if content.w < w + 2.0 * margin || content.h < room {
@@ -158,7 +167,7 @@ impl Ui {
         m: &Metrics,
         content: Rect,
     ) -> Option<Rect> {
-        if ctx.image.is_none() || !ctx.current_selected() {
+        if ctx.image.is_none() || !ctx.current_selected() || Self::comparing_tiles(ctx) {
             return None;
         }
         let (b, _) = self.selection_box(ctx, measure, m, content)?;
@@ -195,6 +204,15 @@ impl Ui {
             paint::text_left(out, measure, top, &label, font, t.accent);
             let bottom = Rect::new(x, r.y + pad + line, w, line);
             paint::text_left(out, measure, bottom, CLEAR_HINT, font, t.text_dim);
+            let last = Rect::new(x, r.y + pad + 2.0 * line, w, line);
+            paint::text_left(
+                out,
+                measure,
+                last,
+                Self::compare_hint(ctx),
+                font,
+                t.text_dim,
+            );
         }
         let Some(r) = self.marked_rect(ctx, measure, m, content) else {
             return;
@@ -1132,6 +1150,24 @@ impl Ui {
         }
     }
 
+    /// The commands of the keyboard shortcuts window that match what the
+    /// user typed: every typed word is in the label or in the keys. All of
+    /// them when nothing is typed.
+    pub(crate) fn help_matches(&self, ctx: &UiContext<'_>) -> Vec<HelpRow> {
+        let query = self.help_query.to_lowercase();
+        let words: Vec<&str> = query.split_whitespace().collect();
+        help_rows(ctx)
+            .into_iter()
+            .filter(|(keys, label, _)| {
+                let text = format!("{} {}", label.to_lowercase(), keys.to_lowercase());
+                words.iter().all(|w| text.contains(w))
+            })
+            .collect()
+    }
+
+    /// The keyboard shortcuts window: every command with its keys, a
+    /// search the user types into, and the highlighted match that Enter
+    /// runs.
     fn draw_help(
         &self,
         ctx: &UiContext<'_>,
@@ -1142,10 +1178,16 @@ impl Ui {
     ) {
         let win = ctx.window_rect();
         out.rect(win, t.backdrop, 0.0);
-        let rows = help_rows(ctx);
-        let layout = HelpLayout::new(ctx, m, rows.len());
+        let searching = !self.help_query.is_empty();
+        let rows = self.help_matches(ctx);
+        // The window keeps the size of the whole list while the user types.
+        let layout = HelpLayout::new(ctx, m, help_rows(ctx).len());
         let panel = layout.panel;
-        let scroll = self.help_scroll.clamp(0.0, layout.max_scroll);
+        let scroll = if searching {
+            0.0
+        } else {
+            self.help_scroll.clamp(0.0, layout.max_scroll)
+        };
         paint::panel(
             out,
             panel,
@@ -1170,18 +1212,53 @@ impl Ui {
             m.text_title(),
             t.text,
         );
+        // The search, right of the title when there is room for it.
+        let title_w = measure.measure("Keyboard shortcuts", m.text_title()).w;
+        let field_w = (title.w - title_w - m.px(24.0)).min(m.px(260.0));
+        if field_w >= m.px(120.0) {
+            let field = Rect::new(
+                (title.right() - field_w).round(),
+                title.y + m.px(2.0),
+                field_w,
+                m.px(24.0),
+            );
+            out.rect(field, t.field, m.radius_small());
+            out.border(field, t.field_border, m.hairline(), m.radius_small());
+            let inner = Rect::new(field.x + m.px(8.0), field.y, field.w - m.px(16.0), field.h);
+            if searching {
+                let shown = format!("{}|", self.help_query);
+                let text = paint::elide_end(measure, &shown, m.text_small(), inner.w);
+                paint::text_left(out, measure, inner, &text, m.text_small(), t.text);
+            } else {
+                paint::text_left(
+                    out,
+                    measure,
+                    inner,
+                    HELP_SEARCH_HINT,
+                    m.text_small(),
+                    t.text_dim,
+                );
+            }
+        }
         let font = m.text();
         let cw = panel.w / layout.cols as f32;
         let key_w = (cw * 0.42).round();
         let body = layout.body;
         out.clip(Some(body));
-        for (i, (keys, label)) in rows.iter().enumerate() {
+        if rows.is_empty() {
+            paint::text_center(out, measure, body, "No command matches", font, t.text_dim);
+        }
+        for (i, (keys, label, _)) in rows.iter().enumerate() {
             let col = i / layout.per_col;
             let row = i % layout.per_col;
             let x = panel.x + m.px(18.0) + col as f32 * cw;
             let y = (body.y + row as f32 * layout.row_h - scroll).round();
             if y + layout.row_h < body.y || y > body.bottom() {
                 continue;
+            }
+            if searching && i == self.help_pick.min(rows.len() - 1) {
+                let mark = Rect::new(x - m.px(8.0), y, cw - m.px(20.0), layout.row_h);
+                out.rect(mark, t.hover, m.radius_small());
             }
             let kr = Rect::new(x, y, key_w - m.px(8.0), layout.row_h);
             let lr = Rect::new(
@@ -1197,13 +1274,15 @@ impl Ui {
         }
         out.clip(Some(panel));
         // Where the visible rows are in the whole list, when they scroll.
-        if let Some(track) = layout.track() {
+        if let Some(track) = layout.track().filter(|_| !searching) {
             out.rect(track, t.gallery_track, track.w * 0.5);
             let r = layout.marker_rect(scroll);
             out.rect(r, t.gallery_marker, r.w * 0.5);
         }
         let foot = Rect::new(panel.x, panel.bottom() - m.px(30.0), panel.w, m.px(24.0));
-        let hint = if layout.max_scroll > 0.0 {
+        let hint = if searching {
+            "Enter runs the highlighted command. Press Esc to close"
+        } else if layout.max_scroll > 0.0 {
             "Scroll for more. Press Esc to close"
         } else {
             "Press Esc to close"
@@ -1368,7 +1447,7 @@ pub(crate) const HELP_HINT: &str = "F1 / ? help";
 pub(crate) const CLEAR_HINT: &str = "Backspace to clear selection";
 
 /// The rows of the keyboard shortcuts window: the keys and the command.
-pub(crate) fn help_rows(ctx: &UiContext<'_>) -> Vec<(String, &'static str)> {
+pub(crate) fn help_rows(ctx: &UiContext<'_>) -> Vec<HelpRow> {
     Command::ALL
         .iter()
         .filter(|cmd| ctx.text_enabled || !cmd.is_text())
@@ -1378,10 +1457,17 @@ pub(crate) fn help_rows(ctx: &UiContext<'_>) -> Vec<(String, &'static str)> {
                 .filter(|s| s.command == *cmd)
                 .map(|s| s.label())
                 .collect();
-            (!keys.is_empty()).then(|| (keys.join(" / "), cmd.label()))
+            (!keys.is_empty()).then(|| (keys.join(" / "), cmd.label(), *cmd))
         })
         .collect()
 }
+
+/// One row of the keyboard shortcuts window: the keys, the label and the
+/// command.
+pub(crate) type HelpRow = (String, &'static str, Command);
+
+/// The words in the empty search of the keyboard shortcuts window.
+pub(crate) const HELP_SEARCH_HINT: &str = "Type to search";
 
 /// The places in the keyboard shortcuts window.
 pub(crate) struct HelpLayout {

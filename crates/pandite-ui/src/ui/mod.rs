@@ -6,8 +6,11 @@
 //! input event and [`Ui::build`] once per frame, passing a fresh
 //! [`UiContext`] both times.
 
+mod compare;
 mod draw;
 mod events;
+
+pub use compare::{ComparePane, PeekLens};
 
 use crate::action::{Action, PixelRect, ZOOM_STEP};
 use crate::bulk_dialog::BulkDialog;
@@ -147,6 +150,8 @@ pub(crate) enum Capture {
         grip: TextGrip,
     },
     Crop,
+    /// The slider line of a comparison.
+    Split,
     RightPress,
     EmptyOpen,
     Swallow,
@@ -203,6 +208,11 @@ pub struct Ui {
     help: bool,
     /// How far the rows of the keyboard shortcuts window are scrolled.
     help_scroll: f32,
+    /// What the user typed in the keyboard shortcuts window to find a
+    /// command.
+    help_query: String,
+    /// The highlighted row among the commands that match the query.
+    help_pick: usize,
     gallery: GalleryState,
     toasts: Vec<Toast>,
     icons: IconCache,
@@ -219,6 +229,11 @@ pub struct Ui {
     info_rect: Option<Rect>,
     /// Where the prompt was drawn in the last frame.
     prompt_rects: Option<PromptRects>,
+    /// Where the slider line of a comparison stands, as a fraction of the
+    /// width of the image area.
+    compare_split: f32,
+    /// The magnifier that follows the pointer is on.
+    peek: bool,
 }
 
 impl Default for Ui {
@@ -253,6 +268,8 @@ impl Ui {
             menu: None,
             help: false,
             help_scroll: 0.0,
+            help_query: String::new(),
+            help_pick: 0,
             gallery: GalleryState::default(),
             toasts: Vec::new(),
             icons: IconCache::default(),
@@ -265,6 +282,8 @@ impl Ui {
             text_clicks: None,
             info_rect: None,
             prompt_rects: None,
+            compare_split: 0.5,
+            peek: false,
         }
     }
 
@@ -344,8 +363,12 @@ impl Ui {
     /// True while a text field has keyboard focus. Enable the input method
     /// (IME) then, and treat Ctrl+V as a paste request.
     pub fn wants_text_input(&self) -> bool {
-        if self.confirm.is_some() || self.menu.is_some() || self.help {
+        if self.confirm.is_some() || self.menu.is_some() {
             return false;
+        }
+        if self.help {
+            // Typing searches the commands.
+            return true;
         }
         match (&self.dialog, self.dialog_form.focus) {
             (Some(d), Some(f)) => d.host().field(f).is_some(),
@@ -377,8 +400,25 @@ impl Ui {
         if self.crop.is_some() && !cmd.allowed_in_crop() {
             return false;
         }
+        if ctx.compare.is_some()
+            && matches!(
+                cmd,
+                Command::Undo
+                    | Command::RotateLeft
+                    | Command::RotateRight
+                    | Command::FlipHorizontal
+                    | Command::FlipVertical
+                    | Command::Crop
+                    | Command::Resize
+            )
+        {
+            // A comparison shows files as they are.
+            return false;
+        }
         match cmd {
             Command::Undo => ctx.can_undo,
+            Command::Compare => ctx.compare.is_some() || !ctx.selected.is_empty(),
+            Command::Peek => ctx.image.is_some() || ctx.compare.is_some(),
             Command::Previous
             | Command::Next
             | Command::PagePrevious
@@ -889,7 +929,10 @@ impl Ui {
     /// True when the context asks for the information panel and the mode
     /// allows it (crop mode hides it, so the whole image stays editable).
     pub(crate) fn info_wanted(&self, ctx: &UiContext<'_>) -> bool {
-        ctx.info_visible && !ctx.info.is_empty() && self.crop.is_none()
+        ctx.info_visible
+            && !ctx.info.is_empty()
+            && self.crop.is_none()
+            && !Self::comparing_tiles(ctx)
     }
 
     /// True when the context has a prompt and the mode allows it (crop
@@ -1109,6 +1152,11 @@ impl Ui {
                 self.wake();
                 out.push(Action::ToggleSelect(ctx.index));
             }
+            Command::Compare => {
+                self.wake();
+                self.start_compare(ctx, out);
+            }
+            Command::Peek => self.peek = !self.peek,
             Command::ClearSelection => {
                 self.wake();
                 out.push(Action::ClearSelection);
@@ -1201,6 +1249,8 @@ impl Ui {
                 self.menu = None;
                 self.help = !self.help;
                 self.help_scroll = 0.0;
+                self.help_query.clear();
+                self.help_pick = 0;
             }
             Command::Cancel => self.cancel(ctx, out),
             Command::Quit => out.push(Action::Quit),
@@ -1267,8 +1317,46 @@ impl Ui {
                 id: prompt.id,
                 accepted: false,
             });
+        } else if self.peek_shown(ctx) {
+            self.peek = false;
+        } else if ctx.compare.is_some() {
+            out.push(Action::EndCompare);
         } else {
             out.push(Action::Quit);
+        }
+    }
+
+    /// D: end the comparison, or start one from the selection. One
+    /// selected image is compared with the thumbnail under the pointer,
+    /// which then shows, or else with the image on screen.
+    fn start_compare(&mut self, ctx: &UiContext<'_>, out: &mut Vec<Action>) {
+        if ctx.compare.is_some() {
+            out.push(Action::EndCompare);
+            return;
+        }
+        match ctx.selected {
+            [] => {}
+            [one] => {
+                let hovered = match self.hover {
+                    Target::Gallery(Some(h)) if h != *one && h < ctx.count => Some(h),
+                    _ => None,
+                };
+                if let Some(h) = hovered {
+                    if h != ctx.index {
+                        out.push(Action::GoTo(h));
+                    }
+                } else if ctx.count == 0 || ctx.index == *one {
+                    self.toast(
+                        "Show another image to compare it with the marked one",
+                        self.now,
+                    );
+                    return;
+                }
+                self.compare_split = 0.5;
+                out.push(Action::Compare);
+            }
+            many if many.len() <= compare::COMPARE_MAX => out.push(Action::Compare),
+            _ => self.toast("Compare shows 8 images or fewer", self.now),
         }
     }
 
@@ -1297,6 +1385,9 @@ impl Ui {
 
     /// True when the image overflows the content area (it can be panned).
     fn pannable(&self, ctx: &UiContext<'_>) -> bool {
+        if Self::comparing_tiles(ctx) {
+            return true;
+        }
         let Some(info) = ctx.image else { return false };
         let c = self.content_rect(ctx);
         info.screen_rect.w > c.w + 0.5 || info.screen_rect.h > c.h + 0.5
@@ -1330,6 +1421,7 @@ impl Ui {
         };
         self.cursor = match self.capture {
             Some((Capture::Pan { .. }, _)) => CursorShape::Grabbing,
+            Some((Capture::Split, _)) => CursorShape::ResizeHorizontal,
             Some((Capture::Text { .. }, _)) => CursorShape::Text,
             Some((Capture::Gallery { dragging: true, .. }, _)) => CursorShape::Grabbing,
             Some((Capture::Crop, _)) => match self.pointer {
@@ -1352,6 +1444,8 @@ impl Ui {
                 Target::Content => match self.pointer {
                     Some(p) if self.crop.is_some() => self.crop_cursor(p, ctx, m),
                     _ if ctx.fullscreen && !self.toolbar_wanted(ctx, m) => CursorShape::Hidden,
+                    Some(p) if self.on_split(p, ctx, m) => CursorShape::ResizeHorizontal,
+                    _ if self.peek_shown(ctx) => CursorShape::Crosshair,
                     Some(p) if self.word_at(p, ctx, m).is_some() => CursorShape::Text,
                     _ if self.pannable(ctx) => CursorShape::Grab,
                     _ => CursorShape::Default,

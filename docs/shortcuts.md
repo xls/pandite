@@ -24,6 +24,7 @@ On macOS, Ctrl is the Command key and Alt is the Option key.
 | Select and next image | Shift+Right |
 | Move to... | M |
 | Copy to... | Shift+M |
+| Compare selected images | D |
 | Move to Recycle Bin (Windows), Move to Trash (macOS, Linux) | Del |
 | Delete permanently... | Shift+Del |
 | Undo | Ctrl+Z |
@@ -38,6 +39,7 @@ On macOS, Ctrl is the Command key and Alt is the Option key.
 | Actual size (1:1) | 1 |
 | Zoom in | +, = |
 | Zoom out | - |
+| Pixel peek | P |
 | Pan up | Up, Ctrl+Up |
 | Pan down | Down, Ctrl+Down |
 | Pan left | Ctrl+Left |
@@ -235,6 +237,25 @@ does not change it.
   arrow key move the crop selection 10 pixels. Esc does not clear the
   selection.
 
+### Compare the selected images
+
+- D compares the selected images. D again, or Esc, ends the comparison.
+- With one selected image, D sets it against the current image. The
+  selected image shows left of a line and the current image right of it.
+  Drag the line to move it. The arrow keys change the current image.
+- With one selected image and the pointer on another thumbnail, D shows
+  that image first and then compares.
+- With two to eight selected images, D shows them in tiles. Zoom and pan
+  apply to all tiles.
+- In tiles, the arrow keys move through the folder. The tile of the
+  current image has a bright border. Space selects the current image, or
+  clears its selection: its tile comes or leaves. A click on a tile makes
+  its image the current image.
+- The tiles hold eight images at most. With one selected image left, the
+  comparison ends.
+- Rotate, flip, crop, resize and undo are not available in a comparison.
+- The box in the bottom right corner shows the key: "Compare with D".
+
 ### Delete the selected images
 
 - Del asks first and gives the number of images, for example "Move 3
@@ -339,6 +360,22 @@ editor, a document or a chat.
   second copy of the same image.
 - On Windows, the clipboard gets a 32-bit bitmap. An image with
   transparency up to 16 megapixels also goes on the clipboard as PNG.
+
+## Pixel peek
+
+- P shows a magnifier square at the pointer. P again, or Esc, hides it.
+- The square shows the picture at 100 % when the view is below 50 %. It
+  shows the picture at two times the size of the view in all other cases.
+- In a slider comparison, two squares show the same spot of the two
+  images. In tiles, each tile has a square at the same spot.
+
+## Find a command
+
+- F1 or ? opens the list of commands and keys.
+- Type to search. The list keeps the commands whose name or keys hold
+  each word that you type.
+- Up and Down move the highlight. Enter does the highlighted command.
+- Esc closes the list.
 
 ## Mouse
 

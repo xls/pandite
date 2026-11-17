@@ -38,6 +38,10 @@ pub enum Command {
     /// Copy the selected files, or the current file, to a folder the user
     /// picks. The files stay where they are.
     CopyTo,
+    /// Compare the selected images, or end the comparison.
+    Compare,
+    /// Show or hide the magnifier that follows the pointer.
+    Peek,
     /// Undo the last view edit.
     Undo,
     /// Rotate 90 degrees counterclockwise.
@@ -115,7 +119,7 @@ pub enum Command {
 
 impl Command {
     /// Every command, in the order the shortcut overlay lists them.
-    pub const ALL: [Command; 48] = [
+    pub const ALL: [Command; 50] = [
         Command::Open,
         Command::SaveAs,
         Command::CopyImage,
@@ -128,6 +132,7 @@ impl Command {
         Command::SelectNext,
         Command::MoveTo,
         Command::CopyTo,
+        Command::Compare,
         Command::MoveToTrash,
         Command::DeleteFile,
         Command::Undo,
@@ -142,6 +147,7 @@ impl Command {
         Command::ActualSize,
         Command::ZoomIn,
         Command::ZoomOut,
+        Command::Peek,
         Command::PanUp,
         Command::PanDown,
         Command::PanLeft,
@@ -182,6 +188,8 @@ impl Command {
             Command::SelectNext => "Select and next image",
             Command::MoveTo => "Move to...",
             Command::CopyTo => "Copy to...",
+            Command::Compare => "Compare selected images",
+            Command::Peek => "Pixel peek",
             Command::Undo => "Undo",
             Command::RotateLeft => "Rotate left",
             Command::RotateRight => "Rotate right",
@@ -431,6 +439,8 @@ pub const SHORTCUTS: &[Shortcut] = &[
     Shortcut::new(Key::Right, SHIFT, Command::SelectNext),
     Shortcut::new(Key::M, N, Command::MoveTo),
     Shortcut::new(Key::M, SHIFT, Command::CopyTo),
+    Shortcut::new(Key::D, N, Command::Compare),
+    Shortcut::new(Key::P, N, Command::Peek),
     Shortcut::new(Key::Z, CTRL, Command::Undo),
     Shortcut::new(Key::R, SHIFT, Command::RotateLeft),
     Shortcut::new(Key::L, N, Command::RotateLeft),

@@ -13,8 +13,8 @@ use crate::disk::{list_images, Disk};
 use crate::edit::Edit;
 use crate::platform::{ImageWriter, Waker};
 use pandite_core::{
-    CancelToken, EncodeOptions, Error, ImageBuf, Registry, Result as CoreResult, Source,
-    TextProvider,
+    CancelToken, DecodeOptions, EncodeOptions, Error, ImageBuf, Registry, Result as CoreResult,
+    Source, TextProvider,
 };
 use pandite_ops::{BulkJob as OpsJob, Destination, FileOutcome, OverwritePolicy};
 use pandite_ui::{BulkJob, BulkSource};
@@ -315,6 +315,77 @@ pub(crate) fn check_trash(
             checked.push((file, has));
         }
         out.send(Msg::TrashChecked { id, files: checked });
+    })
+}
+
+/// Read and decode `path` for a comparison: a still at display depth,
+/// the first frame of an animation. With `quick`, a format that decodes
+/// at reduced size cheaply first sends an image covering that size, with
+/// the size of the full image, and then the full image.
+pub(crate) fn compare_load(
+    out: Outbox,
+    disk: Arc<dyn Disk>,
+    registry: Arc<Registry>,
+    slot: u64,
+    path: PathBuf,
+    quick: Option<(u32, u32)>,
+) -> std::io::Result<()> {
+    spawn("pandite-compare", move || {
+        let source = match disk.read_head(&path, usize::MAX) {
+            Ok(bytes) => Source::from_vec(bytes, Some(path.clone())),
+            Err(err) => {
+                out.send(Msg::CompareLoaded {
+                    slot,
+                    result: Err(err.into()),
+                    full_size: None,
+                });
+                return;
+            }
+        };
+        if let Some(target) = quick {
+            let reduced = guarded("reading the image", || {
+                let cheap = registry
+                    .decoder_for(&source)
+                    .is_some_and(|d| d.reduced_decode(&source));
+                if !cheap {
+                    return Ok(None);
+                }
+                let meta = registry.probe(&source)?;
+                if meta.width <= target.0 && meta.height <= target.1 {
+                    return Ok(None);
+                }
+                let options = DecodeOptions {
+                    target_size: Some(target),
+                    first_frame_only: true,
+                    prefer_8bit: true,
+                    ..DecodeOptions::default()
+                };
+                let content = registry.decode(&source, &options)?;
+                let image = content.first_image();
+                let smaller = image.width() < meta.width || image.height() < meta.height;
+                Ok(smaller.then_some((content, (meta.width, meta.height))))
+            });
+            if let Ok(Some((content, full))) = reduced {
+                out.send(Msg::CompareLoaded {
+                    slot,
+                    result: Ok(content),
+                    full_size: Some(full),
+                });
+            }
+        }
+        let result = guarded("reading the image", || {
+            let options = DecodeOptions {
+                first_frame_only: true,
+                prefer_8bit: true,
+                ..DecodeOptions::default()
+            };
+            registry.decode(&source, &options)
+        });
+        out.send(Msg::CompareLoaded {
+            slot,
+            result,
+            full_size: None,
+        });
     })
 }
 

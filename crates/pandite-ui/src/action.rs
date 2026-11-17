@@ -203,6 +203,12 @@ pub enum Action {
     Select(usize),
     /// Unselect every image (Backspace).
     ClearSelection,
+    /// Compare the selected images (D): one selected image against the
+    /// image on screen with a slider, or two to eight selected images in
+    /// tiles. Report the comparison in [`crate::UiContext::compare`].
+    Compare,
+    /// End the comparison (D again, or Escape).
+    EndCompare,
     /// Move the selected files, or the file of the current image when
     /// nothing is selected, to a folder the user picks (M). The folder
     /// picker is the confirmation; there is no question.
@@ -417,6 +423,10 @@ pub enum ActionKind {
     ToggleSelect,
     /// [`Action::ClearSelection`].
     ClearSelection,
+    /// [`Action::Compare`].
+    Compare,
+    /// [`Action::EndCompare`].
+    EndCompare,
     /// [`Action::Select`].
     Select,
     /// [`Action::MoveTo`].
@@ -433,7 +443,7 @@ pub enum ActionKind {
 
 impl ActionKind {
     /// Every kind, in declaration order.
-    pub const ALL: [ActionKind; 47] = [
+    pub const ALL: [ActionKind; 49] = [
         ActionKind::Open,
         ActionKind::SaveAs,
         ActionKind::CopyPath,
@@ -481,6 +491,8 @@ impl ActionKind {
         ActionKind::LargerThumbnails,
         ActionKind::SmallerThumbnails,
         ActionKind::PromptResult,
+        ActionKind::Compare,
+        ActionKind::EndCompare,
     ];
 
     /// The position of this kind in [`ActionKind::ALL`]. The match is
@@ -534,6 +546,8 @@ impl ActionKind {
             ActionKind::LargerThumbnails => 44,
             ActionKind::SmallerThumbnails => 45,
             ActionKind::PromptResult => 46,
+            ActionKind::Compare => 47,
+            ActionKind::EndCompare => 48,
         }
     }
 }
@@ -550,6 +564,8 @@ impl Action {
             Action::DeleteFile => ActionKind::DeleteFile,
             Action::ToggleSelect(_) => ActionKind::ToggleSelect,
             Action::ClearSelection => ActionKind::ClearSelection,
+            Action::Compare => ActionKind::Compare,
+            Action::EndCompare => ActionKind::EndCompare,
             Action::Select(_) => ActionKind::Select,
             Action::MoveTo => ActionKind::MoveTo,
             Action::CopyTo => ActionKind::CopyTo,

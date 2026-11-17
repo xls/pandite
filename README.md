@@ -111,6 +111,13 @@ Writes PNG, JPEG, lossless WebP and BMP.
   the gallery strip, and the bottom right corner shows "Marked" and the count. Del,
   M (move to a folder), Shift+M (copy to a folder) and bulk convert then
   act on the selected images.
+- **Compare.** D sets one selected image against the current image with a
+  slider, or shows two to eight selected images in tiles. In tiles, the
+  arrow keys and Space add and remove images.
+- **Pixel peek.** P shows a magnifier at the pointer, also on every image
+  of a comparison.
+- **Find a command.** F1 lists every command with its key. Type to search
+  the list, and Enter does the command.
 - **Color.** Embedded ICC profiles convert to sRGB. HDR images are tone
   mapped. Photos turn upright from their EXIF orientation.
 - **Stall safe.** A file stuck on a cloud drive cannot freeze the window.

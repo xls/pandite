@@ -133,6 +133,22 @@ fn shortcuts_cover_every_action() {
         "Escape with a prompt",
     );
 
+    // D compares the selection; D again ends the comparison.
+    let mut one = ctx;
+    one.selected = &[1];
+    let mut ui = Ui::new();
+    note(&press_key(&mut ui, &one, Key::D), "D with a selection");
+    let items = [pandite_ui::CompareItem {
+        name: "a.jpg".into(),
+        index: Some(1),
+        state: pandite_ui::CompareState::Ready,
+    }];
+    one.compare = Some(pandite_ui::CompareView {
+        kind: pandite_ui::CompareKind::Slider,
+        items: &items,
+    });
+    note(&press_key(&mut ui, &one, Key::D), "D in a comparison");
+
     // Zoom at a point from the context menu.
     let mut ui = Ui::new();
     let p = Point::new(500.0, 300.0);

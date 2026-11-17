@@ -218,6 +218,52 @@ pub struct UiContext<'a> {
     /// and the toolbar shows the count. The bulk dialog offers them as a
     /// source.
     pub selected: &'a [usize],
+    /// The comparison on screen, when one runs ([`crate::Action::Compare`]).
+    pub compare: Option<CompareView<'a>>,
+}
+
+/// How a comparison shows its images.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompareKind {
+    /// One image against the image on screen, in the same place, with a
+    /// vertical line the user drags: the compared image shows left of
+    /// the line, the image on screen right of it.
+    Slider,
+    /// Two to eight images side by side in tiles.
+    Tiles,
+}
+
+/// How far an image of a comparison is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompareState {
+    /// The file is being read.
+    Loading,
+    /// The image is drawn.
+    Ready,
+    /// The file could not be opened.
+    Failed,
+}
+
+/// One image of a comparison.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompareItem {
+    /// The file name, drawn as its label.
+    pub name: String,
+    /// The folder index of the image, when the folder still lists it.
+    pub index: Option<usize>,
+    /// How far the image is.
+    pub state: CompareState,
+}
+
+/// The comparison on screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompareView<'a> {
+    /// How the images show.
+    pub kind: CompareKind,
+    /// The compared images: for [`CompareKind::Slider`] the one image
+    /// set against the image on screen, for [`CompareKind::Tiles`] one
+    /// per tile in reading order.
+    pub items: &'a [CompareItem],
 }
 
 impl Default for UiContext<'_> {
@@ -247,6 +293,7 @@ impl Default for UiContext<'_> {
             info_visible: false,
             info: &[],
             selected: &[],
+            compare: None,
         }
     }
 }

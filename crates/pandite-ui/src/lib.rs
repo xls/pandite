@@ -108,6 +108,30 @@
 //! screen, to a folder the application asks for. Shift+M emits
 //! [`Action::CopyTo`], which copies them there and leaves them in place.
 //!
+//! # Comparison
+//!
+//! D emits [`Action::Compare`] when images are selected, and
+//! [`Action::EndCompare`] while [`UiContext::compare`] is set. With one
+//! selected image and the pointer over another thumbnail it emits
+//! [`Action::GoTo`] for that thumbnail first. Draw the images where
+//! [`Ui::compare_panes`] puts them: for [`CompareKind::Slider`] the
+//! compared image left of a line the user drags and the image on screen
+//! right of it, for [`CompareKind::Tiles`] one tile per image. In tiles a
+//! click on a tile emits [`Action::GoTo`] for its image. Edits are not
+//! available while a comparison shows.
+//!
+//! # Magnifier
+//!
+//! P shows and hides the magnifier. While the pointer is over the image
+//! area, [`Ui::peek_lenses`] gives its squares: draw each picture again
+//! in its square, enlarged about the source point.
+//!
+//! # Command search
+//!
+//! In the shortcut overlay, typed text ([`InputEvent::Text`]) searches the
+//! commands, Up and Down move the highlight and Enter runs the
+//! highlighted command.
+//!
 //! # Prompt
 //!
 //! While [`UiContext::prompt`] is set, a panel with its message, its
@@ -121,7 +145,8 @@
 //! # Escape
 //!
 //! Escape closes the topmost menu, shortcut overlay or dialog, and else
-//! answers the prompt. When none is open it emits [`Action::Quit`], also
+//! answers the prompt, hides the magnifier or ends the comparison
+//! ([`Action::EndCompare`]). When none is open it emits [`Action::Quit`], also
 //! in full screen, in crop mode, with a text selection, with the
 //! information panel and while a file loads.
 
@@ -155,14 +180,15 @@ pub use action::{
 pub use command::{command_for_key, Command, Shortcut, SHORTCUTS};
 pub use confirm::ConfirmRequest;
 pub use context::{
-    EncoderInfo, ImageInfo, InfoRow, Loading, Progress, Prompt, TextView, ThumbState, UiContext,
+    CompareItem, CompareKind, CompareState, CompareView, EncoderInfo, ImageInfo, InfoRow, Loading,
+    Progress, Prompt, TextView, ThumbState, UiContext,
 };
 pub use gallery::GallerySize;
 pub use icon::{Icon, ICON_TEXTURE_BASE};
 pub use input::{CursorShape, InputEvent, Key, Modifiers, PointerButton, WheelDelta};
 pub use text_field::{CharFilter, FieldResponse, TextField};
 pub use theme::{contrast, luminance, Theme, ThemeKind};
-pub use ui::{Ui, UiMode};
+pub use ui::{ComparePane, PeekLens, Ui, UiMode};
 
 use pandite_core::TextureId;
 

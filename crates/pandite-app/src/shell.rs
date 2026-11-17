@@ -23,7 +23,9 @@ mod native;
 mod smoke;
 mod timing;
 
-use crate::app::{App, ContentUpdate, Platform, Startup, WindowState};
+use crate::app::{
+    App, CompareUpdate, ContentUpdate, Platform, Startup, WindowState, BACKDROP_SLOT,
+};
 use crate::cli::Cli;
 use crate::console;
 use crate::disk::{Disk, StdDisk};
@@ -31,13 +33,14 @@ use crate::platform::Waker;
 use crate::resident::{self, Reply, Request};
 use crate::sandbox::{self, SandboxDisk, Store};
 use crate::settings::{self, ensure_on_screen, first_open_rect, Settings, ThemeChoice};
-use pandite_core::{Content, DrawList, Point, Rect, Size};
+use pandite_core::{Content, DrawList, ImageBuf, PixelFormat, Point, Rect, Size};
 use pandite_library::KeptThumbnails;
 use pandite_render::{
-    Checkerboard, FrameStatus, Gpu, GpuOptions, PreparedContent, RenderInput, RenderSettings,
+    Checkerboard, FrameStatus, Gpu, GpuOptions, Pane, PreparedContent, RenderInput, RenderSettings,
     Renderer, TextMeasurer,
 };
 use pandite_ui::{InputEvent, ThemeKind};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -74,6 +77,17 @@ pub enum UserEvent {
     GpuReady(Result<Arc<Gpu>, String>),
     /// Another pandite process asks the one in the background.
     Resident(Request),
+    /// The upload of a comparison picture finished on its thread.
+    PanePrepared {
+        /// The renderer the upload was made for.
+        epoch: u64,
+        /// The slot of the picture.
+        slot: u64,
+        /// The number of this upload; an older one for the slot is dropped.
+        serial: u64,
+        /// The GPU content, or why it failed.
+        result: Result<PreparedContent, String>,
+    },
     /// An upload finished on the upload thread.
     Prepared {
         /// The renderer the upload was made for.
@@ -269,6 +283,11 @@ struct Uploads {
     shown: u64,
     /// The shown generation is the image at full resolution.
     shown_full: bool,
+    /// The pictures of a comparison the core wants on the GPU: each slot
+    /// and the number of its newest upload.
+    panes: HashMap<u64, u64>,
+    /// Counts pane uploads.
+    pane_serial: u64,
 }
 
 struct Shell {
@@ -287,6 +306,9 @@ struct Shell {
     measurer: Option<TextMeasurer>,
     app: Option<App>,
     uploads: Uploads,
+    /// The color of the background pixel the renderer holds for the
+    /// magnifier.
+    backdrop: Option<pandite_core::Color>,
     content: Option<Content>,
     list: DrawList,
     cursor: Point,
@@ -385,6 +407,7 @@ impl Shell {
             measurer: None,
             app: None,
             uploads: Uploads::default(),
+            backdrop: None,
             content: None,
             list: DrawList::new(),
             cursor: Point::default(),
@@ -885,6 +908,96 @@ impl Shell {
                 }
             }
         }
+        self.flush_compare();
+    }
+
+    /// Carry out what the core wants for the pictures of a comparison:
+    /// upload each new one on its own thread, drop the others at once.
+    fn flush_compare(&mut self) {
+        let updates = self.app.as_mut().map(App::take_compare).unwrap_or_default();
+        if updates.is_empty() {
+            return;
+        }
+        for update in updates {
+            match update {
+                CompareUpdate::Clear => {
+                    self.uploads.panes.clear();
+                    if let Some(r) = self.renderer.as_mut() {
+                        r.clear_pane_contents();
+                    }
+                }
+                CompareUpdate::Remove(slot) => {
+                    self.uploads.panes.remove(&slot);
+                    if let Some(r) = self.renderer.as_mut() {
+                        r.remove_pane_content(slot);
+                    }
+                }
+                CompareUpdate::Set {
+                    slot,
+                    content,
+                    logical,
+                } => {
+                    let Some(renderer) = self.renderer.as_ref() else {
+                        continue;
+                    };
+                    self.uploads.pane_serial += 1;
+                    let serial = self.uploads.pane_serial;
+                    self.uploads.panes.insert(slot, serial);
+                    let epoch = self.uploads.epoch;
+                    let factory = renderer.content_factory();
+                    let proxy = self.proxy.clone();
+                    let input = match logical {
+                        Some((w, h)) => RenderInput::Reduced {
+                            content,
+                            size: Size::new(w as f32, h as f32),
+                        },
+                        None => RenderInput::Content(content),
+                    };
+                    let spawned = std::thread::Builder::new()
+                        .name("pandite-upload".into())
+                        .spawn(move || {
+                            let result = factory.create(&input).map_err(|e| e.to_string());
+                            let _ = proxy.send_event(UserEvent::PanePrepared {
+                                epoch,
+                                slot,
+                                serial,
+                                result,
+                            });
+                        });
+                    if spawned.is_err() {
+                        self.uploads.panes.remove(&slot);
+                    }
+                }
+            }
+        }
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+    }
+
+    /// The upload of a comparison picture ended.
+    fn pane_prepared(
+        &mut self,
+        epoch: u64,
+        slot: u64,
+        serial: u64,
+        result: Result<PreparedContent, String>,
+    ) {
+        if epoch != self.uploads.epoch || self.uploads.panes.get(&slot) != Some(&serial) {
+            // For a renderer or a comparison that no longer exists.
+            return;
+        }
+        match result {
+            Ok(prepared) => {
+                if let Some(renderer) = self.renderer.as_mut() {
+                    renderer.set_pane_content(slot, prepared);
+                }
+            }
+            Err(err) => console::err(&format!("pandite: cannot show the image: {err}")),
+        }
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
     }
 
     fn start_upload(&mut self, update: ContentUpdate) {
@@ -1008,6 +1121,7 @@ impl Shell {
                 self.uploads.epoch += 1;
                 self.uploads.in_flight = None;
                 self.uploads.queued = None;
+                self.uploads.panes.clear();
                 app.gpu_reset();
                 self.flush_content();
                 window.request_redraw();
@@ -1056,7 +1170,38 @@ impl Shell {
             settings.background = out.background;
             renderer.set_settings(settings);
         }
-        let status = renderer.render(&out.view, out.viewport, &self.list);
+        let status = if out.panes.is_empty() {
+            renderer.render(&out.view, out.viewport, &self.list)
+        } else {
+            let panes: Vec<Pane> = out
+                .panes
+                .iter()
+                .map(|p| Pane {
+                    slot: p.slot,
+                    viewport: p.viewport,
+                    clip: p.clip,
+                    rect: p.rect,
+                })
+                .collect();
+            // The magnifier draws over one pixel of the window background.
+            let wanted = panes.iter().any(|p| p.slot == Some(BACKDROP_SLOT));
+            let stale = self.backdrop != Some(out.background)
+                || renderer.pane_content_size(BACKDROP_SLOT).is_none();
+            if wanted && stale {
+                let c = out.background;
+                let made = ImageBuf::new(1, 1, PixelFormat::Rgba8, vec![c.r, c.g, c.b, 255])
+                    .and_then(|pixel| {
+                        renderer
+                            .content_factory()
+                            .create(&RenderInput::Content(Content::Still(pixel)))
+                    });
+                if let Ok(prepared) = made {
+                    renderer.set_pane_content(BACKDROP_SLOT, prepared);
+                    self.backdrop = Some(out.background);
+                }
+            }
+            renderer.render_panes(&out.view, &panes, &self.list)
+        };
         if let Some(err) = renderer.take_texture_error() {
             console::err(&format!("pandite: {err}"));
         }
@@ -1314,6 +1459,12 @@ impl ApplicationHandler<UserEvent> for Shell {
                 full,
                 result,
             } => self.prepared(epoch, generation, full, result),
+            UserEvent::PanePrepared {
+                epoch,
+                slot,
+                serial,
+                result,
+            } => self.pane_prepared(epoch, slot, serial, result),
         }
         self.check_exit(event_loop);
     }

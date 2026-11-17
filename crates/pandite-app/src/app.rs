@@ -17,6 +17,7 @@
 //! were added, removed or renamed outside pandite join or leave the
 //! gallery strip and the selection; the image on screen stays.
 
+mod compare;
 mod jobs;
 mod text;
 mod thumbs;
@@ -37,9 +38,9 @@ use pandite_library::{
     natural_cmp, Event, Fetch, FileAccess, KeptThumbnails, Library, LibraryConfig, Reduced,
 };
 use pandite_ui::{
-    Action, BulkJob, BulkSource, ConfirmRequest, CursorShape, EncoderInfo, GallerySize, ImageInfo,
-    InfoRow, InputEvent, Loading, Progress, Prompt, TextView, ThemeKind, ThumbState, Ui, UiContext,
-    ZOOM_STEP,
+    Action, BulkJob, BulkSource, CompareItem, CompareKind, CompareView, ConfirmRequest,
+    CursorShape, EncoderInfo, GallerySize, ImageInfo, InfoRow, InputEvent, Loading, Progress,
+    Prompt, TextView, ThemeKind, ThumbState, Ui, UiContext, ZOOM_STEP,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -58,6 +59,14 @@ pub(crate) enum Msg {
         image: u64,
         edit: Edit,
         result: pandite_core::Result<ImageBuf>,
+    },
+    /// A file of the comparison was read: its slot and the picture.
+    CompareLoaded {
+        slot: u64,
+        result: pandite_core::Result<Content>,
+        /// For a reduced first stage: the size of the full image, which
+        /// follows.
+        full_size: Option<(u32, u32)>,
     },
     /// A Save As job finished.
     Saved { id: u64, result: Result<(), String> },
@@ -147,8 +156,10 @@ pub struct ContentUpdate {
     pub logical: Option<(u32, u32)>,
 }
 
+pub use compare::{CompareUpdate, PaneOut, BACKDROP_SLOT};
+
 /// What the shell needs to draw one frame besides the draw list.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct FrameOut {
     /// How the content is placed.
     pub view: ViewState,
@@ -156,6 +167,9 @@ pub struct FrameOut {
     pub viewport: Rect,
     /// Window background color.
     pub background: Color,
+    /// During a comparison or with the magnifier: the pictures to draw in
+    /// place of the single content, in order. Empty otherwise.
+    pub panes: Vec<PaneOut>,
 }
 
 /// The window as the shell found it when the core started.
@@ -641,6 +655,13 @@ struct State {
     /// Folder indices of the selected files, ascending: what the interface
     /// shows.
     selected: Vec<usize>,
+    /// The comparison on screen.
+    compare: Option<compare::Compare>,
+    /// What the shell must still do with the pictures of the comparison.
+    compare_out: Vec<CompareUpdate>,
+    /// The one selected file and its picture, kept from when it was on
+    /// screen, for a comparison that starts at once.
+    compare_kept: Option<(PathBuf, ImageBuf)>,
     /// Folder access in the macOS App Sandbox; `None` outside it.
     access: Option<Access>,
     bulk: Option<BulkRun>,
@@ -839,6 +860,9 @@ impl App {
             trash_check: None,
             selection: Vec::new(),
             selected: Vec::new(),
+            compare: None,
+            compare_out: Vec::new(),
+            compare_kept: None,
             access: platform.sandbox.map(|store| Access {
                 store,
                 session: Session::default(),
@@ -1017,6 +1041,16 @@ impl App {
         &self.st.selection
     }
 
+    /// How the comparison on screen shows its images, when one runs.
+    pub fn compare_kind(&self) -> Option<CompareKind> {
+        self.st.compare.as_ref().map(|c| c.kind)
+    }
+
+    /// The images of the comparison on screen, in display order.
+    pub fn compare_items(&self) -> &[CompareItem] {
+        self.st.compare.as_ref().map_or(&[], |c| &c.items)
+    }
+
     /// The folder indices of the selected files, ascending: what the
     /// gallery strip shows.
     pub fn selected_indices(&self) -> &[usize] {
@@ -1193,12 +1227,14 @@ impl App {
         while let Some(event) = queue.pop() {
             self.st.refresh_text();
             self.st.refresh_info(now);
-            let (actions, rect) = {
+            let (actions, rect, panes) = {
                 let ctx = context(&self.st, &self.ui, now);
                 let rect = self.ui.content_rect(&ctx);
-                (self.ui.handle_event(event, &ctx), rect)
+                let panes = self.ui.compare_panes(&ctx);
+                (self.ui.handle_event(event, &ctx), rect, panes)
             };
             self.st.content_rect = rect;
+            self.st.place_compare(&panes);
             for action in actions {
                 if let Handled::Paste(text) = self.handle_action(action, now) {
                     queue.push(InputEvent::Text(text));
@@ -1229,9 +1265,16 @@ impl App {
             Action::CopyImage => st.copy_image(&mut self.ui, now),
             Action::MoveToTrash => st.request_delete(false, &mut self.ui, now),
             Action::DeleteFile => st.request_delete(true, &mut self.ui, now),
+            Action::ToggleSelect(index) if st.tiles_full(index) => {
+                self.ui.toast("Compare shows 8 images or fewer", now);
+                Handled::Ignored
+            }
+            Action::Select(index) if st.tiles_full(index) => Handled::Ignored,
             Action::ToggleSelect(index) => st.toggle_selection(index),
             Action::Select(index) => st.select_index(index),
             Action::ClearSelection => st.clear_selection(),
+            Action::Compare => st.start_compare(&mut self.ui, now),
+            Action::EndCompare => st.end_compare(),
             Action::MoveTo => st.request_move(false, &mut self.ui, now),
             Action::CopyTo => st.request_move(true, &mut self.ui, now),
             Action::CopyText(text) => {
@@ -1302,9 +1345,8 @@ impl App {
                 st.view.set_fit();
                 Handled::Done
             }
-            Action::OneToOne { anchor } => match st.display_size() {
-                Some(size) => {
-                    let vp = st.content_rect;
+            Action::OneToOne { anchor } => match st.view_frame(anchor) {
+                Some((size, vp)) => {
                     st.view
                         .set_one_to_one(size, vp, anchor.unwrap_or_else(|| vp.center()));
                     Handled::Done
@@ -1314,9 +1356,9 @@ impl App {
             Action::ZoomIn => st.zoom(ZOOM_STEP, None),
             Action::ZoomOut => st.zoom(1.0 / ZOOM_STEP, None),
             Action::ZoomAt { factor, anchor } => st.zoom(factor, Some(anchor)),
-            Action::PanBy { dx, dy } => match st.display_size() {
-                Some(size) => {
-                    st.view.pan_by(dx, dy, size, st.content_rect.size());
+            Action::PanBy { dx, dy } => match st.view_frame(None) {
+                Some((size, vp)) => {
+                    st.view.pan_by(dx, dy, size, vp.size());
                     Handled::Done
                 }
                 None => Handled::Ignored,
@@ -1510,7 +1552,8 @@ impl App {
         self.st.poll_text(now);
         self.st.refresh_text();
         self.st.refresh_info(now);
-        let (viewport, background, range) = {
+        self.st.refresh_compare();
+        let (viewport, background, range, panes, lens) = {
             let ctx = context(&self.st, &self.ui, now);
             let viewport = self.ui.content_rect(&ctx);
             self.ui.build(&ctx, measure, list);
@@ -1518,8 +1561,12 @@ impl App {
                 viewport,
                 Ui::clear_color(&ctx),
                 self.ui.gallery_visible_range(&ctx),
+                self.ui.compare_panes(&ctx),
+                self.ui.peek_lenses(&ctx),
             )
         };
+        let panes = self.st.place_compare(&panes);
+        let panes = self.st.peek_panes(panes, viewport, &lens);
         self.st.content_rect = viewport;
         self.st.thumbs.set_visible(range, &self.st.library);
         self.st.dirty = false;
@@ -1527,6 +1574,7 @@ impl App {
             view: self.st.view,
             viewport,
             background,
+            panes,
         }
     }
 
@@ -1552,7 +1600,14 @@ impl App {
             let (content, logical) = shown.update();
             self.st.push_staged(Some(content), logical);
         }
+        self.st.repush_compare();
         self.st.dirty = true;
+    }
+
+    /// What to do with the pictures of the comparison since the last
+    /// call, in order.
+    pub fn take_compare(&mut self) -> Vec<CompareUpdate> {
+        std::mem::take(&mut self.st.compare_out)
     }
 
     /// The content to show, when it changed since the last call.
@@ -1598,6 +1653,8 @@ impl App {
 
     fn after_change(&mut self) {
         let now = self.st.clock;
+        self.st.keep_selected_picture();
+        self.st.refresh_compare();
         if std::mem::take(&mut self.st.resume_edits) {
             self.st.start_edit_job(&mut self.ui, now);
         }
@@ -1666,6 +1723,11 @@ impl App {
                 result,
             } => st.edit_done(image, edit, result, &mut self.ui, now),
             Msg::Saved { id, result } => st.saved(id, result, &mut self.ui, now),
+            Msg::CompareLoaded {
+                slot,
+                result,
+                full_size,
+            } => st.compare_loaded(slot, result, full_size),
             Msg::Probed { path, size } => {
                 if st.startup_path.as_deref() == Some(path.as_path()) {
                     st.auto_size_to(size);
@@ -1844,6 +1906,10 @@ fn context<'a>(st: &'a State, ui: &Ui, now: Duration) -> UiContext<'a> {
         info_visible: st.settings.info_panel,
         info: &st.info.rows,
         selected: &st.selected,
+        compare: st.compare.as_ref().map(|c| CompareView {
+            kind: c.kind,
+            items: &c.items,
+        }),
     };
     if let Some(shown) = &st.shown {
         let content = ui.content_rect(&ctx);
@@ -1864,6 +1930,8 @@ fn context<'a>(st: &'a State, ui: &Ui, now: Duration) -> UiContext<'a> {
             .text
             .as_ref()
             .filter(|t| shown.standin.is_none() && !t.layout.is_empty())
+            // A comparison covers the picture: no text to select.
+            .filter(|_| st.compare.is_none())
             .map(|t| TextView {
                 layout: &t.layout,
                 to_image: shown
@@ -2024,10 +2092,9 @@ impl State {
     }
 
     fn zoom(&mut self, factor: f32, anchor: Option<Point>) -> Handled {
-        let Some(size) = self.display_size() else {
+        let Some((size, vp)) = self.view_frame(anchor) else {
             return Handled::Ignored;
         };
-        let vp = self.content_rect;
         self.view
             .zoom_by(factor, size, vp, anchor.unwrap_or_else(|| vp.center()));
         Handled::Done

@@ -581,7 +581,7 @@ fn selected_image_shows_badge() {
         // In the bottom right corner of the image area, above the strip.
         assert!(inside(pill, content));
         assert!(content.right() - pill.right() < 20.0 * scale);
-        assert!(content.bottom() - pill.bottom() < 70.0 * scale);
+        assert!(content.bottom() - pill.bottom() < 86.0 * scale);
         // A label, not a check mark.
         assert!(checks_in(&list, content).is_empty());
 
@@ -624,7 +624,7 @@ fn selection_count_is_shown() {
     let count = text_rect_exact(&list, "3 selected").expect("the count shows");
     let hint = text_rect_exact(&list, "Backspace to clear selection").expect("the hint shows");
     assert!(count.center().x > content.center().x);
-    assert!(content.bottom() - hint.bottom() < 30.0);
+    assert!(content.bottom() - hint.bottom() < 46.0);
     assert!(content.right() - hint.right() < 30.0);
     assert!(hint.y >= count.bottom(), "{hint:?} below {count:?}");
     assert_eq!(count.x, hint.x, "one left edge in the box");

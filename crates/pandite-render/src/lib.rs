@@ -112,7 +112,9 @@ pub use provider::{
     ContentRenderer, DrawContext, FrameContext, Placement, ProviderContext, ProviderRegistry,
     RenderInput, RenderProvider, TargetInfo,
 };
-pub use renderer::{ContentFactory, FrameStatus, PreparedContent, Renderer, OFFSCREEN_FORMAT};
+pub use renderer::{
+    ContentFactory, FrameStatus, Pane, PreparedContent, Renderer, OFFSCREEN_FORMAT,
+};
 pub use settings::{Checkerboard, RenderSettings, CRISP_ZOOM_DEFAULT};
 pub use still::StillProvider;
 pub use text::{FontChoice, TextMeasurer};

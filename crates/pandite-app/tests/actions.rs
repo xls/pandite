@@ -73,6 +73,8 @@ fn sample(kind: ActionKind, dir: &std::path::Path) -> Action {
         ActionKind::Quit => Action::Quit,
         ActionKind::ToggleSelect => Action::ToggleSelect(0),
         ActionKind::ClearSelection => Action::ClearSelection,
+        ActionKind::Compare => Action::Compare,
+        ActionKind::EndCompare => Action::EndCompare,
         ActionKind::Select => Action::Select(1),
         ActionKind::MoveTo => Action::MoveTo,
         ActionKind::CopyTo => Action::CopyTo,
@@ -130,6 +132,8 @@ fn kind_of(action: &Action) -> ActionKind {
         Action::Quit => ActionKind::Quit,
         Action::ToggleSelect(_) => ActionKind::ToggleSelect,
         Action::ClearSelection => ActionKind::ClearSelection,
+        Action::Compare => ActionKind::Compare,
+        Action::EndCompare => ActionKind::EndCompare,
         Action::Select(_) => ActionKind::Select,
         Action::MoveTo => ActionKind::MoveTo,
         Action::CopyTo => ActionKind::CopyTo,
@@ -231,7 +235,7 @@ fn every_action_has_a_handler() {
         handled.push(kind);
         h.pump();
     }
-    assert_eq!(handled.len(), 47);
+    assert_eq!(handled.len(), 49);
     // The dialogs asked for: open, save, bulk files, bulk folder, bulk
     // destination, the folder of a move and the folder of a copy.
     assert_eq!(lock(&h.dialogs).shown.len(), 7);
