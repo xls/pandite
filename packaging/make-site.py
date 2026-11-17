@@ -15,12 +15,15 @@ CSS = """
 :root { color-scheme: dark; --bg: #0b1020; --panel: #121a30; --text: #e9ecf4; --dim: #a7b0c6; --accent: #4f9cff; --line: #243052; }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 17px/1.6 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
-main { max-width: 760px; margin: 0 auto; padding: 48px 20px 72px; }
-header.top { display: flex; align-items: center; gap: 14px; margin-bottom: 36px; }
-header.top img { width: 44px; height: 44px; }
-header.top a { color: var(--text); text-decoration: none; font-weight: 600; font-size: 20px; }
-header.top nav { margin-left: auto; display: flex; gap: 18px; font-size: 15px; }
-header.top nav a { color: var(--dim); font-weight: 400; font-size: 15px; }
+main { max-width: 760px; margin: 0 auto; padding: 104px 20px 72px; }
+.bar { position: fixed; top: 0; left: 0; right: 0; z-index: 5; display: flex; align-items: center; gap: 12px; padding: 12px clamp(16px, 4vw, 40px); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); background: rgba(7, 11, 24, 0.55); border-bottom: 1px solid var(--line); }
+.bar a.home { display: flex; align-items: center; gap: 12px; color: var(--text); text-decoration: none; }
+.bar img { width: 30px; height: 30px; }
+.bar b { font-size: 18px; letter-spacing: 0.2px; }
+.bar nav { margin-left: auto; display: flex; gap: clamp(12px, 2.4vw, 26px); font-size: 15px; }
+.bar nav a { color: var(--dim); text-decoration: none; transition: color 0.2s; }
+.bar nav a:hover, .bar nav a.here { color: var(--text); }
+@media (max-width: 860px) { .bar nav a.hide { display: none; } }
 h1 { font-size: 34px; line-height: 1.2; margin: 0 0 12px; }
 h2 { font-size: 21px; margin: 36px 0 8px; }
 p, li { color: var(--dim); }
@@ -114,7 +117,9 @@ def markdown(text):
     return "\n".join(parts)
 
 
-def page(title, body, description):
+def page(title, body, description, name):
+    here_support = ' class="here"' if name == "support.html" else ""
+    here_privacy = ' class="here"' if name == "privacy.html" else ""
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -126,11 +131,11 @@ def page(title, body, description):
 <style>{CSS}</style>
 </head>
 <body>
-<main>
-<header class="top">
-<a href="./"><img src="icon.png" alt=""></a><a href="./">Pandite</a>
-<nav><a href="support.html">Support</a><a href="privacy.html">Privacy</a><a href="https://github.com/xls/pandite">GitHub</a></nav>
+<header class="bar">
+<a class="home" href="./"><img src="icon.png" alt=""><b>Pandite</b></a>
+<nav><a class="hide" href="./#features">Features</a><a class="hide" href="./#install">Install</a><a href="support.html"{here_support}>Support</a><a href="privacy.html"{here_privacy}>Privacy</a><a href="https://github.com/xls/pandite">GitHub</a></nav>
 </header>
+<main>
 {body}
 <footer>Pandite is free and open source under the MIT license. <a href="privacy.html">Privacy policy</a> - <a href="support.html">Support</a> - <a href="https://github.com/xls/pandite">Source code</a></footer>
 </main>
@@ -145,7 +150,7 @@ for name, src, title, desc in [
     ("support.html", "SUPPORT.md", "Support - Pandite", "How to get help with Pandite."),
 ]:
     body = markdown((repo / src).read_text(encoding="utf8"))
-    (out / name).write_text(page(title, body, desc), encoding="ascii", newline="\n")
+    (out / name).write_text(page(title, body, desc, name), encoding="ascii", newline="\n")
 shutil.copyfile(repo / "packaging/linux/icons/hicolor/256x256/apps/pandite.png", out / "icon.png")
 (out / ".nojekyll").write_text("", encoding="ascii")
 print("wrote", sorted(p.name for p in out.iterdir()))
