@@ -6,8 +6,10 @@
 //! When its window closes it does not exit: it frees every image, hides
 //! the window and waits (see `shell`). A later `pandite <image>` connects
 //! to the pipe, sends the path and exits; the resident shows the image.
-//! While the resident shows a window it answers `busy`, and the new
-//! process opens its own window as before.
+//! A resident that shows a window shows the image in that window, so a
+//! user session has one pandite window. `busy` answers only text that is
+//! no request. A process started with `--new-instance` does not ask and
+//! does not listen: it opens its own window.
 //!
 //! The request is three UTF-8 lines: `pandite <version>`, a verb (`open`,
 //! `ping` or `quit`) and the verb's argument (`<launch time> <path>` for
@@ -18,9 +20,10 @@
 //!
 //! While it waits the resident holds no image and no texture. It keeps the
 //! thumbnails of the last folder for 30 minutes, inside the thumbnail
-//! cache limit, and the GPU device open; `stay_ready =
-//! false` in the settings file turns the whole behavior off and
-//! `pandite --quit` ends a resident.
+//! cache limit, and the GPU device open. With `stay_ready = false` in the
+//! settings file the first process still listens while its window is
+//! open, but exits when the window closes. `pandite --quit` ends a
+//! resident.
 //!
 //! Windows only. On other platforms nothing listens and every process
 //! opens its own window.
@@ -49,7 +52,7 @@ pub enum Request {
 pub enum Reply {
     /// Done.
     Ok,
-    /// A window is open: the asking process opens its own.
+    /// The text was no request: the asking process opens its own window.
     Busy,
     /// The resident is another version and exits.
     Stale,

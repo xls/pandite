@@ -128,7 +128,11 @@ fn load_settings(path: Option<PathBuf>) -> (Settings, Option<PathBuf>) {
 /// background, and may become it. Test and timing runs and runs with
 /// their own settings folder stand alone.
 pub fn may_stay(cli: &Cli) -> bool {
-    cfg!(windows) && cli.smoke.is_none() && !cli.timing && cli.config_dir.is_none()
+    cfg!(windows)
+        && cli.smoke.is_none()
+        && !cli.timing
+        && cli.config_dir.is_none()
+        && !cli.new_instance
 }
 
 /// Become the program that waits in the background, when no other process
@@ -147,10 +151,11 @@ fn become_resident(proxy: &EventLoopProxy<UserEvent>, dormant: &Arc<AtomicBool>)
             send(Request::Quit);
             Reply::Ok
         }
-        // Only a hidden program takes the image; one that shows a window
-        // leaves the new process to open its own.
+        // Hidden or not, this program takes every request: there is one
+        // pandite window, and it shows the image.
         open @ Request::Open { .. } => {
-            if dormant.swap(false, Ordering::AcqRel) && send(open) {
+            dormant.store(false, Ordering::Release);
+            if send(open) {
                 Reply::Ok
             } else {
                 Reply::Busy
@@ -197,7 +202,20 @@ pub fn run(cli: Cli) -> i32 {
         });
     }
     let dormant = Arc::new(AtomicBool::new(false));
-    let stays = may_stay(&cli) && settings.stay_ready && become_resident(&proxy, &dormant);
+    // One pandite per user session: the first process listens, with the
+    // setting on or off, and every later one hands its image over.
+    let listens = may_stay(&cli) && become_resident(&proxy, &dormant);
+    if may_stay(&cli) && !listens && !cli.background {
+        // Another process became the listener a moment ago: it takes the
+        // image.
+        for _ in 0..20 {
+            if resident::hand_over(cli.path.as_deref()) {
+                return 0;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+    let stays = listens && settings.stay_ready;
     if cli.background && !stays {
         // Nothing to wait for: another process does, or the setting is off.
         return 0;
@@ -844,10 +862,11 @@ impl Shell {
             return;
         };
         if let Some(app) = self.app.as_mut() {
-            // A window session runs (the request raced with one starting).
+            // A window session runs: it shows the image.
             if let Some(path) = path {
                 app.open(path, self.start.elapsed());
             }
+            window.set_minimized(false);
             window.focus_window();
             return;
         }

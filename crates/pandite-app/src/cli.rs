@@ -15,6 +15,8 @@
 //!                        (for a start at sign-in)
 //!   --quit               Windows: end the pandite that waits in the
 //!                        background
+//!   --new-instance       Windows: open a second window, not the one that is
+//!                        open
 //!   --register           Windows: add pandite to "Open with" and to Default
 //!                        apps for every supported file type, for this user
 //!   --unregister         Windows: remove what --register added
@@ -39,6 +41,7 @@ Options:
   --config-dir <dir>  keep settings in this folder
   --background        Windows: start hidden and wait for the first image
   --quit              Windows: end the pandite that waits in the background
+  --new-instance      Windows: open a second window, not the one that is open
   --register          Windows: add pandite to Open with and Default apps
                       for every supported file type (this user only)
   --unregister        Windows: remove what --register added
@@ -64,6 +67,8 @@ pub struct Cli {
     pub background: bool,
     /// End the program that waits in the background and exit.
     pub quit: bool,
+    /// Open an own window: do not hand the image to the pandite that runs.
+    pub new_instance: bool,
     /// Register the file associations for this user and exit.
     pub register: bool,
     /// Remove the file associations for this user and exit.
@@ -145,6 +150,7 @@ where
             "--timing" => cli.timing = true,
             "--background" => cli.background = true,
             "--quit" => cli.quit = true,
+            "--new-instance" | "--newinstance" => cli.new_instance = true,
             "--register" => cli.register = true,
             "--unregister" => cli.unregister = true,
             "--config-dir" => {
@@ -238,6 +244,8 @@ mod tests {
         assert!(parse(["--unregister"], &cwd()).unwrap().unregister);
         assert!(parse(["--background"], &cwd()).unwrap().background);
         assert!(parse(["--quit"], &cwd()).unwrap().quit);
+        assert!(parse(["--new-instance"], &cwd()).unwrap().new_instance);
+        assert!(parse(["--newinstance"], &cwd()).unwrap().new_instance);
         assert!(parse(["--register", "--unregister"], &cwd()).is_err());
         assert!(parse(["-V"], &cwd()).unwrap().version);
 

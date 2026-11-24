@@ -262,6 +262,7 @@ pandite [options] [--] [<image>]
   --config-dir <dir>  keep settings in this folder
   --background        Windows: start hidden and wait for the first image
   --quit              Windows: end the pandite that waits in the background
+  --new-instance      Windows: open a second window, not the one that is open
   --register          Windows: add pandite to Open with and Default apps
                       for every supported file type (this user only)
   --unregister        Windows: remove what --register added
