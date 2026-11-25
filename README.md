@@ -15,7 +15,15 @@
   <img src="https://img.shields.io/badge/rust-1.87%2B-orange" alt="Rust 1.87 or later">
   <img src="https://img.shields.io/badge/GPU-Direct3D%2012%20%7C%20Metal%20%7C%20Vulkan-success" alt="Direct3D 12, Metal, Vulkan">
   <img src="https://img.shields.io/badge/network-none-success" alt="No network code">
+  
 </p>
+<div align="center">
+  
+[![BuyMeACoffee](https://raw.githubusercontent.com/pachadotdev/buymeacoffee-badges/main/bmc-donate-yellow.svg)](https://buymeacoffee.com/pacha)
+
+</div>
+
+
 
 <p align="center">
   <a href="#performance">Performance</a> |
