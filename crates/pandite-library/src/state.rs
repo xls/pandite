@@ -306,6 +306,10 @@ pub(crate) struct State {
     pub replanned: bool,
     /// Workers asleep on the work condition variable.
     pub waiting: usize,
+    /// Wake callbacks that were promised and have not returned yet. The
+    /// library is not idle while one is open, so a caller that waits for
+    /// idle has seen every wake of the finished work.
+    pub waking: usize,
     pub shutdown: bool,
 }
 
@@ -346,6 +350,7 @@ impl State {
             threads: HashMap::new(),
             timings: HashMap::new(),
             replanned: false,
+            waking: 0,
             waiting: 0,
             shutdown: false,
         }
@@ -712,8 +717,8 @@ impl State {
         }
     }
 
-    /// True when no job runs, none can start, and no written-off thread is
-    /// still stuck.
+    /// True when no job runs, none can start, no written-off thread is
+    /// still stuck and no wake callback is still to come.
     pub fn is_idle(&mut self) -> bool {
         self.running_full.is_empty()
             && self.running_screen.is_empty()
@@ -721,6 +726,7 @@ impl State {
             && self.list_running.is_none()
             && self.list_pending.is_none()
             && self.thread_counts().1 == 0
+            && self.waking == 0
             && self.scan(usize::MAX).is_none()
     }
 

@@ -379,3 +379,41 @@ fn workers_stop_on_drop() {
     );
     dec.release_all();
 }
+
+#[test]
+fn idle_comes_after_the_wake_of_the_finished_work() {
+    // A caller that waited for idle has seen every wake: the library does
+    // not read as idle while a wake callback is still on its way.
+    use std::sync::mpsc;
+    use std::time::Duration;
+    let dir = TempDir::new("idle-wake");
+    let dec = FakeDecoder::new();
+    let files = FakeFiles::new();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let release_rx = std::sync::Mutex::new(release_rx);
+    let wake = Arc::new(move || {
+        let _ = entered_tx.send(());
+        // Stay in the first call until the test lets go.
+        if let Ok(rx) = release_rx.lock() {
+            let _ = rx.recv_timeout(WAIT);
+        }
+    });
+    let config = LibraryConfig {
+        workers: 1,
+        read_ahead: 0,
+        background_thumbnails: false,
+        thumb_margin: 0,
+        thumb_size: 8,
+        files: Arc::clone(&files) as Arc<dyn FileAccess>,
+        ..LibraryConfig::default()
+    };
+    let lib = Library::new(dec.registry(), config, wake).expect("library starts");
+    lib.set_items(dir.images(1, 16, 16));
+    lib.set_current(0);
+    assert!(entered_rx.recv_timeout(WAIT).is_ok(), "a wake came");
+    assert!(!lib.wait_idle(Duration::from_millis(200)));
+    // Every later call returns at once.
+    drop(release_tx);
+    assert!(lib.wait_idle(WAIT));
+}

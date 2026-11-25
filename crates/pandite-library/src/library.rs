@@ -360,6 +360,19 @@ impl Shared {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Call the wake callback without the lock held. The state counts the
+    /// call as open until it returns, so the library does not read as idle
+    /// between the change and its wake.
+    pub fn wake_now<'a>(&'a self, mut st: MutexGuard<'a, State>) -> MutexGuard<'a, State> {
+        st.waking += 1;
+        drop(st);
+        (self.wake)();
+        let mut st = self.lock();
+        st.waking -= 1;
+        self.idle_cv.notify_all();
+        st
+    }
+
     pub fn wait_work<'a>(&self, guard: MutexGuard<'a, State>) -> MutexGuard<'a, State> {
         self.work_cv
             .wait(guard)
@@ -663,8 +676,9 @@ impl Library {
         self.shared.lock().export_thumbnails()
     }
 
-    /// Block until no job runs or can start and no written-off thread is
-    /// stuck, or until `timeout` passes. Returns true when idle. Meant for
+    /// Block until no job runs or can start, no written-off thread is
+    /// stuck and every wake callback of the finished work has returned, or
+    /// until `timeout` passes. Returns true when idle. Meant for
     /// tests and batch tools; never call it on the interface thread.
     pub fn wait_idle(&self, timeout: Duration) -> bool {
         let deadline = Instant::now().checked_add(timeout);

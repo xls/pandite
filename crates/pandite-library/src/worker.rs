@@ -95,9 +95,7 @@ fn worker_main(shared: Arc<Shared>, tid: u64) {
         }
         shared.idle_cv.notify_all();
         if wake {
-            drop(st);
-            (shared.wake)();
-            st = shared.lock();
+            st = shared.wake_now(st);
         }
         if !keep {
             break;
@@ -271,11 +269,9 @@ fn start_quick(
                 width: meta.width,
                 height: meta.height,
             };
-            let wake = shared
-                .lock()
-                .deliver_quick(&path, id, reduced, stamp, elapsed);
-            if wake {
-                (shared.wake)();
+            let mut st = shared.lock();
+            if st.deliver_quick(&path, id, reduced, stamp, elapsed) {
+                drop(shared.wake_now(st));
             }
         });
     // No thread: the full stage alone shows the image.
@@ -357,9 +353,9 @@ fn read(
         if !explicit {
             return Err(leave(Early::NotLocal));
         }
-        let wake = shared.lock().mark_downloading(task);
-        if wake {
-            (shared.wake)();
+        let mut st = shared.lock();
+        if st.mark_downloading(task) {
+            drop(shared.wake_now(st));
         }
     } else {
         shared.lock().mark_local_read(task);
